@@ -1,0 +1,65 @@
+menu "Touch Configuration"
+
+    config ARS_TOUCH_X_MAX
+        int "Touch Panel Width"
+        default 1024
+        help
+            Maximum X coordinate resolution of the touch panel.
+
+    config ARS_TOUCH_Y_MAX
+        int "Touch Panel Height"
+        default 600
+        help
+            Maximum Y coordinate resolution of the touch panel.
+
+    config ARS_TOUCH_SWAP_XY
+        bool "Swap X and Y Axes"
+        default n
+        help
+            Swap the X and Y axes of the touch report.
+
+    config ARS_TOUCH_MIRROR_X
+        bool "Mirror X Axis"
+        default n
+        help
+            Invert the X coordinate (X = Max - X).
+
+    config ARS_TOUCH_MIRROR_Y
+        bool "Mirror Y Axis"
+        default n
+        help
+            Invert the Y coordinate (Y = Max - Y).
+
+    config ARS_TOUCH_OFFSET_X
+        int "Touch X Offset"
+        default 0
+        help
+            Add constant offset to X coordinate.
+
+    config ARS_TOUCH_OFFSET_Y
+        int "Touch Y Offset"
+        default 0
+        help
+            Add constant offset to Y coordinate.
+
+    config ARS_TOUCH_SCALE_X
+        int "Touch X Scale (x1000)"
+        default 1000
+        help
+            Scale X coordinate by (Value / 1000.0). Default 1000 = 1.0x.
+
+    config ARS_TOUCH_SCALE_Y
+        int "Touch Y Scale (x1000)"
+        default 1000
+        help
+            Scale Y coordinate by (Value / 1000.0). Default 1000 = 1.0x.
+
+    config TOUCH_DEBUG_LOG
+        bool "Enable Reduced Hardware Debug Logs"
+        default n
+        help
+            Enable debug logging for touch input processing in LVGL port.
+            Reduces spam by only logging changes or significant events.
+
+endmenu
+

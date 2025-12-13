@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reptiles Assistant</title>
+    <link rel="stylesheet" href="app.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Reptiles Assistant</h1>
+            <div id="status-bar" class="status-bar">
+                <span id="wifi-status">Checking...</span>
+            </div>
+        </header>
+
+        <main>
+            <section class="card">
+                <h2>System Status</h2>
+                <div id="system-info" class="info-grid">
+                    <div>Uptime: <span id="uptime">-</span></div>
+                    <div>Heap: <span id="heap">-</span></div>
+                    <div>IP: <span id="ip-addr">-</span></div>
+                    <div>Storage: <span id="storage">-</span></div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Animals</h2>
+                <button id="refresh-btn" class="btn primary">Refresh List</button>
+                <div id="animal-list" class="list-view">
+                    <!-- Animals injected here -->
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Add New</h2>
+                <form id="add-form">
+                    <div class="form-group">
+                        <label for="name">Name</label>
+                        <input type="text" id="name" required clean-input>
+                    </div>
+                    <div class="form-group">
+                        <label for="species">Species</label>
+                        <input type="text" id="species" required clean-input>
+                    </div>
+                    <button type="submit" class="btn success">Save</button>
+                </form>
+            </section>
+
+            <section class="card">
+                <h2>Reports</h2>
+                <a href="/reports" class="btn secondary">View SD Card Reports</a>
+            </section>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

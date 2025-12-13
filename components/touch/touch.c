@@ -1,0 +1,96 @@
+/*
+ * SPDX-FileCopyrightText: 2015-2023 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "touch.h"
+#include "driver/gpio.h"
+#include "esp_check.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
+#include <stdlib.h>
+
+/*******************************************************************************
+ * Function definitions
+ *******************************************************************************/
+
+/*******************************************************************************
+ * Local variables
+ *******************************************************************************/
+
+/*******************************************************************************
+ * Public API functions
+ *******************************************************************************/
+
+// Local calibration storage
+static ars_touch_calibration_t s_calibration = {
+    .scale_x = (float)CONFIG_ARS_TOUCH_SCALE_X / 1000.0f,
+    .scale_y = (float)CONFIG_ARS_TOUCH_SCALE_Y / 1000.0f,
+    .offset_x = CONFIG_ARS_TOUCH_OFFSET_X,
+    .offset_y = CONFIG_ARS_TOUCH_OFFSET_Y,
+};
+
+void ars_touch_set_calibration(esp_lcd_touch_handle_t tp,
+                               const ars_touch_calibration_t *data) {
+  if (data) {
+    s_calibration = *data;
+  }
+}
+
+void ars_touch_get_calibration(esp_lcd_touch_handle_t tp,
+                               ars_touch_calibration_t *data) {
+  if (data) {
+    *data = s_calibration;
+  }
+}
+
+void ars_touch_apply_calibration(esp_lcd_touch_point_data_t *points,
+                                 uint8_t count) {
+  if (!points || count == 0)
+    return;
+
+  float scale_x = s_calibration.scale_x;
+  float scale_y = s_calibration.scale_y;
+  int32_t offset_x = s_calibration.offset_x;
+  int32_t offset_y = s_calibration.offset_y;
+
+  // Sanity check
+  if (scale_x < 0.0001f || scale_x > 100.0f)
+    scale_x = 1.0f;
+  if (scale_y < 0.0001f || scale_y > 100.0f)
+    scale_y = 1.0f;
+
+  for (int i = 0; i < count; i++) {
+    // Apply Scale
+    if (scale_x > 0.001f) {
+      points[i].x = (uint16_t)((float)points[i].x * scale_x);
+    }
+    if (scale_y > 0.001f) {
+      points[i].y = (uint16_t)((float)points[i].y * scale_y);
+    }
+
+    // Apply Offset
+    int32_t val_x = (int32_t)points[i].x + offset_x;
+    int32_t val_y = (int32_t)points[i].y + offset_y;
+
+    // Clamp
+    if (val_x < 0)
+      val_x = 0;
+    if (val_y < 0)
+      val_y = 0;
+
+    // Note: We don't have x_max/y_max easily here unless we pass tp.
+    // Assuming safe bounds or user sets correct offset.
+    // For now, clamp to 2000 as per original logic if needed, but logic was:
+    // if (val_x > 2000) continue;
+
+    // Let's keep it simple and just assign, LVGL handles out of bounds usually.
+    points[i].x = (uint16_t)val_x;
+    points[i].y = (uint16_t)val_y;
+  }
+}

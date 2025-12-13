@@ -1,0 +1,44 @@
+menu "SD Card Configuration"
+
+    choice ARS_SD_CS_MODE
+        prompt "SD SPI CS Mode"
+        default ARS_SD_CS_MODE_IO_EXPANDER
+        help
+            Select the Chip Select (CS) mode for the SD Card.
+            - GPIO: Native ESP32 GPIO control.
+            - IO_EXPANDER: Controlled via CH422G IO Expander.
+
+        config ARS_SD_CS_MODE_GPIO
+            bool "Native GPIO"
+        
+        config ARS_SD_CS_MODE_IO_EXPANDER
+            bool "IO Expander (CH422G)"
+    endchoice
+
+    config ARS_SD_CS_GPIO
+        int "SD CS GPIO Pin"
+        depends on ARS_SD_CS_MODE_GPIO
+        default -1
+        help
+            GPIO pin for SD Card CS when using Native GPIO mode.
+
+    config ARS_SD_CS_EXIO
+        int "SD CS IO Expander Pin (EXIO)"
+        depends on ARS_SD_CS_MODE_IO_EXPANDER
+        default 4
+        help
+            EXIO pin index on CH422G (0-7). Waveshare 7B uses EXIO4.
+
+    config ARS_SD_MOSI
+        int "SD SPI MOSI GPIO"
+        default 11
+
+    config ARS_SD_MISO
+        int "SD SPI MISO GPIO"
+        default 13
+
+    config ARS_SD_SCK
+        int "SD SPI SCK GPIO"
+        default 12
+
+endmenu
