@@ -22,11 +22,25 @@
   * 
   * @param pin An 8-bit value where each bit represents a pin (0 = input, 1 = output).
   */
+ #include "esp_log.h"
+
+ static const char *TAG = "io_ext";
+
+ /**
+  * @brief Set the IO mode for the specified pins.
+  * 
+  * This function sets the specified pins to input or output mode by writing to the mode register.
+  * 
+  * @param pin An 8-bit value where each bit represents a pin (0 = input, 1 = output).
+  */
  void IO_EXTENSION_IO_Mode(uint8_t pin) 
  {
      uint8_t data[2] = {IO_EXTENSION_Mode, pin}; // Prepare the data to write to the mode register
      // Write the 8-bit value to the IO mode register
-     DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+     esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "IO_Mode Failed: %s", esp_err_to_name(ret));
+     }
  }
  
  /**
@@ -66,7 +80,10 @@
  
      uint8_t data[2] = {IO_EXTENSION_IO_OUTPUT_ADDR, IO_EXTENSION.Last_io_value}; // Prepare the data to write to the output register
      // Write the 8-bit value to the IO output register
-     DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+     esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Output Failed: %s", esp_err_to_name(ret));
+     }
  }
  
  /**
