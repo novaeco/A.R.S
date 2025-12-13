@@ -1,0 +1,10 @@
+menu "Data Manager"
+
+config ARS_DATA_MAX_JSON_SIZE
+    int "Taille max des fichiers JSON (octets)"
+    default 8192
+    help
+        Limite de sécurité pour la taille des fichiers JSON lus depuis LittleFS.
+        Les fichiers plus volumineux sont rejetés pour éviter les OOM.
+
+endmenu
