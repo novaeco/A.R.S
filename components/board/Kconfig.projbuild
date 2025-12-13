@@ -1,0 +1,38 @@
+menu "BSP / Board"
+
+config ARS_BACKLIGHT_USE_IO_EXPANDER
+    bool "Piloter le rétroéclairage via l'IO expander"
+    default y
+    help
+        Utiliser le CH422G pour activer le rétroéclairage (IO_2). Désactiver
+        pour forcer l'usage d'un GPIO direct.
+
+config ARS_BACKLIGHT_GPIO
+    int "GPIO de secours pour le rétroéclairage (LEDC)"
+    default -1
+    range -1 48
+    help
+        GPIO optionnel pour piloter le rétroéclairage via LEDC. Laisser -1 si
+        aucun GPIO direct n'est câblé.
+
+config ARS_BAT_ADC_UNIT
+    int "ADC unit pour la batterie"
+    default 1
+    range 1 2
+
+config ARS_BAT_ADC_CHANNEL
+    int "Canal ADC pour la batterie"
+    default 7
+    range 0 9
+
+config ARS_BAT_DIV_NUM
+    int "Diviseur de tension - numérateur"
+    default 2
+
+config ARS_BAT_DIV_DEN
+    int "Diviseur de tension - dénominateur"
+    default 1
+    help
+        Rapport du pont diviseur utilisé en entrée de l'ADC (num/den).
+
+endmenu
