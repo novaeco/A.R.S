@@ -41,4 +41,12 @@ menu "SD Card Configuration"
         int "SD SPI SCK GPIO"
         default 12
 
+    config ARS_SD_EXTCS_TIMING_LOG
+        bool "Enable ExtCS SDSPI timing log"
+        default n
+        help
+            Print detailed timing for every SDSPI transaction and current
+            clock setting while using the External CS path. Disable for
+            production to reduce log noise.
+
 endmenu
