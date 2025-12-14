@@ -104,8 +104,8 @@ If you are used inside Google Antigravity or Codex:
 - `components/AGENTS.md`: component standards, CMake/Kconfig conventions
 - `components/sd/AGENTS.md`: SD init/mount rules (must be followed for SD fixes)
 - `components/io_extension/AGENTS.md`: IO extender contract (CH32V003), pin/semantic mapping
-- `components/gt911/AGENTS.md`: touch robustness rules
+- `components/touch/AGENTS.md`: touch robustness rules
 - `components/lv_port/AGENTS.md`: LVGL port constraints
 - `components/net/AGENTS.md`: provisioning/wifi state rules
 - `components/data_manager/AGENTS.md`: storage integrity rules
-- `components/i2c_bus_shared/AGENTS.md`: shared I2C rules
+- `components/i2c/AGENTS.md`: shared I2C rules
