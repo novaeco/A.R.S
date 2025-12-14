@@ -300,6 +300,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     size_t raw_len = 0;
     bool valid_r1 = false;
     uint8_t r1 = 0xFF;
+    int idx_valid = -1;
     bool bit7_violation = false;
 
     esp_err_t err = sd_extcs_set_cs(true);
@@ -341,13 +342,16 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
           bit7_violation = true;
           continue; // Not a valid R1 byte
         }
+        if (idx_valid < 0) {
+          idx_valid = i;
+          r1 = byte;
+          valid_r1 = true;
+          break;
+        }
       }
-      if (byte == 0xFF)
-        continue; // preamble
-      r1 = byte;
-      valid_r1 = true;
-      break;
     }
+
+    valid_r1 = (idx_valid >= 0);
 
     sd_extcs_send_dummy_clocks(1);
     sd_extcs_set_cs(false);
@@ -365,18 +369,18 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
       snprintf(result_str, sizeof(result_str),
-               "R1=0x%02X (%s%s%s)", r1, r1 == 0x01 ? "idle" : "not idle",
-               r1 & 0x04 ? " ILLEGAL_CMD" : "",
-               bit7_violation ? " invalid-bit7" : "");
+               "R1=0x%02X (%s%s) first_valid_r1_index=%d bit7_violation_seen=%d",
+               r1, r1 == 0x01 ? "idle" : "not idle",
+               r1 & 0x04 ? " ILLEGAL_CMD" : "", idx_valid + 1,
+               bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
       snprintf(result_str, sizeof(result_str),
-               "no valid R1 (non-FF but bit7=1) raw=%." STR(SD_EXTCS_CMD0_RAW_STR_LIMIT)
-               "s",
-               idx ? dump : "<ff>");
+               "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 raw=%.*s",
+               (int)SD_EXTCS_CMD0_RAW_STR_LIMIT, idx ? dump : "<ff>");
     } else {
       snprintf(result_str, sizeof(result_str),
-               "timeout (all 0xFF) raw=%." STR(SD_EXTCS_CMD0_RAW_STR_LIMIT) "s",
-               idx ? dump : "<ff>");
+               "timeout (all 0xFF) bit7_violation_seen=0 raw=%.*s",
+               (int)SD_EXTCS_CMD0_RAW_STR_LIMIT, idx ? dump : "<ff>");
     }
 
     if (CONFIG_ARS_SD_EXTCS_DEBUG_CMD0) {
@@ -392,7 +396,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
     snprintf(last_result, sizeof(last_result), "%.*s", (int)sizeof(last_result) - 1,
              result_str);
-    snprintf(last_dump, sizeof(last_dump), "%." STR(SD_EXTCS_CMD0_RAW_STR_LIMIT) "s",
+    snprintf(last_dump, sizeof(last_dump), "%.*s", (int)SD_EXTCS_CMD0_RAW_STR_LIMIT,
              idx ? dump : "<ff>");
     last_r1 = r1;
     last_r1_valid = valid_r1;

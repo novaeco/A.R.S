@@ -8,6 +8,9 @@ CONFIG_FREERTOS_HZ=1000
 # Flash Size
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
+# Linker orphan section handling (explicit choice to avoid bootloader warnings)
+CONFIG_COMPILER_ORPHAN_SECTIONS_WARNING=y
+
 # PSRAM Configuration
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
