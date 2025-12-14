@@ -9,7 +9,6 @@
 #include <rom/ets_sys.h>
 #include <string.h>
 
-
 static const char *TAG = "sd_extcs";
 
 // --- Internal State ---
@@ -23,24 +22,31 @@ static esp_err_t (*s_original_do_transaction)(int slot,
                                               sdmmc_command_t *cmdinfo) = NULL;
 
 // --- GPIO Helpers ---
-static void cs_set_level(bool level) {
+// --- GPIO Helpers ---
+static esp_err_t cs_set_level(bool level) {
   // IO4: 0 = Low (Assert), 1 = High (Deassert)
-  IO_EXTENSION_Output(IO_EXTENSION_IO_4, level ? 1 : 0);
+  return IO_EXTENSION_Output(IO_EXTENSION_IO_4, level ? 1 : 0);
 }
 
 // --- Transaction Wrapper ---
 static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   // 1. Assert CS
-  cs_set_level(false);
+  esp_err_t ret = cs_set_level(false);
+  if (ret != ESP_OK) {
+    // If CS fails (e.g. I2C timeout), we can't trust the transaction.
+    // But we must return an error compatible with storage stack.
+    ESP_LOGW(TAG, "CS Assert Failed: %s", esp_err_to_name(ret));
+    return ESP_ERR_TIMEOUT;
+  }
 
   // Explicit setup time for manual CS
   ets_delay_us(50);
 
   // 2. Delegate to standard SDSPI implementation
-  esp_err_t ret = s_original_do_transaction(slot, cmdinfo);
+  ret = s_original_do_transaction(slot, cmdinfo);
 
   // 3. Deassert CS
-  cs_set_level(true);
+  cs_set_level(true); // Best effort deassert
 
   // 4. Dummy Clocks (8 cycles)
   if (s_cleanup_handle) {
@@ -56,7 +62,7 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
 
 // --- Probe Helper (Diagnostic) ---
 static esp_err_t sd_extcs_probe(void) {
-  ESP_LOGI(TAG, "Probing SD Card...");
+  ESP_LOGI(TAG, "Probing SD Card (Strict Mode)...");
 
   // Configure MISO pullup explicitly
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
@@ -64,54 +70,74 @@ static esp_err_t sd_extcs_probe(void) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
 
-  // Wake up
+  // 1. Strict Sequence: CS HIGH + 74 (80) Clocks
   cs_set_level(true);
+  vTaskDelay(pdMS_TO_TICKS(2)); // Allow stabilization
+
   uint8_t dummy[10];
   memset(dummy, 0xFF, sizeof(dummy));
   spi_transaction_t t_wake = {.length = 80, .tx_buffer = dummy};
   spi_device_polling_transmit(s_cleanup_handle, &t_wake);
 
-  // CMD0
+  // 2. CMD0 Loop
   uint8_t cmd0[6] = {0x40, 0x00, 0x00, 0x00, 0x00, 0x95};
   bool success = false;
+  uint8_t last_rx = 0xFF;
 
   // Retry loop
   for (int i = 0; i < 5; i++) {
-    cs_set_level(false);
-    ets_delay_us(200);
+    esp_err_t err = cs_set_level(false);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Probe: CS Assert Error");
+      return err;
+    }
+    ets_delay_us(500); // Allow CS to settle
 
     spi_transaction_t t_cmd = {.length = 48, .tx_buffer = cmd0};
     spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
 
-    // Read response
+    // Read response (R1 is 1 byte, but we read up to 8 to catch it)
     for (int j = 0; j < 8; j++) {
       uint8_t rx = 0xFF;
       spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
       spi_device_polling_transmit(s_cleanup_handle, &t_rx);
       rx = t_rx.rx_data[0];
+      last_rx = rx;
 
       if (rx != 0xFF) {
-        // Compatible with standard SD (0x01) or some cards sending 0x00 early?
-        if (rx == 0x01)
+        // R1 Idle = 0x01
+        if (rx == 0x01) {
           success = true;
+          ESP_LOGI(TAG, "Probe: CMD0 Response 0x01 (OK)");
+        } else {
+          ESP_LOGW(TAG, "Probe: Invalid Response 0x%02X", rx);
+        }
         break;
       }
     }
 
     cs_set_level(true);
+    // 8 dummy clocks after CS High
     spi_transaction_t t_dummy = {.length = 8, .tx_buffer = dummy};
     spi_device_polling_transmit(s_cleanup_handle, &t_dummy);
 
     if (success)
       break;
+
+    // If we only saw 0xFF, MISO might be stuck high.
+    // If we saw 0x00 or garbage, logging happens above.
     vTaskDelay(pdMS_TO_TICKS(20)); // Slower retry
   }
 
   if (success) {
-    ESP_LOGI(TAG, "Probe: Card Response OK (0x01)");
     return ESP_OK;
   } else {
-    ESP_LOGE(TAG, "Probe: No response or invalid.");
+    ESP_LOGE(TAG, "Probe: Failed. Last Byte=0x%02X", last_rx);
+    // Diagnostic hint
+    if (last_rx == 0xFF)
+      ESP_LOGW(TAG, "Hint: MISO stuck HIGH? Check Pullups/Connection.");
+    if (last_rx == 0x00)
+      ESP_LOGW(TAG, "Hint: MISO stuck LOW? Check Wiring.");
     return ESP_ERR_TIMEOUT;
   }
 }
@@ -124,8 +150,13 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   esp_err_t ret;
 
-  // 1. IO Init
-  IO_EXTENSION_Init();
+  // 1. IO Init (Safe-Fail)
+  ret = IO_EXTENSION_Init();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG,
+             "SD: ExtCS Mode unavailable (IOEXT Init Failed). Aborting SD.");
+    return ESP_FAIL;
+  }
   cs_set_level(true);
   vTaskDelay(pdMS_TO_TICKS(10));
 
