@@ -30,13 +30,17 @@
 #define CONFIG_ARS_SD_EXTCS_DEBUG_CMD0 0
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
+#define CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES 20
+#endif
+
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
+#define SD_EXTCS_CMD0_PRE_CLKS_BYTES CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
 #define SD_EXTCS_CMD0_RETRIES 5
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
 #define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 64
-#define SD_EXTCS_CMD0_EXTRA_CLKS_BYTES 10
 #define SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES 8
 #define SD_EXTCS_CS_ASSERT_SETTLE_US 120
 #define SD_EXTCS_CS_DEASSERT_SETTLE_US 40
@@ -86,9 +90,6 @@ static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len);
 static size_t sd_extcs_safe_snprintf(char *dst, size_t dst_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 // Avoids -Waddress false positives when using stack buffers that are never NULL.
-static inline const char *sd_extcs_str_or_empty(const char *s) {
-  return (s && s[0] != '\0') ? s : "";
-}
 const char *sd_extcs_state_str(sd_extcs_state_t state);
 
 // --- GPIO Helpers ---
@@ -330,7 +331,11 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
   TickType_t start = xTaskGetTickCount();
   uint8_t rx = 0xFF;
   do {
-    spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+    spi_transaction_t t_rx = {
+        .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+        .length = 8,
+        .tx_data = {0xFF},
+    };
     esp_err_t err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
     if (err != ESP_OK)
       return err;
@@ -358,7 +363,11 @@ static void sd_extcs_log_miso_health(void) {
   sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   for (size_t i = 0; i < sizeof(sample_high); ++i) {
-    spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+    spi_transaction_t t_rx = {
+        .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+        .length = 8,
+        .tx_data = {0xFF},
+    };
     if (spi_device_polling_transmit(s_cleanup_handle, &t_rx) != ESP_OK)
       break;
     sample_high[i] = t_rx.rx_data[0];
@@ -370,7 +379,11 @@ static void sd_extcs_log_miso_health(void) {
   if (sd_extcs_assert_cs() == ESP_OK) {
     ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
     for (size_t i = 0; i < sizeof(sample_low); ++i) {
-      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+      spi_transaction_t t_rx = {
+          .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+          .length = 8,
+          .tx_data = {0xFF},
+      };
       if (spi_device_polling_transmit(s_cleanup_handle, &t_rx) != ESP_OK)
         break;
       sample_low[i] = t_rx.rx_data[0];
@@ -409,7 +422,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   vTaskDelay(pdMS_TO_TICKS(2));
-  sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
+  sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_PRE_CLKS_BYTES);
   vTaskDelay(pdMS_TO_TICKS(2));
 
   sd_extcs_log_miso_health();
@@ -439,8 +452,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     bool valid_r1 = false;
     uint8_t r1 = 0xFF;
     int idx_valid = -1;
+    int idle_idx = -1;
     bool bit7_violation = false;
     bool all_ff = true;
+    bool saw_non_ff_byte = false;
     size_t ff_before_resp = 0;
 
     esp_err_t err = sd_extcs_assert_cs();
@@ -469,32 +484,45 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     }
 
     for (size_t i = 0; i < SD_EXTCS_CMD0_RESP_WINDOW_BYTES; ++i) {
-      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+      spi_transaction_t t_rx = {
+          .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+          .length = 8,
+          .tx_data = {0xFF},
+      };
       err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
       if (err != ESP_OK)
         break;
 
       uint8_t byte = t_rx.rx_data[0];
       raw[raw_len++] = byte;
-      if (byte == 0xFF && idx_valid < 0)
+      if (!saw_non_ff_byte && byte == 0xFF)
         ff_before_resp++;
+
       if (byte != 0xFF) {
         saw_data = true;
+        saw_non_ff_byte = true;
         all_ff = false;
         if ((byte & 0x80) != 0) {
           bit7_violation = true;
           continue; // Not a valid R1 byte
         }
-        if (idx_valid < 0) {
+
+        if (byte == 0x01 && idle_idx < 0)
+          idle_idx = i;
+
+        if (idx_valid < 0 || byte == 0x01) {
           idx_valid = i;
           r1 = byte;
           valid_r1 = true;
-          break;
         }
       }
     }
 
-    valid_r1 = (idx_valid >= 0);
+    if (idle_idx >= 0) {
+      r1 = 0x01;
+      idx_valid = idle_idx;
+      valid_r1 = true;
+    }
 
     if (all_ff)
       all_ff_attempts++;
@@ -521,15 +549,13 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
     char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
-      char r1_bits[64];
-      size_t r1_bits_len = sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
+      char r1_bits[64] = {0};
+      sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
       int r1_width = (int)sd_extcs_strnlen_cap(r1_bits, SD_EXTCS_R1_BITS_MAX);
       sd_extcs_safe_snprintf(result_str, sizeof(result_str),
                              "R1=0x%02X (%.*s) ff_before_resp=%u idx=%d bit7=%u",
-                             r1, r1_width,
-                             sd_extcs_str_or_empty(r1_bits_len ? r1_bits : NULL),
-                             (unsigned)ff_before_resp, first_valid_idx,
-                             bit7_violation ? 1 : 0);
+                             r1, r1_width, r1_bits, (unsigned)ff_before_resp,
+                             first_valid_idx, bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
       sd_extcs_safe_snprintf(result_str, sizeof(result_str),
                              "no valid R1 (bit7=1) ff_before_resp=%u idx=%d",
@@ -564,7 +590,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     if (valid_r1 && r1 == 0x05) {
       sd_extcs_deassert_cs();
       ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
-      sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
+      sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_PRE_CLKS_BYTES);
       ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
       vTaskDelay(pdMS_TO_TICKS(1));
       last_err = ESP_ERR_INVALID_RESPONSE;
@@ -677,7 +703,11 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   if (response && response_len > 0) {
     response[0] = first_byte;
     for (size_t i = 1; i < response_len; ++i) {
-      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+      spi_transaction_t t_rx = {
+          .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+          .length = 8,
+          .tx_data = {0xFF},
+      };
       esp_err_t rx_err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
       if (rx_err != ESP_OK) {
         err = rx_err;

@@ -6,13 +6,13 @@ menu "SD Card Configuration"
         help
             Select the Chip Select (CS) mode for the SD Card.
             - GPIO: Native ESP32 GPIO control.
-            - IO_EXPANDER: Controlled via CH422G IO Expander.
+            - IO_EXPANDER: Controlled via CH32V003 IO Expander (Waveshare).
 
         config ARS_SD_CS_MODE_GPIO
             bool "Native GPIO"
         
         config ARS_SD_CS_MODE_IO_EXPANDER
-            bool "IO Expander (CH422G)"
+            bool "IO Expander (CH32V003, Waveshare)"
     endchoice
 
     config ARS_SD_CS_GPIO
@@ -27,7 +27,8 @@ menu "SD Card Configuration"
         depends on ARS_SD_CS_MODE_IO_EXPANDER
         default 4
         help
-            EXIO pin index on CH422G (0-7). Waveshare 7B uses EXIO4.
+            EXIO pin index on CH32V003 IO expander (0-7). Waveshare 7B uses
+            EXIO4.
 
     config ARS_SD_MOSI
         int "SD SPI MOSI GPIO"
@@ -48,6 +49,15 @@ menu "SD Card Configuration"
         help
             SPI clock during CMD0/CMD8/ACMD41 when using external CS.
             Use conservative values (100-400kHz) for noisy boards or slow CS paths.
+
+    config ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
+        int "Dummy bytes before CMD0 (ExtCS)"
+        default 20
+        range 10 64
+        help
+            Number of 0xFF bytes clocked with CS high before issuing CMD0 in
+            external CS mode. Increase for cards that need >80 clocks before
+            entering SPI mode.
 
     config ARS_SD_EXTCS_TARGET_FREQ_KHZ
         int "SDSPI target frequency after init (kHz)"

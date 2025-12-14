@@ -36,7 +36,7 @@ esp_err_t app_board_init(void) {
 
   // 1. Initialize Shared Bus & IO Extension (Explicit Order)
   i2c_bus_shared_init();          // 1) I2C0 + Mutex
-  IO_EXTENSION_Init();            // 2) IO Expander (CH422G)
+  IO_EXTENSION_Init();            // 2) IO Expander (CH32V003, Waveshare)
   vTaskDelay(pdMS_TO_TICKS(100)); // Allow IO extenders to stabilize
 
   // 3. Initialize Touch (GT911)
