@@ -38,11 +38,16 @@ static const char *NVS_KEY_WIFI_PASS = "wifi_pass";
 
 static bool is_connected = false;
 static bool has_credentials = false;
+static bool s_wifi_started = false;
 static esp_timer_handle_t s_wifi_retry_timer = NULL;
 static uint32_t s_wifi_backoff_ms = 1000; // start at 1s
 static const uint32_t WIFI_RETRY_BACKOFF_MAX_MS = 30000;
 static TaskHandle_t s_wifi_retry_task = NULL;
+static TaskHandle_t s_wifi_provisioning_task = NULL;
+static bool s_watchdog_task_created = false;
 static void schedule_wifi_retry(uint32_t delay_ms);
+static esp_err_t start_wifi_station_if_provisioned(void);
+static void wifi_provisioning_task(void *arg);
 
 static esp_err_t
 apply_sta_config_with_recovery(const wifi_config_t *wifi_config_in) {
@@ -83,6 +88,7 @@ apply_sta_config_with_recovery(const wifi_config_t *wifi_config_in) {
                esp_err_to_name(err));
       return err;
     }
+    s_wifi_started = true;
 
     err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
   }
@@ -162,7 +168,16 @@ static void wifi_watchdog_task(void *arg) {
 }
 
 static void ensure_watchdog_task(void) {
-  xTaskCreate(wifi_watchdog_task, "net_wdog", 2048, NULL, 1, NULL);
+  if (s_watchdog_task_created) {
+    return;
+  }
+
+  if (xTaskCreate(wifi_watchdog_task, "net_wdog", 2048, NULL, 1, NULL) ==
+      pdPASS) {
+    s_watchdog_task_created = true;
+  } else {
+    ESP_LOGE(TAG, "Failed to create Wi-Fi watchdog task");
+  }
 }
 
 // Replaces static void stop_wifi_retry_timer_best_effort(void) ...
@@ -191,6 +206,31 @@ static void initialize_sntp(void) {
   esp_sntp_init();
 }
 
+static esp_err_t start_wifi_station_if_provisioned(void) {
+  if (!has_credentials) {
+    ESP_LOGW(TAG, "Wi-Fi credentials missing, station start skipped");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (s_wifi_started) {
+    return ESP_OK;
+  }
+
+  esp_err_t err = esp_wifi_start();
+  if (err == ESP_ERR_WIFI_CONN) {
+    s_wifi_started = true;
+    return ESP_OK; // Already started
+  }
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  s_wifi_started = true;
+  return ESP_OK;
+}
+
 static void schedule_wifi_retry(uint32_t delay_ms) {
   if (!has_credentials) {
     ESP_LOGW(TAG, "Wi-Fi credentials not set, waiting...");
@@ -213,12 +253,45 @@ static void schedule_wifi_retry(uint32_t delay_ms) {
   }
 }
 
+static void wifi_provisioning_task(void *arg) {
+  (void)arg;
+  ESP_LOGI(TAG, "Provisioning: ouvrez Parametres -> Wi-Fi et saisissez les "
+               "identifiants.");
+  while (1) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (!has_credentials) {
+      continue;
+    }
+
+    ESP_LOGI(TAG, "Provisioning: credentials stored, starting STA bring-up");
+    esp_err_t start_err = start_wifi_station_if_provisioned();
+    if (start_err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to start Wi-Fi after provisioning: %s",
+               esp_err_to_name(start_err));
+      continue;
+    }
+
+    if (CONFIG_ARS_WIFI_AUTOCONNECT) {
+      ensure_wifi_retry_task();
+      ensure_watchdog_task();
+      schedule_wifi_retry(10);
+    } else {
+      ESP_LOGI(TAG,
+               "Autoconnect disabled; waiting for manual connection request");
+    }
+  }
+}
+
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     ESP_LOGI(TAG, "Wi-Fi STA start");
     if (!has_credentials) {
       ESP_LOGW(TAG, "WiFi not provisioned, STA connect skipped");
+      return;
+    }
+    if (!CONFIG_ARS_WIFI_AUTOCONNECT) {
+      ESP_LOGI(TAG, "Wi-Fi autoconnect disabled; waiting for manual connect");
       return;
     }
     esp_err_t err = esp_wifi_connect();
@@ -239,14 +312,18 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     wifi_event_sta_disconnected_t *disc =
         (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%d).", disc ? disc->reason : -1);
-    // Exponential backoff capped at 30s
-    if (s_wifi_backoff_ms < WIFI_RETRY_BACKOFF_MAX_MS) {
-      uint32_t next_backoff = s_wifi_backoff_ms * 2;
-      s_wifi_backoff_ms = next_backoff > WIFI_RETRY_BACKOFF_MAX_MS
-                              ? WIFI_RETRY_BACKOFF_MAX_MS
-                              : next_backoff;
+    if (CONFIG_ARS_WIFI_AUTOCONNECT) {
+      // Exponential backoff capped at 30s
+      if (s_wifi_backoff_ms < WIFI_RETRY_BACKOFF_MAX_MS) {
+        uint32_t next_backoff = s_wifi_backoff_ms * 2;
+        s_wifi_backoff_ms = next_backoff > WIFI_RETRY_BACKOFF_MAX_MS
+                                ? WIFI_RETRY_BACKOFF_MAX_MS
+                                : next_backoff;
+      }
+      schedule_wifi_retry(s_wifi_backoff_ms);
+    } else {
+      ESP_LOGW(TAG, "Autoconnect disabled; manual reconnection required");
     }
-    schedule_wifi_retry(s_wifi_backoff_ms);
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     // Update Status
@@ -330,6 +407,9 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
 
   size_t ssid_len = strlen(ssid);
   size_t pass_len = strlen(password);
+  if (ssid_len == 0 || pass_len == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
   if (ssid_len >= sizeof(((wifi_config_t *)0)->sta.ssid) ||
       pass_len >= sizeof(((wifi_config_t *)0)->sta.password)) {
     return ESP_ERR_INVALID_ARG;
@@ -363,7 +443,23 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
   if (err == ESP_OK) {
     has_credentials = true;
     s_wifi_backoff_ms = 1000;
-    schedule_wifi_retry(10);
+    esp_err_t start_err = start_wifi_station_if_provisioned();
+    if (start_err == ESP_OK && CONFIG_ARS_WIFI_AUTOCONNECT) {
+      ensure_wifi_retry_task();
+      ensure_watchdog_task();
+      if (!s_wifi_provisioning_task) {
+        schedule_wifi_retry(10);
+      }
+    } else if (start_err == ESP_OK) {
+      esp_err_t connect_err = esp_wifi_connect();
+      if (connect_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_connect (manual) failed: %s",
+                 esp_err_to_name(connect_err));
+      }
+    }
+    if (s_wifi_provisioning_task) {
+      xTaskNotifyGive(s_wifi_provisioning_task);
+    }
   }
   return err;
 }
@@ -447,9 +543,9 @@ esp_err_t net_init(void) {
       has_credentials = false;
     }
   } else {
-    // FIX C: Log clear message + UI will be triggered by main
-    ESP_LOGI(TAG,
-             "Wi-Fi not provisioned. Waiting for user configuration via UI.");
+    // Provisioning mode: show clear instructions for the UI flow
+    ESP_LOGI(TAG, "Wi-Fi not provisioned. UI -> Parametres -> Wi-Fi pour saisir "
+                 "SSID/Mot de passe. Provisioning task waiting...");
   }
 
   err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
@@ -466,16 +562,21 @@ esp_err_t net_init(void) {
     return err;
   }
 
-  // FIX C: Only start Wi-Fi if we have credentials or user explicitly wants it
-  // up (e.g. for scanning) But spec says: "Si SSID vide: ne pas tenter
-  // esp_wifi_connect, log unique..." We will start Wi-Fi generally to allow
-  // manual connect later, but suppress auto-connect logic in event handler.
+  // Start Wi-Fi only when provisioned; otherwise stay idle and wait for
+  // provisioning task notification to avoid blind connection attempts.
 
-  ESP_LOGI(TAG, "Starting Wi-Fi station...");
-  err = esp_wifi_start();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
-    return err;
+  if (has_credentials) {
+    ESP_LOGI(TAG, "Starting Wi-Fi station (provisioned path)...");
+    err = start_wifi_station_if_provisioned();
+    if (err != ESP_OK) {
+      return err;
+    }
+  } else if (!s_wifi_provisioning_task) {
+    BaseType_t task_ok = xTaskCreate(wifi_provisioning_task, "wifi_prov", 4096,
+                                     NULL, 4, &s_wifi_provisioning_task);
+    if (task_ok != pdPASS) {
+      ESP_LOGE(TAG, "Failed to start Wi-Fi provisioning task");
+    }
   }
 
   // FIX C: Check Autoconnect config

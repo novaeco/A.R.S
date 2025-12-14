@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync system clock to avoid future build timestamps
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ntpdate
+          if ! sudo ntpdate -u pool.ntp.org; then
+            echo "[warn] ntpdate failed, falling back to HTTPS Date header"
+            date_hdr=$(curl -sI https://google.com | grep -i '^date:' | cut -d' ' -f2-)
+            if [ -n "$date_hdr" ]; then
+              sudo date -u -s "$date_hdr"
+            else
+              echo "[warn] Unable to retrieve Date header; proceeding with existing clock"
+            fi
+          fi
+          date -u
+
+      - name: ESP-IDF build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3
+          target: esp32s3
+          path: .
+          command: |
+            idf.py set-target esp32s3
+            idf.py reconfigure
+            idf.py build
+            idf.py size

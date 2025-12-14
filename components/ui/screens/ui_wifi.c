@@ -26,6 +26,11 @@ static void event_connect_handler(lv_event_t *e) {
     return;
   }
 
+  if (strlen(pass) == 0) {
+    ESP_LOGW(TAG, "Password is empty, provisioning will wait for credentials");
+    return;
+  }
+
   ESP_LOGI(TAG, "Connecting to SSID: %s", ssid);
   // Call Net Manager to start Wi-Fi
   net_connect(ssid, pass);
@@ -92,6 +97,15 @@ void ui_create_screen_wifi(void) {
   ui_ScreenWifi = lv_obj_create(NULL);
   ui_theme_apply(ui_ScreenWifi);
   lv_obj_clear_flag(ui_ScreenWifi, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *lbl_hint = lv_label_create(ui_ScreenWifi);
+  lv_label_set_text(lbl_hint, "Renseignez le SSID et le mot de passe puis "
+                              "appuyez sur 'Connect'.\nL'appareil reste en "
+                              "attente proprement tant qu'aucun identifiant n"
+                              "'est fourni.");
+  lv_label_set_long_mode(lbl_hint, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(lbl_hint, 420);
+  lv_obj_align(lbl_hint, LV_ALIGN_TOP_LEFT, 20, 20);
 
   // Header Helper
   ui_helper_create_header(ui_ScreenWifi, "Wi-Fi Settings", back_event_cb,
