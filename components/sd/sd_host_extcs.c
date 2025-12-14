@@ -11,17 +11,37 @@
 #include "sdkconfig.h" // Crucial for CONFIG_ARS defines
 #include <inttypes.h>
 #include <rom/ets_sys.h>
+#include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#define SD_EXTCS_INIT_FREQ_KHZ 400
-#define SD_EXTCS_TARGET_FREQ_KHZ 20000
+#ifndef CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
+#define CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ 200
+#endif
+
+#ifndef CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
+#define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 20000
+#endif
+
+#define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
+#define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
 #define SD_EXTCS_CMD0_RETRIES 5
-#define SD_EXTCS_CMD0_BACKOFF_MS 20
+#define SD_EXTCS_CMD0_BACKOFF_MS 8
+#define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 16
+#define SD_EXTCS_CMD0_CS_SETUP_US 80
+#define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 
 static const char *TAG = "sd_extcs";
+
+typedef enum {
+  SD_EXTCS_STATE_UNINITIALIZED = 0,
+  SD_EXTCS_STATE_IDLE_READY,
+  SD_EXTCS_STATE_ABSENT,
+  SD_EXTCS_STATE_INIT_FAIL,
+} sd_extcs_state_t;
 
 // --- Internal State ---
 static spi_host_device_t s_host_id = SPI2_HOST;
@@ -31,6 +51,9 @@ static spi_device_handle_t s_cleanup_handle = NULL;
 static uint32_t s_active_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
 static bool s_ioext_ready = false;
 static int s_cs_level = -1; // -1 = unknown, 0 = asserted (LOW), 1 = deasserted (HIGH)
+static i2c_master_dev_handle_t s_ioext_handle = NULL;
+static SemaphoreHandle_t s_sd_mutex = NULL;
+static sd_extcs_state_t s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
 
 // Pointer to original implementation
 static esp_err_t (*s_original_do_transaction)(int slot,
@@ -41,10 +64,51 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        TickType_t timeout_ticks);
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
+static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff);
+static inline bool sd_extcs_lock(void);
+static inline void sd_extcs_unlock(void);
+const char *sd_extcs_state_str(sd_extcs_state_t state);
 
 // --- GPIO Helpers ---
+static esp_err_t sd_extcs_ensure_mutex(void) {
+  if (!s_sd_mutex) {
+    s_sd_mutex = xSemaphoreCreateRecursiveMutex();
+  }
+  return s_sd_mutex ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+static inline bool sd_extcs_lock(void) {
+  if (sd_extcs_ensure_mutex() != ESP_OK)
+    return false;
+  return xSemaphoreTakeRecursive(s_sd_mutex, SD_EXTCS_CS_LOCK_TIMEOUT) == pdTRUE;
+}
+
+static inline void sd_extcs_unlock(void) {
+  if (s_sd_mutex)
+    xSemaphoreGiveRecursive(s_sd_mutex);
+}
+
+const char *sd_extcs_state_str(sd_extcs_state_t state) {
+  switch (state) {
+  case SD_EXTCS_STATE_IDLE_READY:
+    return "IDLE_READY";
+  case SD_EXTCS_STATE_ABSENT:
+    return "ABSENT";
+  case SD_EXTCS_STATE_INIT_FAIL:
+    return "INIT_FAIL";
+  default:
+    return "UNINITIALIZED";
+  }
+}
+
 // --- GPIO Helpers ---
 static esp_err_t sd_extcs_set_cs(bool asserted) {
+  if (!s_ioext_ready || s_ioext_handle == NULL) {
+    ESP_LOGE(TAG, "CS %s failed: IO expander not ready", asserted ? "assert" :
+                                                           "deassert");
+    return ESP_ERR_INVALID_STATE;
+  }
+
   // IO4: 0 = Low (Assert), 1 = High (Deassert)
   const int desired_level = asserted ? 0 : 1;
   if (s_cs_level == desired_level) {
@@ -65,6 +129,8 @@ static esp_err_t sd_extcs_set_cs(bool asserted) {
 static void sd_extcs_send_dummy_clocks(size_t byte_count) {
   if (!s_cleanup_handle)
     return;
+  if (!sd_extcs_lock())
+    return;
 
   uint8_t dummy = 0xFF;
   for (size_t i = 0; i < byte_count; ++i) {
@@ -75,15 +141,20 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     };
     spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
   }
+  sd_extcs_unlock();
 }
 
 static esp_err_t sd_extcs_probe_cs_line(void) {
   // Toggle CS via the IO extender and read back level to ensure the IO path is
   // alive. This catches the "CS stuck high" hardware fault that makes CMD0
   // always return 0xFF.
+  if (!sd_extcs_lock())
+    return ESP_ERR_TIMEOUT;
+
   esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "CS probe: failed to set high: %s", esp_err_to_name(err));
+    sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
@@ -92,6 +163,7 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 0);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "CS probe: failed to set low: %s", esp_err_to_name(err));
+    sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
@@ -99,6 +171,7 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
 
   // Restore idle high
   IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
+  sd_extcs_unlock();
 
   if (level_high == level_low) {
     ESP_LOGE(TAG,
@@ -133,11 +206,138 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
   return (rx == 0xFF) ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
+static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
+  if (card_idle)
+    *card_idle = false;
+  if (saw_non_ff)
+    *saw_non_ff = false;
+
+  if (!s_cleanup_handle)
+    return ESP_ERR_INVALID_STATE;
+  if (!sd_extcs_lock())
+    return ESP_ERR_TIMEOUT;
+
+  // Force SPI mode: CS high then >=80 clocks
+  sd_extcs_set_cs(false);
+  vTaskDelay(pdMS_TO_TICKS(2));
+  sd_extcs_send_dummy_clocks(10);
+
+  bool idle_seen = false;
+  bool saw_data = false;
+  esp_err_t last_err = ESP_ERR_TIMEOUT;
+
+  for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
+    uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
+    uint8_t raw[SD_EXTCS_CMD0_RESP_WINDOW_BYTES] = {0};
+    size_t raw_len = 0;
+    bool valid_r1 = false;
+    uint8_t r1 = 0xFF;
+    bool invalid_bit7 = false;
+
+    esp_err_t err = sd_extcs_set_cs(true);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "CMD0 try %d/%d: CS assert failed: %s", attempt + 1,
+               SD_EXTCS_CMD0_RETRIES, esp_err_to_name(err));
+      last_err = err;
+      sd_extcs_unlock();
+      return err;
+    }
+
+    ets_delay_us(SD_EXTCS_CMD0_CS_SETUP_US);
+
+    spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
+    err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "CMD0 try %d/%d TX failed: %s", attempt + 1,
+               SD_EXTCS_CMD0_RETRIES, esp_err_to_name(err));
+      last_err = err;
+      sd_extcs_set_cs(false);
+      sd_extcs_send_dummy_clocks(1);
+      vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
+      continue;
+    }
+
+    for (size_t i = 0; i < SD_EXTCS_CMD0_RESP_WINDOW_BYTES; ++i) {
+      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+      err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
+      if (err != ESP_OK)
+        break;
+
+      uint8_t byte = t_rx.rx_data[0];
+      raw[raw_len++] = byte;
+      if (byte != 0xFF)
+        saw_data = true;
+      if ((byte & 0x80) != 0) {
+        invalid_bit7 = true;
+        continue; // Not a valid R1 byte
+      }
+      r1 = byte;
+      valid_r1 = true;
+      break;
+    }
+
+    sd_extcs_send_dummy_clocks(1);
+    sd_extcs_set_cs(false);
+
+    char dump[SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3 + 1];
+    size_t idx = 0;
+    for (size_t i = 0; i < raw_len; ++i) {
+      idx += snprintf(dump + idx, sizeof(dump) - idx, " %02X", raw[i]);
+      if (idx >= sizeof(dump))
+        break;
+    }
+    dump[sizeof(dump) - 1] = '\0';
+
+    char result_str[48];
+    if (valid_r1) {
+      snprintf(result_str, sizeof(result_str), "R1=0x%02X (%s)%s", r1,
+               r1 == 0x01 ? "idle" : "not idle",
+               invalid_bit7 ? " invalid-bit7" : "");
+    } else if (invalid_bit7) {
+      snprintf(result_str, sizeof(result_str), "invalid-bit7 raw=%s",
+               idx ? dump : "<ff>");
+    } else {
+      snprintf(result_str, sizeof(result_str), "timeout raw=%s",
+               idx ? dump : "<ff>");
+    }
+
+    if (CONFIG_ARS_SD_EXTCS_DEBUG_CMD0) {
+      ESP_LOGI(TAG,
+               "CMD0 try %d/%d @%u kHz cs_setup=%u us raw[%zu]=%s -> %s",
+               attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
+               SD_EXTCS_CMD0_CS_SETUP_US, raw_len, idx ? dump : " <none>",
+               result_str);
+    } else {
+      ESP_LOGI(TAG, "CMD0 try %d/%d -> %s", attempt + 1,
+               SD_EXTCS_CMD0_RETRIES, result_str);
+    }
+
+    if (valid_r1 && r1 == 0x01) {
+      idle_seen = true;
+      last_err = ESP_OK;
+      break;
+    }
+
+    last_err = valid_r1 ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_TIMEOUT;
+    vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
+  }
+
+  if (card_idle)
+    *card_idle = idle_seen;
+  if (saw_non_ff)
+    *saw_non_ff = saw_data;
+
+  sd_extcs_unlock();
+  return last_err;
+}
+
 static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
                                        TickType_t timeout_ticks) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
+  if (!sd_extcs_lock())
+    return ESP_ERR_TIMEOUT;
 
   uint8_t frame[6];
   frame[0] = 0x40 | (cmd & 0x3F);
@@ -151,6 +351,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CS Assert failed before CMD%u: %s", cmd,
              esp_err_to_name(err));
+    sd_extcs_unlock();
     return err;
   }
 
@@ -162,6 +363,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     ESP_LOGW(TAG, "CMD%u TX failed: %s", cmd, esp_err_to_name(err));
     sd_extcs_set_cs(false);
     sd_extcs_send_dummy_clocks(1);
+    sd_extcs_unlock();
     return err;
   }
 
@@ -191,6 +393,8 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   sd_extcs_send_dummy_clocks(1);
   ets_delay_us(2);
 
+  sd_extcs_unlock();
+
   return err;
 }
 
@@ -203,11 +407,15 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
 #endif
 
   // 1. Assert CS
+  if (!sd_extcs_lock())
+    return ESP_ERR_TIMEOUT;
+
   esp_err_t ret = sd_extcs_set_cs(true);
   if (ret != ESP_OK) {
     // If CS fails (e.g. I2C timeout), we can't trust the transaction.
     // But we must return an error compatible with storage stack.
     ESP_LOGW(TAG, "CS Assert Failed: %s", esp_err_to_name(ret));
+    sd_extcs_unlock();
     return ESP_ERR_TIMEOUT;
   }
 
@@ -240,6 +448,8 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
            s_active_freq_khz, esp_err_to_name(ret));
 #endif
 
+  sd_extcs_unlock();
+
   return ret;
 }
 
@@ -249,33 +459,22 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   s_active_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
   ESP_LOGI(TAG, "Low-speed init at %u kHz", s_active_freq_khz);
 
-  // Provide 80 clocks with CS high to force SPI mode
-  sd_extcs_set_cs(false);
-  vTaskDelay(pdMS_TO_TICKS(2));
-  sd_extcs_send_dummy_clocks(10);
-  ESP_LOGD(TAG, "Sent 80 dummy clocks with CS high before CMD0");
+  bool card_idle = false;
+  bool saw_non_ff = false;
+  esp_err_t err = sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff);
+  if (!card_idle) {
+    s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
+                               : SD_EXTCS_STATE_ABSENT;
+    ESP_LOGW(TAG, "CMD0 failed: state=%s err=%s (saw_non_ff=%d)",
+             s_extcs_state_str(s_extcs_state), esp_err_to_name(err),
+             saw_non_ff);
+    return saw_non_ff ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
+  }
 
-  // CMD0: go idle
+  s_extcs_state = SD_EXTCS_STATE_IDLE_READY;
+  ESP_LOGI(TAG, "CMD0: Card entered idle state (R1=0x01)");
+
   uint8_t resp_r1 = 0xFF;
-  esp_err_t err = ESP_FAIL;
-  for (int i = 0; i < SD_EXTCS_CMD0_RETRIES; ++i) {
-    err = sd_extcs_send_command(0, 0x00000000, 0x95, &resp_r1, 1,
-                                SD_EXTCS_CMD_TIMEOUT_TICKS);
-    ESP_LOGI(TAG, "CMD0 try %d/%d -> resp=0x%02X err=%s", i + 1,
-             SD_EXTCS_CMD0_RETRIES, resp_r1, esp_err_to_name(err));
-    if (err == ESP_OK && resp_r1 == 0x01)
-      break;
-    // Add extra clocks and longer settle to catch slow CS/power-up paths
-    sd_extcs_send_dummy_clocks(2);
-    vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
-  }
-  if (resp_r1 != 0x01) {
-    ESP_LOGW(TAG,
-             "CMD0 failed (resp=0x%02X). Insert SD card or check wiring.",
-             resp_r1);
-    return ESP_ERR_TIMEOUT;
-  }
-  ESP_LOGI(TAG, "CMD0: Card entered idle state (R1=0x%02X)", resp_r1);
 
   // CMD8: check voltage range
   uint8_t resp_r7[5] = {0};
@@ -329,6 +528,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   if (!card_ready) {
     ESP_LOGE(TAG,
              "ACMD41 timeout. SD card not ready. Insert card or verify cabling.");
+    s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
     return ESP_ERR_TIMEOUT;
   }
   ESP_LOGI(TAG, "ACMD41 completed in %d attempt(s), card ready", acmd41_attempts);
@@ -341,6 +541,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     ESP_LOGE(TAG,
              "CMD58 failed (resp=0x%02X). Insert SD card or check wiring.",
              resp_r3[0]);
+    s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
     return ESP_ERR_TIMEOUT;
   }
 
@@ -363,6 +564,8 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   ESP_LOGI(TAG, "Mounting SD (SDSPI ext-CS) init=%u kHz target=%u kHz",\
            SD_EXTCS_INIT_FREQ_KHZ, SD_EXTCS_TARGET_FREQ_KHZ);
 
+  s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
+
 #if CONFIG_ARS_SD_SDMMC_DEBUG_LOG
   esp_log_level_set("sdspi_host", ESP_LOG_DEBUG);
   esp_log_level_set("sdmmc_common", ESP_LOG_DEBUG);
@@ -370,19 +573,26 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 #endif
 
   // 1. IO Init (Safe-Fail)
+  sd_extcs_ensure_mutex();
   if (!s_ioext_ready) {
-    ret = IO_EXTENSION_Init();
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "SD: ExtCS Mode unavailable (IOEXT Init Failed): %s",
-               esp_err_to_name(ret));
-      return ESP_FAIL;
+    if (IO_EXTENSION_Is_Initialized()) {
+      s_ioext_handle = IO_EXTENSION_Get_Handle();
+      s_ioext_ready = s_ioext_handle != NULL;
     }
-    IO_EXTENSION_IO_Mode(0xFF); // ensure outputs (push-pull)
-    s_ioext_ready = true;
-    ESP_LOGI(TAG, "IO extension ready for SD CS control");
   }
+  if (!s_ioext_ready) {
+    ESP_LOGE(TAG, "SD: ExtCS Mode unavailable (IOEXT not initialized)");
+    s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
+    return ESP_ERR_INVALID_STATE;
+  }
+  IO_EXTENSION_IO_Mode(0xFF); // ensure outputs (push-pull)
   s_cs_level = -1;
-  sd_extcs_set_cs(false);
+  if (sd_extcs_lock()) {
+    sd_extcs_set_cs(false);
+    sd_extcs_unlock();
+  } else {
+    return ESP_ERR_TIMEOUT;
+  }
   vTaskDelay(pdMS_TO_TICKS(10));
 
   ret = sd_extcs_probe_cs_line();
@@ -477,6 +687,8 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     ESP_LOGE(TAG, "Mount Failed: %s. Insert SD card or verify wiring.",
              esp_err_to_name(ret));
     s_card = NULL;
+    if (s_extcs_state == SD_EXTCS_STATE_IDLE_READY)
+      s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
   }
 
   return ret;
@@ -506,3 +718,13 @@ esp_err_t sd_extcs_unmount_card(const char *mount_point) {
 }
 
 sdmmc_card_t *sd_extcs_get_card_handle(void) { return s_card; }
+
+esp_err_t sd_extcs_register_io_extender(i2c_master_dev_handle_t handle) {
+  if (handle == NULL)
+    return ESP_ERR_INVALID_ARG;
+  s_ioext_handle = handle;
+  s_ioext_ready = true;
+  return sd_extcs_ensure_mutex();
+}
+
+sd_extcs_state_t sd_extcs_get_state(void) { return s_extcs_state; }

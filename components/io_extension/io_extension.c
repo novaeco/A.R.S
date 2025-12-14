@@ -28,6 +28,7 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
 #include "esp_log.h"
 
 static const char *TAG = "io_ext";
+static bool s_ioext_initialized = false;
 
 /**
  * @brief Set the IO mode for the specified pins.
@@ -55,6 +56,10 @@ void IO_EXTENSION_IO_Mode(uint8_t pin) {
  * IO_EXTENSION chip via I2C, and sets the control flags for input/output modes.
  */
 esp_err_t IO_EXTENSION_Init() {
+  if (s_ioext_initialized) {
+    return ESP_OK;
+  }
+
   // Set the I2C slave address for the IO_EXTENSION device
   DEV_I2C_Set_Slave_Addr(&IO_EXTENSION.addr, IO_EXTENSION_ADDR);
 
@@ -74,6 +79,7 @@ esp_err_t IO_EXTENSION_Init() {
       0xFF; // All pins are initially set to high (output mode)
   IO_EXTENSION.Last_od_value =
       0xFF; // All pins are initially set to high (open-drain mode)
+  s_ioext_initialized = true;
   return ESP_OK;
 }
 
@@ -160,4 +166,10 @@ uint16_t IO_EXTENSION_Adc_Input() {
   // Read the ADC input value from the IO_EXTENSION device
   DEV_I2C_Read_Word(IO_EXTENSION.addr, IO_EXTENSION_ADC_ADDR, &value);
   return value;
+}
+
+bool IO_EXTENSION_Is_Initialized(void) { return s_ioext_initialized; }
+
+i2c_master_dev_handle_t IO_EXTENSION_Get_Handle(void) {
+  return IO_EXTENSION.addr;
 }

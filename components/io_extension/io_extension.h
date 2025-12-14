@@ -63,5 +63,7 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value);     // Set IO pin out
 uint8_t IO_EXTENSION_Input(uint8_t pin);   // Read IO pin input state
 esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value);
 uint16_t IO_EXTENSION_Adc_Input();
+bool IO_EXTENSION_Is_Initialized(void);
+i2c_master_dev_handle_t IO_EXTENSION_Get_Handle(void);
 
 #endif  // __IO_EXTENSION_H

@@ -22,17 +22,28 @@ static void sd_set_state(sd_state_t new_state) {
 esp_err_t sd_card_init() {
   ESP_LOGI(TAG, "Initializing SD (ExtCS Mode)...");
 
-  esp_err_t ret = sd_extcs_mount_card(MOUNT_POINT, 5);
+  esp_err_t ret = sd_extcs_register_io_extender(IO_EXTENSION_Get_Handle());
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "SD IOEXT registration failed: %s", esp_err_to_name(ret));
+    sd_set_state(SD_STATE_INIT_FAIL);
+    return ret;
+  }
+
+  ret = sd_extcs_mount_card(MOUNT_POINT, 5);
+  sd_extcs_state_t ext_state = sd_extcs_get_state();
   if (ret == ESP_OK) {
     card = sd_extcs_get_card_handle();
     sd_set_state(SD_STATE_INIT_OK);
-  } else if (ret == ESP_ERR_TIMEOUT) {
+  } else if (ext_state == SD_EXTCS_STATE_ABSENT) {
     sd_set_state(SD_STATE_ABSENT);
-  } else if (ret == ESP_FAIL) {
+  } else if (ext_state == SD_EXTCS_STATE_INIT_FAIL) {
     sd_set_state(SD_STATE_INIT_FAIL);
   } else {
     sd_set_state(SD_STATE_MOUNT_FAIL);
   }
+  ESP_LOGI(TAG, "SD init result: state=%s extcs=%s ret=%s",
+           sd_state_str(s_state), sd_extcs_state_str(ext_state),
+           esp_err_to_name(ret));
   return ret;
 }
 
@@ -56,6 +67,8 @@ esp_err_t sd_card_retry_mount(void) {
   }
   return sd_card_init();
 }
+
+esp_err_t sd_retry_mount(void) { return sd_card_retry_mount(); }
 
 esp_err_t read_sd_capacity(size_t *total_capacity, size_t *available_capacity) {
   FATFS *fs;

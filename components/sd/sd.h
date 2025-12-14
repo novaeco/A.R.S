@@ -57,6 +57,7 @@ esp_err_t sd_card_init();
 
 // Retry mount (unmounts first if already mounted)
 esp_err_t sd_card_retry_mount(void);
+esp_err_t sd_retry_mount(void);
 
 /**
  * @brief Unmount the SD card and release resources.
