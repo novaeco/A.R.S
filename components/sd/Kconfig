@@ -41,6 +41,21 @@ menu "SD Card Configuration"
         int "SD SPI SCK GPIO"
         default 12
 
+    config ARS_SD_EXTCS_INIT_FREQ_KHZ
+        int "SDSPI init frequency (kHz)"
+        default 200
+        range 100 1000
+        help
+            SPI clock during CMD0/CMD8/ACMD41 when using external CS.
+            Use conservative values (100-400kHz) for noisy boards or slow CS paths.
+
+    config ARS_SD_EXTCS_TARGET_FREQ_KHZ
+        int "SDSPI target frequency after init (kHz)"
+        default 20000
+        range 1000 40000
+        help
+            Target SPI clock after OCR is stable. Driver will clamp to card max.
+
     config ARS_SD_EXTCS_TIMING_LOG
         bool "Enable ExtCS SDSPI timing log"
         default n
@@ -48,6 +63,13 @@ menu "SD Card Configuration"
             Print detailed timing for every SDSPI transaction and current
             clock setting while using the External CS path. Disable for
             production to reduce log noise.
+
+    config ARS_SD_EXTCS_DEBUG_CMD0
+        bool "Verbose CMD0 debug dump"
+        default n
+        help
+            Log raw response windows and per-try diagnostics for CMD0 entry
+            (external CS mode). Enable only during hardware bring-up.
 
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"
