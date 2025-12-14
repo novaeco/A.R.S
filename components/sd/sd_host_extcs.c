@@ -4,6 +4,7 @@
 #include "driver/spi_master.h"
 #include "driver/sdspi_host.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "io_extension.h"
 #include "sd.h"
@@ -25,6 +26,7 @@ static spi_host_device_t s_host_id = SPI2_HOST;
 static sdmmc_card_t *s_card = NULL;
 static bool s_mounted = false;
 static spi_device_handle_t s_cleanup_handle = NULL;
+static uint32_t s_active_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
 
 // Pointer to original implementation
 static esp_err_t (*s_original_do_transaction)(int slot,
@@ -37,9 +39,14 @@ static esp_err_t sd_extcs_low_speed_init(void);
 
 // --- GPIO Helpers ---
 // --- GPIO Helpers ---
-static esp_err_t cs_set_level(bool level) {
+static esp_err_t sd_extcs_set_cs(bool asserted) {
   // IO4: 0 = Low (Assert), 1 = High (Deassert)
-  return IO_EXTENSION_Output(IO_EXTENSION_IO_4, level ? 1 : 0);
+  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, asserted ? 0 : 1);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CS %s failed: %s", asserted ? "assert" : "deassert",
+             esp_err_to_name(err));
+  }
+  return err;
 }
 
 static void sd_extcs_send_dummy_clocks(size_t byte_count) {
@@ -92,7 +99,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   frame[4] = arg & 0xFF;
   frame[5] = crc | 0x01; // end bit required
 
-  esp_err_t err = cs_set_level(false);
+  esp_err_t err = sd_extcs_set_cs(true);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CS Assert failed before CMD%u: %s", cmd,
              esp_err_to_name(err));
@@ -105,7 +112,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CMD%u TX failed: %s", cmd, esp_err_to_name(err));
-    cs_set_level(true);
+    sd_extcs_set_cs(false);
     sd_extcs_send_dummy_clocks(1);
     return err;
   }
@@ -129,16 +136,23 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     }
   }
 
-  cs_set_level(true);
+  sd_extcs_set_cs(false);
   sd_extcs_send_dummy_clocks(1);
+  ets_delay_us(2);
 
   return err;
 }
 
 // --- Transaction Wrapper ---
 static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
+  int64_t t_start_us = 0;
+
+#if CONFIG_ARS_SD_EXTCS_TIMING_LOG
+  t_start_us = esp_timer_get_time();
+#endif
+
   // 1. Assert CS
-  esp_err_t ret = cs_set_level(false);
+  esp_err_t ret = sd_extcs_set_cs(true);
   if (ret != ESP_OK) {
     // If CS fails (e.g. I2C timeout), we can't trust the transaction.
     // But we must return an error compatible with storage stack.
@@ -147,13 +161,13 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   }
 
   // Explicit setup time for manual CS
-  ets_delay_us(50);
+  ets_delay_us(4);
 
   // 2. Delegate to standard SDSPI implementation
   ret = s_original_do_transaction(slot, cmdinfo);
 
   // 3. Deassert CS
-  cs_set_level(true); // Best effort deassert
+  sd_extcs_set_cs(false); // Best effort deassert
 
   // 4. Dummy Clocks (8 cycles)
   if (s_cleanup_handle) {
@@ -163,6 +177,17 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
         .length = 8, .tx_buffer = &dummy, .rx_buffer = NULL};
     spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
   }
+  ets_delay_us(2);
+
+#if CONFIG_ARS_SD_EXTCS_TIMING_LOG
+  const uint8_t opcode = cmdinfo ? cmdinfo->opcode : 0xFF;
+  const int64_t duration_us = esp_timer_get_time() - t_start_us;
+  ESP_LOGI(TAG,
+           "CMD%u done in %" PRId64
+           " us (len=%d, freq=%u kHz, ret=%s)",
+           opcode, duration_us, cmdinfo ? cmdinfo->datalen : 0,
+           s_active_freq_khz, esp_err_to_name(ret));
+#endif
 
   return ret;
 }
@@ -171,7 +196,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
 
   // Provide 80 clocks with CS high to force SPI mode
-  cs_set_level(true);
+  sd_extcs_set_cs(false);
   vTaskDelay(pdMS_TO_TICKS(2));
   sd_extcs_send_dummy_clocks(10);
 
@@ -276,7 +301,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
              "SD: ExtCS Mode unavailable (IOEXT Init Failed). Aborting SD.");
     return ESP_FAIL;
   }
-  cs_set_level(true);
+  sd_extcs_set_cs(false);
   vTaskDelay(pdMS_TO_TICKS(10));
 
   // 2. SPI Bus Init
@@ -294,6 +319,10 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     ESP_LOGE(TAG, "SPI Bus Init Failed: %s", esp_err_to_name(ret));
     return ret;
   }
+
+  ESP_LOGI(TAG, "SDSPI pins: MISO=%d MOSI=%d SCK=%d CS=IOEXT%d (active-low)",
+           CONFIG_ARS_SD_MISO, CONFIG_ARS_SD_MOSI, CONFIG_ARS_SD_SCK,
+           IO_EXTENSION_IO_4);
 
   // 3. Cleanup Device
   if (!s_cleanup_handle) {
@@ -340,6 +369,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   if (ret == ESP_OK) {
     s_mounted = true;
+    s_active_freq_khz = host.max_freq_khz;
     // Verify user can read simple stats
     sdmmc_card_print_info(stdout, s_card);
 
@@ -351,6 +381,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     esp_err_t clk_ret = sdspi_host_set_card_clk(s_host_id, target_khz);
     if (clk_ret == ESP_OK) {
       ESP_LOGI(TAG, "Raised SD SPI clock to %u kHz", target_khz);
+      s_active_freq_khz = target_khz;
     } else {
       ESP_LOGW(TAG, "Failed to raise SD SPI clock: %s", esp_err_to_name(clk_ret));
     }
