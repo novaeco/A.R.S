@@ -36,6 +36,9 @@
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
 #define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 16
 #define SD_EXTCS_CMD0_CS_SETUP_US 80
+#define SD_EXTCS_CMD0_EXTRA_CLKS_BYTES 12
+#define SD_EXTCS_CS_ASSERT_SETTLE_US 40
+#define SD_EXTCS_CS_DEASSERT_SETTLE_US 10
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 
 static const char *TAG = "sd_extcs";
@@ -216,12 +219,23 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
   // Force SPI mode: CS high then >=80 clocks
   sd_extcs_set_cs(false);
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   vTaskDelay(pdMS_TO_TICKS(2));
-  sd_extcs_send_dummy_clocks(10);
+  sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
 
   bool idle_seen = false;
   bool saw_data = false;
   esp_err_t last_err = ESP_ERR_TIMEOUT;
+  enum {
+    CMD0_DUMP_LEN = SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3 + 1,
+    CMD0_RESULT_LEN = CMD0_DUMP_LEN + 32,
+  };
+  char last_dump[CMD0_DUMP_LEN];
+  last_dump[0] = '\0';
+  char last_result[CMD0_RESULT_LEN];
+  last_result[0] = '\0';
+  uint8_t last_r1 = 0xFF;
+  bool last_r1_valid = false;
 
   for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
     uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
@@ -240,6 +254,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
       return err;
     }
 
+    ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
     ets_delay_us(SD_EXTCS_CMD0_CS_SETUP_US);
 
     spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
@@ -249,6 +264,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
                SD_EXTCS_CMD0_RETRIES, esp_err_to_name(err));
       last_err = err;
       sd_extcs_set_cs(false);
+      ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
       sd_extcs_send_dummy_clocks(1);
       vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
       continue;
@@ -275,8 +291,9 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
     sd_extcs_send_dummy_clocks(1);
     sd_extcs_set_cs(false);
+    ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
-    char dump[SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3 + 1];
+    char dump[CMD0_DUMP_LEN];
     size_t idx = 0;
     for (size_t i = 0; i < raw_len; ++i) {
       idx += snprintf(dump + idx, sizeof(dump) - idx, " %02X", raw[i]);
@@ -285,16 +302,17 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     }
     dump[sizeof(dump) - 1] = '\0';
 
-    char result_str[48];
+    const int max_raw = (int)sizeof(dump) - 1;
+    char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
       snprintf(result_str, sizeof(result_str), "R1=0x%02X (%s)%s", r1,
                r1 == 0x01 ? "idle" : "not idle",
                invalid_bit7 ? " invalid-bit7" : "");
     } else if (invalid_bit7) {
-      snprintf(result_str, sizeof(result_str), "invalid-bit7 raw=%s",
-               idx ? dump : "<ff>");
+      snprintf(result_str, sizeof(result_str), "invalid-bit7 raw=%.*s",
+               max_raw, idx ? dump : "<ff>");
     } else {
-      snprintf(result_str, sizeof(result_str), "timeout raw=%s",
+      snprintf(result_str, sizeof(result_str), "timeout raw=%.*s", max_raw,
                idx ? dump : "<ff>");
     }
 
@@ -309,10 +327,26 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
                SD_EXTCS_CMD0_RETRIES, result_str);
     }
 
+    snprintf(last_result, sizeof(last_result), "%s", result_str);
+    snprintf(last_dump, sizeof(last_dump), "%.*s", max_raw,
+             idx ? dump : "<ff>");
+    last_r1 = r1;
+    last_r1_valid = valid_r1;
+
     if (valid_r1 && r1 == 0x01) {
       idle_seen = true;
       last_err = ESP_OK;
       break;
+    }
+
+    if (valid_r1 && r1 == 0x05) {
+      sd_extcs_set_cs(false);
+      ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+      sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
+      ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+      vTaskDelay(pdMS_TO_TICKS(1));
+      last_err = ESP_ERR_INVALID_RESPONSE;
+      continue;
     }
 
     last_err = valid_r1 ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_TIMEOUT;
@@ -323,6 +357,14 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     *card_idle = idle_seen;
   if (saw_non_ff)
     *saw_non_ff = saw_data;
+
+  if (!idle_seen) {
+    ESP_LOGW(TAG,
+             "CMD0 failed after %d tries (last_r1=0x%02X valid=%d saw_non_ff=%d raw=%.*s -> %s)",
+             SD_EXTCS_CMD0_RETRIES, last_r1, last_r1_valid, saw_data,
+             (int)sizeof(last_dump) - 1, last_dump[0] ? last_dump : "<none>",
+             last_result[0] ? last_result : "<none>");
+  }
 
   sd_extcs_unlock();
   return last_err;
@@ -352,7 +394,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     return err;
   }
 
-  ets_delay_us(5);
+  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
 
   spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
   err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
@@ -388,7 +430,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
 
   sd_extcs_set_cs(false);
   sd_extcs_send_dummy_clocks(1);
-  ets_delay_us(2);
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
   sd_extcs_unlock();
 
@@ -415,13 +457,14 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   }
 
   // Explicit setup time for manual CS
-  ets_delay_us(4);
+  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
 
   // 2. Delegate to standard SDSPI implementation
   ret = s_original_do_transaction(slot, cmdinfo);
 
   // 3. Deassert CS
   sd_extcs_set_cs(false); // Best effort deassert
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
   // 4. Dummy Clocks (8 cycles)
   if (s_cleanup_handle) {
