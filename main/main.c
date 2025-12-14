@@ -71,8 +71,12 @@ void app_main(void) {
   // 4. Initialize SD Card (Async-like, after UI is up)
   // This ensures a missing SD card doesn't block the UI from showing
   // ARS: Swapped to dedicated Waveshare component fix
-  if (sd_card_init() != ESP_OK) {
-    ESP_LOGW(TAG, "SD Card mounting failed or card not present");
+  esp_err_t sd_ret = sd_card_init();
+  if (sd_ret != ESP_OK) {
+    ESP_LOGW(TAG, "SD Card mounting failed or card not present (state=%s)",
+             sd_state_str(sd_get_state()));
+  } else {
+    ESP_LOGI(TAG, "SD Card state: %s", sd_state_str(sd_get_state()));
   }
 
   // 5. WiFi / Web Server Init

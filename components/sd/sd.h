@@ -35,6 +35,14 @@
 #define MOUNT_POINT "/sdcard"                // Mount point for SD card
 #define EXAMPLE_FORMAT_IF_MOUNT_FAILED false // Format SD card if mounting fails
 
+typedef enum {
+  SD_STATE_UNINITIALIZED = 0,
+  SD_STATE_INIT_OK,
+  SD_STATE_ABSENT,
+  SD_STATE_INIT_FAIL,
+  SD_STATE_MOUNT_FAIL,
+} sd_state_t;
+
 extern sdmmc_card_t *card;
 
 // Function declarations
@@ -46,6 +54,9 @@ extern sdmmc_card_t *card;
  * @retval ESP_FAIL if an error occurs.
  */
 esp_err_t sd_card_init();
+
+// Retry mount (unmounts first if already mounted)
+esp_err_t sd_card_retry_mount(void);
 
 /**
  * @brief Unmount the SD card and release resources.
@@ -63,6 +74,10 @@ esp_err_t sd_mmc_unmount();
  */
 void sd_card_print_info();
 
+// Get current SD state (mounted/absent/fail)
+sd_state_t sd_get_state(void);
+const char *sd_state_str(sd_state_t state);
+
 /**
  * @brief Get total and available memory capacity of the SD card.
  *
@@ -73,5 +88,8 @@ void sd_card_print_info();
  * @retval ESP_FAIL if an error occurs.
  */
 esp_err_t read_sd_capacity(size_t *total_capacity, size_t *available_capacity);
+
+// Optional self-test: card info, ls, write/read test file
+esp_err_t sd_card_self_test(void);
 
 #endif // __SD_H
