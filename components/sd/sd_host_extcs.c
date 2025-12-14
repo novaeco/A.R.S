@@ -1,13 +1,22 @@
 #include "sd_host_extcs.h"
+#include "driver/gpio.h"
 #include "driver/spi_common.h"
 #include "driver/spi_master.h"
+#include "driver/sdspi_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "io_extension.h"
 #include "sd.h"
 #include "sdkconfig.h" // Crucial for CONFIG_ARS defines
+#include <inttypes.h>
 #include <rom/ets_sys.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define SD_EXTCS_INIT_FREQ_KHZ 400
+#define SD_EXTCS_TARGET_FREQ_KHZ 20000
+#define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
 
 static const char *TAG = "sd_extcs";
 
@@ -21,11 +30,109 @@ static spi_device_handle_t s_cleanup_handle = NULL;
 static esp_err_t (*s_original_do_transaction)(int slot,
                                               sdmmc_command_t *cmdinfo) = NULL;
 
+static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
+                                       uint8_t *response, size_t response_len,
+                                       TickType_t timeout_ticks);
+static esp_err_t sd_extcs_low_speed_init(void);
+
 // --- GPIO Helpers ---
 // --- GPIO Helpers ---
 static esp_err_t cs_set_level(bool level) {
   // IO4: 0 = Low (Assert), 1 = High (Deassert)
   return IO_EXTENSION_Output(IO_EXTENSION_IO_4, level ? 1 : 0);
+}
+
+static void sd_extcs_send_dummy_clocks(size_t byte_count) {
+  if (!s_cleanup_handle)
+    return;
+
+  uint8_t dummy = 0xFF;
+  for (size_t i = 0; i < byte_count; ++i) {
+    spi_transaction_t t_cleanup = {
+        .length = 8,
+        .tx_buffer = &dummy,
+        .rx_buffer = NULL,
+    };
+    spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
+  }
+}
+
+static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
+  if (!s_cleanup_handle)
+    return ESP_ERR_INVALID_STATE;
+
+  TickType_t start = xTaskGetTickCount();
+  uint8_t rx = 0xFF;
+  do {
+    spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+    esp_err_t err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
+    if (err != ESP_OK)
+      return err;
+
+    rx = t_rx.rx_data[0];
+    if (rx != 0xFF)
+      break;
+  } while ((xTaskGetTickCount() - start) < timeout);
+
+  *out = rx;
+  return (rx == 0xFF) ? ESP_ERR_TIMEOUT : ESP_OK;
+}
+
+static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
+                                       uint8_t *response, size_t response_len,
+                                       TickType_t timeout_ticks) {
+  if (!s_cleanup_handle)
+    return ESP_ERR_INVALID_STATE;
+
+  uint8_t frame[6];
+  frame[0] = 0x40 | (cmd & 0x3F);
+  frame[1] = (arg >> 24) & 0xFF;
+  frame[2] = (arg >> 16) & 0xFF;
+  frame[3] = (arg >> 8) & 0xFF;
+  frame[4] = arg & 0xFF;
+  frame[5] = crc | 0x01; // end bit required
+
+  esp_err_t err = cs_set_level(false);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CS Assert failed before CMD%u: %s", cmd,
+             esp_err_to_name(err));
+    return err;
+  }
+
+  ets_delay_us(5);
+
+  spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
+  err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CMD%u TX failed: %s", cmd, esp_err_to_name(err));
+    cs_set_level(true);
+    sd_extcs_send_dummy_clocks(1);
+    return err;
+  }
+
+  uint8_t first_byte = 0xFF;
+  err = sd_extcs_wait_for_response(&first_byte, timeout_ticks);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CMD%u timeout waiting R1", cmd);
+  }
+
+  if (response && response_len > 0) {
+    response[0] = first_byte;
+    for (size_t i = 1; i < response_len; ++i) {
+      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
+      esp_err_t rx_err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
+      if (rx_err != ESP_OK) {
+        err = rx_err;
+        break;
+      }
+      response[i] = t_rx.rx_data[0];
+    }
+  }
+
+  cs_set_level(true);
+  sd_extcs_send_dummy_clocks(1);
+
+  return err;
 }
 
 // --- Transaction Wrapper ---
@@ -60,86 +167,98 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   return ret;
 }
 
-// --- Probe Helper (Diagnostic) ---
-static esp_err_t sd_extcs_probe(void) {
-  ESP_LOGI(TAG, "Probing SD Card (Strict Mode)...");
-
-  // Configure MISO pullup explicitly
+static esp_err_t sd_extcs_low_speed_init(void) {
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
 
-  if (!s_cleanup_handle)
-    return ESP_ERR_INVALID_STATE;
-
-  // 1. Strict Sequence: CS HIGH + 74 (80) Clocks
+  // Provide 80 clocks with CS high to force SPI mode
   cs_set_level(true);
-  vTaskDelay(pdMS_TO_TICKS(2)); // Allow stabilization
+  vTaskDelay(pdMS_TO_TICKS(2));
+  sd_extcs_send_dummy_clocks(10);
 
-  uint8_t dummy[10];
-  memset(dummy, 0xFF, sizeof(dummy));
-  spi_transaction_t t_wake = {.length = 80, .tx_buffer = dummy};
-  spi_device_polling_transmit(s_cleanup_handle, &t_wake);
-
-  // 2. CMD0 Loop
-  uint8_t cmd0[6] = {0x40, 0x00, 0x00, 0x00, 0x00, 0x95};
-  bool success = false;
-  uint8_t last_rx = 0xFF;
-
-  // Retry loop
-  for (int i = 0; i < 5; i++) {
-    esp_err_t err = cs_set_level(false);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Probe: CS Assert Error");
-      return err;
-    }
-    ets_delay_us(500); // Allow CS to settle
-
-    spi_transaction_t t_cmd = {.length = 48, .tx_buffer = cmd0};
-    spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
-
-    // Read response (R1 is 1 byte, but we read up to 8 to catch it)
-    for (int j = 0; j < 8; j++) {
-      uint8_t rx = 0xFF;
-      spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
-      spi_device_polling_transmit(s_cleanup_handle, &t_rx);
-      rx = t_rx.rx_data[0];
-      last_rx = rx;
-
-      if (rx != 0xFF) {
-        // R1 Idle = 0x01
-        if (rx == 0x01) {
-          success = true;
-          ESP_LOGI(TAG, "Probe: CMD0 Response 0x01 (OK)");
-        } else {
-          ESP_LOGW(TAG, "Probe: Invalid Response 0x%02X", rx);
-        }
-        break;
-      }
-    }
-
-    cs_set_level(true);
-    // 8 dummy clocks after CS High
-    spi_transaction_t t_dummy = {.length = 8, .tx_buffer = dummy};
-    spi_device_polling_transmit(s_cleanup_handle, &t_dummy);
-
-    if (success)
+  // CMD0: go idle
+  uint8_t resp_r1 = 0xFF;
+  esp_err_t err = ESP_FAIL;
+  for (int i = 0; i < 8; ++i) {
+    err = sd_extcs_send_command(0, 0x00000000, 0x95, &resp_r1, 1,
+                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+    if (err == ESP_OK && resp_r1 == 0x01)
       break;
-
-    // If we only saw 0xFF, MISO might be stuck high.
-    // If we saw 0x00 or garbage, logging happens above.
-    vTaskDelay(pdMS_TO_TICKS(20)); // Slower retry
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
-
-  if (success) {
-    return ESP_OK;
-  } else {
-    ESP_LOGE(TAG, "Probe: Failed. Last Byte=0x%02X", last_rx);
-    // Diagnostic hint
-    if (last_rx == 0xFF)
-      ESP_LOGW(TAG, "Hint: MISO stuck HIGH? Check Pullups/Connection.");
-    if (last_rx == 0x00)
-      ESP_LOGW(TAG, "Hint: MISO stuck LOW? Check Wiring.");
+  if (resp_r1 != 0x01) {
+    ESP_LOGW(TAG,
+             "CMD0 failed (resp=0x%02X). Insert SD card or check wiring.",
+             resp_r1);
     return ESP_ERR_TIMEOUT;
   }
+
+  // CMD8: check voltage range
+  uint8_t resp_r7[5] = {0};
+  err = sd_extcs_send_command(8, 0x000001AA, 0x87, resp_r7, sizeof(resp_r7),
+                              SD_EXTCS_CMD_TIMEOUT_TICKS);
+  bool sdhc_candidate = false;
+  if (err == ESP_OK && resp_r7[0] == 0x01) {
+    uint32_t pattern = ((uint32_t)resp_r7[1] << 24) |
+                       ((uint32_t)resp_r7[2] << 16) |
+                       ((uint32_t)resp_r7[3] << 8) | resp_r7[4];
+    sdhc_candidate = (pattern == 0x000001AA);
+    ESP_LOGI(TAG, "CMD8 OK (pattern=0x%08" PRIX32 ")", pattern);
+  } else {
+    ESP_LOGW(TAG,
+             "CMD8 failed/illegal (resp=0x%02X). Assuming SDSC or older card.",
+             resp_r7[0]);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "CMD8 error: %s. Insert SD card or verify 3.3V wiring.",
+               esp_err_to_name(err));
+    }
+  }
+
+  // ACMD41 loop with HCS if supported
+  const uint32_t acmd41_arg = sdhc_candidate ? 0x40000000 : 0x00000000;
+  bool card_ready = false;
+  for (int i = 0; i < 200; ++i) {
+    err = sd_extcs_send_command(55, 0x00000000, 0x65, &resp_r1, 1,
+                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "CMD55 failed (attempt %d): %s", i + 1,
+               esp_err_to_name(err));
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    err = sd_extcs_send_command(41, acmd41_arg, 0x77, &resp_r1, 1,
+                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+    if (err == ESP_OK && resp_r1 == 0x00) {
+      card_ready = true;
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (!card_ready) {
+    ESP_LOGE(TAG,
+             "ACMD41 timeout. SD card not ready. Insert card or verify cabling.");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  // CMD58: read OCR
+  uint8_t resp_r3[5] = {0};
+  err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3, sizeof(resp_r3),
+                              SD_EXTCS_CMD_TIMEOUT_TICKS);
+  if (err != ESP_OK || resp_r3[0] != 0x00) {
+    ESP_LOGE(TAG,
+             "CMD58 failed (resp=0x%02X). Insert SD card or check wiring.",
+             resp_r3[0]);
+    return ESP_ERR_TIMEOUT;
+  }
+
+  uint32_t ocr = ((uint32_t)resp_r3[1] << 24) | ((uint32_t)resp_r3[2] << 16) |
+                 ((uint32_t)resp_r3[3] << 8) | resp_r3[4];
+  bool high_capacity = (ocr & (1 << 30)) != 0;
+  ESP_LOGI(TAG, "OCR=0x%08" PRIX32 " (CCS=%d)", ocr, high_capacity);
+
+  return ESP_OK;
 }
 
 // --- Public API ---
@@ -182,7 +301,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
         .command_bits = 0,
         .address_bits = 0,
         .dummy_bits = 0,
-        .clock_speed_hz = 400 * 1000,
+        .clock_speed_hz = SD_EXTCS_INIT_FREQ_KHZ * 1000,
         .mode = 0,
         .spics_io_num = -1,
         .queue_size = 1,
@@ -192,13 +311,16 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
       return ret;
   }
 
-  // 4. Probe
-  sd_extcs_probe(); // Ignore return, try mount anyway but logs will show status
+  // 4. Strict low-speed init sequence
+  ret = sd_extcs_low_speed_init();
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "Pre-init failed. Card may be absent or wiring is wrong.");
+  }
 
   // 5. Host Config
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = s_host_id;
-  host.max_freq_khz = 20000;
+  host.max_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
 
   s_original_do_transaction = host.do_transaction;
   host.do_transaction = sd_extcs_do_transaction;
@@ -220,8 +342,21 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     s_mounted = true;
     // Verify user can read simple stats
     sdmmc_card_print_info(stdout, s_card);
+
+    // Increase clock after OCR stable and card enumerated
+    uint32_t target_khz = SD_EXTCS_TARGET_FREQ_KHZ;
+    if (s_card && s_card->max_freq_khz > 0 && s_card->max_freq_khz < target_khz)
+      target_khz = s_card->max_freq_khz;
+
+    esp_err_t clk_ret = sdspi_host_set_card_clk(s_host_id, target_khz);
+    if (clk_ret == ESP_OK) {
+      ESP_LOGI(TAG, "Raised SD SPI clock to %u kHz", target_khz);
+    } else {
+      ESP_LOGW(TAG, "Failed to raise SD SPI clock: %s", esp_err_to_name(clk_ret));
+    }
   } else {
-    ESP_LOGE(TAG, "Mount Failed: %s", esp_err_to_name(ret));
+    ESP_LOGE(TAG, "Mount Failed: %s. Insert SD card or verify wiring.",
+             esp_err_to_name(ret));
     s_card = NULL;
   }
 
