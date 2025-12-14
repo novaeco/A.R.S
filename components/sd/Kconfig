@@ -71,6 +71,14 @@ menu "SD Card Configuration"
             Log raw response windows and per-try diagnostics for CMD0 entry
             (external CS mode). Enable only during hardware bring-up.
 
+    config ARS_SD_EXTCS_MISO_HEALTH_CHECK
+        bool "Enable MISO health diagnostics around CMD0"
+        default n
+        help
+            When enabled, sample MISO with CS high/low before CMD0 to detect
+            stuck CS lines or floating MISO. Logs warnings but does not block
+            init.
+
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"
         default n
