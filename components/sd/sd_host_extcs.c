@@ -36,11 +36,11 @@
 #define SD_EXTCS_CMD0_RETRIES 5
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
 #define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 64
-#define SD_EXTCS_CMD0_CS_SETUP_US 120
-#define SD_EXTCS_CMD0_EXTRA_CLKS_BYTES 12
+#define SD_EXTCS_CMD0_EXTRA_CLKS_BYTES 10
 #define SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES 8
 #define SD_EXTCS_CS_ASSERT_SETTLE_US 120
 #define SD_EXTCS_CS_DEASSERT_SETTLE_US 40
+#define SD_EXTCS_CMD0_PRE_CMD_DELAY_US 240
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 #define SD_EXTCS_CMD0_RAW_STR_LIMIT (SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3)
 #define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
@@ -268,6 +268,7 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz) {
       .mode = 0,
       .spics_io_num = -1,
       .queue_size = 1,
+      .flags = 0,
   };
 
   esp_err_t ret = spi_bus_add_device(s_host_id, &dev_cfg, &s_cleanup_handle);
@@ -428,8 +429,8 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   uint8_t last_r1 = 0xFF;
   bool last_r1_valid = false;
   int last_idx_valid = -1;
-  bool last_bit7_violation = false;
-  bool slow_path_applied = false;
+    bool last_bit7_violation = false;
+    bool slow_path_applied = false;
 
   for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
     uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
@@ -452,7 +453,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     }
 
     ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
-    ets_delay_us(SD_EXTCS_CMD0_CS_SETUP_US);
+    ets_delay_us(SD_EXTCS_CMD0_PRE_CMD_DELAY_US);
 
     spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
     err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
@@ -498,48 +499,53 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     if (all_ff)
       all_ff_attempts++;
 
-    sd_extcs_send_dummy_clocks(1);
-    sd_extcs_deassert_cs();
+    esp_err_t cs_rel_err = sd_extcs_deassert_cs();
     ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+    uint8_t post_rx = 0xFF;
+    spi_transaction_t t_post = {.length = 8, .tx_buffer = &post_rx};
+    spi_device_polling_transmit(s_cleanup_handle, &t_post);
+    ets_delay_us(50);
 
     char dump[CMD0_DUMP_LEN];
-    size_t dump_len = sd_extcs_safe_hex_dump(raw, raw_len, dump, sizeof(dump), true);
-    const char *dump_ptr = dump_len ? dump : "<ff>";
+    const size_t rx_preview_len = (raw_len > 16) ? 16 : raw_len;
+    size_t dump_len = sd_extcs_safe_hex_dump(raw, rx_preview_len, dump,
+                                             sizeof(dump), true);
+    const char *dump_ptr = dump_len ? dump : "";
     const size_t dump_width = sd_extcs_strnlen_cap(dump_ptr, SD_EXTCS_CMD0_RAW_STR_LIMIT);
+
+    char cmd_hex[32];
+    size_t cmd_hex_len = sd_extcs_safe_hex_dump(frame, sizeof(frame), cmd_hex,
+                                                sizeof(cmd_hex), true);
+    const char *cmd_hex_ptr = cmd_hex_len ? cmd_hex : "";
+    int first_valid_idx = (idx_valid >= 0) ? (idx_valid + 1) : -1;
 
     char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
       char r1_bits[64];
       size_t r1_bits_len = sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
       int r1_width = (int)sd_extcs_strnlen_cap(r1_bits, SD_EXTCS_R1_BITS_MAX);
-      sd_extcs_safe_snprintf(
-          result_str, sizeof(result_str),
-          "R1=0x%02X (%.*s) ff_before_resp=%u first_valid_r1_index=%d "
-          "bit7_violation_seen=%u",
-          r1, r1_width, sd_extcs_str_or_empty(r1_bits_len ? r1_bits : NULL),
-          (unsigned)ff_before_resp, idx_valid + 1, bit7_violation ? 1 : 0);
+      sd_extcs_safe_snprintf(result_str, sizeof(result_str),
+                             "R1=0x%02X (%.*s) ff_before_resp=%u idx=%d bit7=%u",
+                             r1, r1_width,
+                             sd_extcs_str_or_empty(r1_bits_len ? r1_bits : NULL),
+                             (unsigned)ff_before_resp, first_valid_idx,
+                             bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
-      sd_extcs_safe_snprintf(
-          result_str, sizeof(result_str),
-          "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 ff_before_resp=%u raw=%.*s",
-          (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
+      sd_extcs_safe_snprintf(result_str, sizeof(result_str),
+                             "no valid R1 (bit7=1) ff_before_resp=%u idx=%d",
+                             (unsigned)ff_before_resp, first_valid_idx);
     } else {
-      sd_extcs_safe_snprintf(
-          result_str, sizeof(result_str),
-          "timeout (all 0xFF) bit7_violation_seen=0 ff_before_resp=%u raw=%.*s",
-          (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
+      sd_extcs_safe_snprintf(result_str, sizeof(result_str),
+                             "timeout/all-FF ff_before_resp=%u idx=%d",
+                             (unsigned)ff_before_resp, first_valid_idx);
     }
 
-    if (CONFIG_ARS_SD_EXTCS_DEBUG_CMD0) {
-      ESP_LOGI(TAG,
-               "CMD0 try %d/%d @%u kHz cs_setup=%u us raw[%zu]=%s -> %s",
-               attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
-               SD_EXTCS_CMD0_CS_SETUP_US, raw_len, dump_len ? dump : " <none>",
-               result_str);
-    } else {
-      ESP_LOGI(TAG, "CMD0 try %d/%d -> %s", attempt + 1,
-               SD_EXTCS_CMD0_RETRIES, result_str);
-    }
+    ESP_LOGI(TAG,
+             "CMD0 try %d/%d @%u kHz cs_pre=%u us tx[%zu]=%s rx16[%zu]=%.*s idx=%d -> %s (cs_release=%s)",
+             attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
+             SD_EXTCS_CMD0_PRE_CMD_DELAY_US, sizeof(frame), cmd_hex_ptr,
+             rx_preview_len, (int)dump_width, dump_ptr, first_valid_idx,
+             result_str, esp_err_to_name(cs_rel_err));
 
     sd_extcs_safe_snprintf(last_result, sizeof(last_result), "%s", result_str);
     sd_extcs_safe_snprintf(last_dump, sizeof(last_dump), "%.*s", (int)dump_width,
