@@ -199,6 +199,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   sd_extcs_set_cs(false);
   vTaskDelay(pdMS_TO_TICKS(2));
   sd_extcs_send_dummy_clocks(10);
+  ESP_LOGD(TAG, "Sent 80 dummy clocks with CS high before CMD0");
 
   // CMD0: go idle
   uint8_t resp_r1 = 0xFF;
@@ -216,6 +217,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
              resp_r1);
     return ESP_ERR_TIMEOUT;
   }
+  ESP_LOGI(TAG, "CMD0: Card entered idle state (R1=0x%02X)", resp_r1);
 
   // CMD8: check voltage range
   uint8_t resp_r7[5] = {0};
@@ -241,7 +243,9 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   // ACMD41 loop with HCS if supported
   const uint32_t acmd41_arg = sdhc_candidate ? 0x40000000 : 0x00000000;
   bool card_ready = false;
+  int acmd41_attempts = 0;
   for (int i = 0; i < 200; ++i) {
+    acmd41_attempts = i + 1;
     err = sd_extcs_send_command(55, 0x00000000, 0x65, &resp_r1, 1,
                                 SD_EXTCS_CMD_TIMEOUT_TICKS);
     if (err != ESP_OK) {
@@ -266,6 +270,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
              "ACMD41 timeout. SD card not ready. Insert card or verify cabling.");
     return ESP_ERR_TIMEOUT;
   }
+  ESP_LOGI(TAG, "ACMD41 completed in %d attempt(s), card ready", acmd41_attempts);
 
   // CMD58: read OCR
   uint8_t resp_r3[5] = {0};
@@ -344,6 +349,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   ret = sd_extcs_low_speed_init();
   if (ret != ESP_OK) {
     ESP_LOGW(TAG, "Pre-init failed. Card may be absent or wiring is wrong.");
+    return ret;
   }
 
   // 5. Host Config
