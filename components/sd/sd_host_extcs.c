@@ -35,14 +35,16 @@
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
 #define SD_EXTCS_CMD0_RETRIES 5
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
-#define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 16
-#define SD_EXTCS_CMD0_CS_SETUP_US 80
+#define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 64
+#define SD_EXTCS_CMD0_CS_SETUP_US 120
 #define SD_EXTCS_CMD0_EXTRA_CLKS_BYTES 12
-#define SD_EXTCS_CS_ASSERT_SETTLE_US 40
-#define SD_EXTCS_CS_DEASSERT_SETTLE_US 10
+#define SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES 8
+#define SD_EXTCS_CS_ASSERT_SETTLE_US 120
+#define SD_EXTCS_CS_DEASSERT_SETTLE_US 40
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 #define SD_EXTCS_CMD0_RAW_STR_LIMIT (SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3)
 #define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
+#define SD_EXTCS_CMD0_SLOW_FREQ_KHZ 100
 #define SD_EXTCS_R1_BITS_MAX 48
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
@@ -85,7 +87,7 @@ static size_t sd_extcs_safe_snprintf(char *dst, size_t dst_size, const char *fmt
     __attribute__((format(printf, 3, 4)));
 // Avoids -Waddress false positives when using stack buffers that are never NULL.
 static inline const char *sd_extcs_str_or_empty(const char *s) {
-  return s ? s : "";
+  return (s && s[0] != '\0') ? s : "";
 }
 const char *sd_extcs_state_str(sd_extcs_state_t state);
 
@@ -154,16 +156,28 @@ static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len, char *d
     return 0;
   size_t idx = 0;
   dst[0] = '\0';
+
   for (size_t i = 0; i < src_len; ++i) {
-    int written = snprintf(dst + idx, dst_size - idx, "%s%02X",
-                           (leading_space || idx > 0) ? " " : "", src[i]);
-    if (written < 0 || (size_t)written >= dst_size - idx) {
-      idx = dst_size - 1;
+    if (idx >= dst_size - 1)
       break;
+    if (leading_space || idx > 0) {
+      if (idx >= dst_size - 1)
+        break;
+      dst[idx++] = ' ';
     }
-    idx += (size_t)written;
+
+    uint8_t byte = src[i];
+    const char hex_chars[] = "0123456789ABCDEF";
+    if (idx + 2 >= dst_size)
+      break;
+    dst[idx++] = hex_chars[(byte >> 4) & 0x0F];
+    dst[idx++] = hex_chars[byte & 0x0F];
   }
-  dst[idx] = '\0';
+
+  if (idx < dst_size)
+    dst[idx] = '\0';
+  else
+    dst[dst_size - 1] = '\0';
   return idx;
 }
 
@@ -239,6 +253,34 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
   sd_extcs_unlock();
 }
 
+static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz) {
+  uint32_t effective_khz = freq_khz ? freq_khz : SD_EXTCS_INIT_FREQ_KHZ;
+  if (s_cleanup_handle) {
+    spi_bus_remove_device(s_cleanup_handle);
+    s_cleanup_handle = NULL;
+  }
+
+  spi_device_interface_config_t dev_cfg = {
+      .command_bits = 0,
+      .address_bits = 0,
+      .dummy_bits = 0,
+      .clock_speed_hz = effective_khz * 1000,
+      .mode = 0,
+      .spics_io_num = -1,
+      .queue_size = 1,
+  };
+
+  esp_err_t ret = spi_bus_add_device(s_host_id, &dev_cfg, &s_cleanup_handle);
+  if (ret == ESP_OK) {
+    s_active_freq_khz = effective_khz;
+    ESP_LOGI(TAG, "Cleanup SPI handle ready @ %u kHz", effective_khz);
+  } else {
+    ESP_LOGE(TAG, "Failed to configure cleanup SPI handle @%u kHz: %s",
+             effective_khz, esp_err_to_name(ret));
+  }
+  return ret;
+}
+
 static esp_err_t sd_extcs_probe_cs_line(void) {
   // Toggle CS via the IO extender and read back level to ensure the IO path is
   // alive. This catches the "CS stuck high" hardware fault that makes CMD0
@@ -293,8 +335,8 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
       return err;
 
     rx = t_rx.rx_data[0];
-  if (rx != 0xFF)
-    break;
+    if (rx != 0xFF)
+      break;
   } while ((xTaskGetTickCount() - start) < timeout);
 
   *out = rx;
@@ -387,6 +429,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   bool last_r1_valid = false;
   int last_idx_valid = -1;
   bool last_bit7_violation = false;
+  bool slow_path_applied = false;
 
   for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
     uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
@@ -529,7 +572,18 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     }
     sd_extcs_deassert_cs();
     ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
-    sd_extcs_send_dummy_clocks(1);
+    sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES);
+    ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+
+    if (!slow_path_applied && attempt + 1 >= 2) {
+      esp_err_t slow_ret = sd_extcs_configure_cleanup_device(SD_EXTCS_CMD0_SLOW_FREQ_KHZ);
+      slow_path_applied = (slow_ret == ESP_OK);
+      if (slow_path_applied) {
+        ESP_LOGW(TAG, "CMD0 anomaly: lowering init clock to %u kHz for retry",
+                 SD_EXTCS_CMD0_SLOW_FREQ_KHZ);
+      }
+    }
+
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
   }
 
@@ -860,16 +914,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   // 3. Cleanup Device
   if (!s_cleanup_handle) {
-    spi_device_interface_config_t dev_cfg = {
-        .command_bits = 0,
-        .address_bits = 0,
-        .dummy_bits = 0,
-        .clock_speed_hz = SD_EXTCS_INIT_FREQ_KHZ * 1000,
-        .mode = 0,
-        .spics_io_num = -1,
-        .queue_size = 1,
-    };
-    ret = spi_bus_add_device(s_host_id, &dev_cfg, &s_cleanup_handle);
+    ret = sd_extcs_configure_cleanup_device(SD_EXTCS_INIT_FREQ_KHZ);
     if (ret != ESP_OK)
       return ret;
   }
@@ -884,7 +929,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   // 5. Host Config
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = s_host_id;
-  host.max_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
+  host.max_freq_khz = s_active_freq_khz;
 
   s_original_do_transaction = host.do_transaction;
   host.do_transaction = sd_extcs_do_transaction;
