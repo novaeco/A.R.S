@@ -43,7 +43,6 @@
 #define SD_EXTCS_CMD0_RAW_STR_LIMIT (SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3)
 #define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
 #define SD_EXTCS_R1_BITS_MAX 48
-#define SD_EXTCS_FMT_STR(max, s) (int)(max), ((s) ? (s) : "")
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -74,7 +73,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff);
 static void sd_extcs_log_miso_health(void);
 static inline bool sd_extcs_lock(void);
 static inline void sd_extcs_unlock(void);
-static void sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len);
+static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len);
+static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len, char *dst,
+                                     size_t dst_size, bool leading_space);
+static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len);
 const char *sd_extcs_state_str(sd_extcs_state_t state);
 
 // --- GPIO Helpers ---
@@ -107,6 +109,55 @@ const char *sd_extcs_state_str(sd_extcs_state_t state) {
   default:
     return "UNINITIALIZED";
   }
+}
+
+static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len) {
+  if (!s || max_len == 0)
+    return 0;
+  size_t n = strnlen(s, max_len);
+  return n > max_len ? max_len : n;
+}
+
+static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len, char *dst,
+                                     size_t dst_size, bool leading_space) {
+  if (!dst || dst_size == 0)
+    return 0;
+  size_t idx = 0;
+  dst[0] = '\0';
+  for (size_t i = 0; i < src_len; ++i) {
+    int written = snprintf(dst + idx, dst_size - idx, "%s%02X",
+                           (leading_space || idx > 0) ? " " : "", src[i]);
+    if (written < 0 || (size_t)written >= dst_size - idx) {
+      idx = dst_size - 1;
+      break;
+    }
+    idx += (size_t)written;
+  }
+  dst[idx] = '\0';
+  return idx;
+}
+
+static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len) {
+  if (!buf || len == 0)
+    return 0;
+
+  int written = snprintf(buf, len, "%s%s%s%s%s%s%s",
+                         (r1 & 0x01) ? "IDLE" : "READY",
+                         (r1 & 0x02) ? " ERASE_RESET" : "",
+                         (r1 & 0x04) ? " ILLEGAL_CMD" : "",
+                         (r1 & 0x08) ? " CRC_ERR" : "",
+                         (r1 & 0x10) ? " ERASE_SEQ" : "",
+                         (r1 & 0x20) ? " ADDR_ERR" : "",
+                         (r1 & 0x40) ? " PARAM_ERR" : "");
+  if (written < 0) {
+    buf[0] = '\0';
+    return 0;
+  }
+  if ((size_t)written >= len) {
+    buf[len - 1] = '\0';
+    return len - 1;
+  }
+  return (size_t)written;
 }
 
 // --- GPIO Helpers ---
@@ -274,19 +325,6 @@ static void sd_extcs_log_miso_health(void) {
 #endif
 }
 
-static void sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len) {
-  const char *idle = (r1 & 0x01) ? "IDLE" : "READY";
-  const char *erase_reset = (r1 & 0x02) ? " ERASE_RESET" : "";
-  const char *illegal_cmd = (r1 & 0x04) ? " ILLEGAL_CMD" : "";
-  const char *crc_err = (r1 & 0x08) ? " CRC_ERR" : "";
-  const char *erase_seq = (r1 & 0x10) ? " ERASE_SEQ" : "";
-  const char *addr_err = (r1 & 0x20) ? " ADDR_ERR" : "";
-  const char *param_err = (r1 & 0x40) ? " PARAM_ERR" : "";
-
-  snprintf(buf, len, "%s%s%s%s%s%s%s", idle, erase_reset, illegal_cmd, crc_err,
-           erase_seq, addr_err, param_err);
-}
-
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   if (card_idle)
     *card_idle = false;
@@ -321,6 +359,8 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   last_result[0] = '\0';
   uint8_t last_r1 = 0xFF;
   bool last_r1_valid = false;
+  int last_idx_valid = -1;
+  bool last_bit7_violation = false;
 
   for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
     uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
@@ -394,40 +434,35 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
     char dump[CMD0_DUMP_LEN];
-    size_t idx = 0;
-    for (size_t i = 0; i < raw_len; ++i) {
-      idx += snprintf(dump + idx, sizeof(dump) - idx, " %02X", raw[i]);
-      if (idx >= sizeof(dump))
-        break;
-    }
-    dump[sizeof(dump) - 1] = '\0';
+    size_t dump_len = sd_extcs_safe_hex_dump(raw, raw_len, dump, sizeof(dump), true);
+    const char *dump_ptr = dump_len ? dump : "<ff>";
+    const size_t dump_width = sd_extcs_strnlen_cap(dump_ptr, SD_EXTCS_CMD0_RAW_STR_LIMIT);
 
     char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
       char r1_bits[64];
-      sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
+      size_t r1_bits_len = sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
+      int r1_width = (int)sd_extcs_strnlen_cap(r1_bits, SD_EXTCS_R1_BITS_MAX);
       snprintf(result_str, sizeof(result_str),
                "R1=0x%02X (%.*s) ff_before_resp=%u first_valid_r1_index=%d "
                "bit7_violation_seen=%u",
-               r1, SD_EXTCS_FMT_STR(SD_EXTCS_R1_BITS_MAX, r1_bits),
+               r1, r1_width, r1_bits_len ? r1_bits : "<none>",
                (unsigned)ff_before_resp, idx_valid + 1, bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
       snprintf(result_str, sizeof(result_str),
                "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 ff_before_resp=%u raw=%.*s",
-               (unsigned)ff_before_resp, (int)SD_EXTCS_CMD0_RAW_STR_LIMIT,
-               idx ? dump : "<ff>");
+               (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
     } else {
       snprintf(result_str, sizeof(result_str),
                "timeout (all 0xFF) bit7_violation_seen=0 ff_before_resp=%u raw=%.*s",
-               (unsigned)ff_before_resp, (int)SD_EXTCS_CMD0_RAW_STR_LIMIT,
-               idx ? dump : "<ff>");
+               (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
     }
 
     if (CONFIG_ARS_SD_EXTCS_DEBUG_CMD0) {
       ESP_LOGI(TAG,
                "CMD0 try %d/%d @%u kHz cs_setup=%u us raw[%zu]=%s -> %s",
                attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
-               SD_EXTCS_CMD0_CS_SETUP_US, raw_len, idx ? dump : " <none>",
+               SD_EXTCS_CMD0_CS_SETUP_US, raw_len, dump_len ? dump : " <none>",
                result_str);
     } else {
       ESP_LOGI(TAG, "CMD0 try %d/%d -> %s", attempt + 1,
@@ -436,10 +471,11 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
     snprintf(last_result, sizeof(last_result), "%.*s",
              (int)sizeof(last_result) - 1, result_str);
-    snprintf(last_dump, sizeof(last_dump), "%.*s", (int)SD_EXTCS_CMD0_RAW_STR_LIMIT,
-             idx ? dump : "<ff>");
+    snprintf(last_dump, sizeof(last_dump), "%.*s", (int)dump_width, dump_ptr);
     last_r1 = r1;
     last_r1_valid = valid_r1;
+    last_idx_valid = idx_valid;
+    last_bit7_violation = bit7_violation;
 
     if (valid_r1 && r1 == 0x01) {
       idle_seen = true;
@@ -481,11 +517,19 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   vTaskDelay(pdMS_TO_TICKS(1));
 
   if (!idle_seen) {
-    ESP_LOGW(TAG,
-             "CMD0 failed after %d tries (last_r1=0x%02X valid=%d saw_non_ff=%d raw=%.*s -> %s)",
-             SD_EXTCS_CMD0_RETRIES, last_r1, last_r1_valid, saw_data,
-             (int)sizeof(last_dump) - 1, last_dump[0] ? last_dump : "<none>",
-             last_result[0] ? last_result : "<none>");
+    const char *last_dump_ptr = last_dump[0] ? last_dump : "<none>";
+    const int dump_print_len =
+        (int)sd_extcs_strnlen_cap(last_dump_ptr, sizeof(last_dump) - 1);
+    const char *last_result_ptr = last_result[0] ? last_result : "<none>";
+    const int result_print_len =
+        (int)sd_extcs_strnlen_cap(last_result_ptr, sizeof(last_result) - 1);
+    int first_valid_idx = (last_idx_valid >= 0) ? (last_idx_valid + 1) : -1;
+    ESP_LOGW(
+        TAG,
+        "CMD0 failed after %d tries @%u kHz (last_r1=0x%02X valid=%d saw_non_ff=%d bit7_seen=%d first_valid_idx=%d raw=%.*s -> %.*s)",
+        SD_EXTCS_CMD0_RETRIES, s_active_freq_khz, last_r1, last_r1_valid,
+        saw_data, last_bit7_violation ? 1 : 0, first_valid_idx, dump_print_len,
+        last_dump_ptr, result_print_len, last_result_ptr);
     if (all_ff_attempts >= SD_EXTCS_CMD0_RETRIES) {
       ESP_LOGE(TAG, "MISO stuck high or CS inactive: saw only 0xFF for CMD0 across all retries."
                    " Check SD card power, CS wiring, and pull-ups.");
