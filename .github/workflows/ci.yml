@@ -39,3 +39,4 @@ jobs:
             idf.py reconfigure
             idf.py build
             idf.py size
+            idf.py fullclean
