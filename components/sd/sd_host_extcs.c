@@ -41,7 +41,9 @@
 #define SD_EXTCS_CS_DEASSERT_SETTLE_US 10
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 #define SD_EXTCS_CMD0_RAW_STR_LIMIT (SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3)
-#define SD_EXTCS_CMD0_RESULT_STR_LIMIT 128
+#define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
+#define SD_EXTCS_R1_BITS_MAX 48
+#define SD_EXTCS_FMT_STR(max, s) (int)(max), ((s) ? (s) : "")
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -138,6 +140,11 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
   if (!sd_extcs_lock())
     return;
 
+  // Ensure CS is deasserted (HIGH) during dummy clocks to comply with SPI mode
+  // entry and NCR requirements.
+  sd_extcs_set_cs(false);
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+
   uint8_t dummy = 0xFF;
   for (size_t i = 0; i < byte_count; ++i) {
     spi_transaction_t t_cleanup = {
@@ -148,9 +155,9 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
   }
   if (byte_count >= SD_EXTCS_CMD0_EXTRA_CLKS_BYTES) {
-    ESP_LOGI(TAG, "Sent %u dummy clock bytes with CS high", (unsigned)byte_count);
+    ESP_LOGI(TAG, "Dummy clocks done: %u byte(s) with CS=HIGH", (unsigned)byte_count);
   } else {
-    ESP_LOGD(TAG, "Sent %u dummy clock byte for NCR", (unsigned)byte_count);
+    ESP_LOGD(TAG, "Sent %u dummy clock byte for NCR with CS=HIGH", (unsigned)byte_count);
   }
   sd_extcs_unlock();
 }
@@ -296,6 +303,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   vTaskDelay(pdMS_TO_TICKS(2));
   sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
+  vTaskDelay(pdMS_TO_TICKS(2));
 
   sd_extcs_log_miso_health();
 
@@ -399,9 +407,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
       char r1_bits[64];
       sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
       snprintf(result_str, sizeof(result_str),
-               "R1=0x%02X (%s) ff_before_resp=%u first_valid_r1_index=%d %s",
-               r1, r1_bits, (unsigned)ff_before_resp, idx_valid + 1,
-               bit7_violation ? "bit7_violation_seen=1" : "bit7_violation_seen=0");
+               "R1=0x%02X (%.*s) ff_before_resp=%u first_valid_r1_index=%d "
+               "bit7_violation_seen=%u",
+               r1, SD_EXTCS_FMT_STR(SD_EXTCS_R1_BITS_MAX, r1_bits),
+               (unsigned)ff_before_resp, idx_valid + 1, bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
       snprintf(result_str, sizeof(result_str),
                "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 ff_before_resp=%u raw=%.*s",
@@ -425,8 +434,8 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
                SD_EXTCS_CMD0_RETRIES, result_str);
     }
 
-    snprintf(last_result, sizeof(last_result), "%.*s", (int)sizeof(last_result) - 1,
-             result_str);
+    snprintf(last_result, sizeof(last_result), "%.*s",
+             (int)sizeof(last_result) - 1, result_str);
     snprintf(last_dump, sizeof(last_dump), "%.*s", (int)SD_EXTCS_CMD0_RAW_STR_LIMIT,
              idx ? dump : "<ff>");
     last_r1 = r1;
@@ -453,6 +462,9 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     } else {
       last_err = saw_data ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_TIMEOUT;
     }
+    sd_extcs_set_cs(false);
+    ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+    sd_extcs_send_dummy_clocks(1);
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
   }
 
@@ -460,6 +472,13 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     *card_idle = idle_seen;
   if (saw_non_ff)
     *saw_non_ff = saw_data;
+
+  // Ensure CS returns high and provide a settling window before leaving the
+  // routine, regardless of success/failure.
+  sd_extcs_set_cs(false);
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+  sd_extcs_send_dummy_clocks(1);
+  vTaskDelay(pdMS_TO_TICKS(1));
 
   if (!idle_seen) {
     ESP_LOGW(TAG,
