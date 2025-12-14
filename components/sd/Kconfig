@@ -49,4 +49,11 @@ menu "SD Card Configuration"
             clock setting while using the External CS path. Disable for
             production to reduce log noise.
 
+    config ARS_SD_SDMMC_DEBUG_LOG
+        bool "Enable SDMMC/SDSPI debug logs"
+        default n
+        help
+            Raise log level for sdmmc/sdspi components to DEBUG for deeper
+            diagnostics during bring-up. Disable in production.
+
 endmenu
