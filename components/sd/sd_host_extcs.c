@@ -36,6 +36,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
                                        TickType_t timeout_ticks);
 static esp_err_t sd_extcs_low_speed_init(void);
+static esp_err_t sd_extcs_probe_cs_line(void);
 
 // --- GPIO Helpers ---
 // --- GPIO Helpers ---
@@ -62,6 +63,41 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     };
     spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
   }
+}
+
+static esp_err_t sd_extcs_probe_cs_line(void) {
+  // Toggle CS via the IO extender and read back level to ensure the IO path is
+  // alive. This catches the "CS stuck high" hardware fault that makes CMD0
+  // always return 0xFF.
+  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "CS probe: failed to set high: %s", esp_err_to_name(err));
+    return err;
+  }
+  vTaskDelay(pdMS_TO_TICKS(2));
+  uint8_t level_high = IO_EXTENSION_Input(IO_EXTENSION_IO_4);
+
+  err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "CS probe: failed to set low: %s", esp_err_to_name(err));
+    return err;
+  }
+  vTaskDelay(pdMS_TO_TICKS(2));
+  uint8_t level_low = IO_EXTENSION_Input(IO_EXTENSION_IO_4);
+
+  // Restore idle high
+  IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
+
+  if (level_high == level_low) {
+    ESP_LOGE(TAG,
+             "CS probe: IOEXT4 not toggling (high=%u low=%u). Check wiring/3V3.",
+             level_high, level_low);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  ESP_LOGI(TAG, "CS probe: IOEXT4 toggled (high=%u low=%u)", level_high,
+           level_low);
+  return ESP_OK;
 }
 
 static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
@@ -209,7 +245,9 @@ static esp_err_t sd_extcs_low_speed_init(void) {
                                 SD_EXTCS_CMD_TIMEOUT_TICKS);
     if (err == ESP_OK && resp_r1 == 0x01)
       break;
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // Add extra clocks and longer settle to catch slow CS/power-up paths
+    sd_extcs_send_dummy_clocks(2);
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
   if (resp_r1 != 0x01) {
     ESP_LOGW(TAG,
@@ -308,6 +346,12 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   }
   sd_extcs_set_cs(false);
   vTaskDelay(pdMS_TO_TICKS(10));
+
+  ret = sd_extcs_probe_cs_line();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "SD: CS line check failed. Card will not respond until fixed.");
+    return ret;
+  }
 
   // 2. SPI Bus Init
   spi_bus_config_t bus_cfg = {
