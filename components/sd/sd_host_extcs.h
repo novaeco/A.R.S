@@ -4,6 +4,7 @@
 #include "driver/sdspi_host.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include <stddef.h>
 
 
 #ifdef __cplusplus
