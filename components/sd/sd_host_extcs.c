@@ -11,6 +11,7 @@
 #include "sdkconfig.h" // Crucial for CONFIG_ARS defines
 #include <inttypes.h>
 #include <rom/ets_sys.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -77,6 +78,15 @@ static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len);
 static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len, char *dst,
                                      size_t dst_size, bool leading_space);
 static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len);
+// GCC 12+ aggressively warns about potential truncation; use a bounded helper to
+// force null-termination and placate -Wformat-truncation without weakening
+// warnings globally.
+static size_t sd_extcs_safe_snprintf(char *dst, size_t dst_size, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+// Avoids -Waddress false positives when using stack buffers that are never NULL.
+static inline const char *sd_extcs_str_or_empty(const char *s) {
+  return s ? s : "";
+}
 const char *sd_extcs_state_str(sd_extcs_state_t state);
 
 // --- GPIO Helpers ---
@@ -118,6 +128,26 @@ static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len) {
   return n > max_len ? max_len : n;
 }
 
+static size_t sd_extcs_safe_snprintf(char *dst, size_t dst_size, const char *fmt, ...) {
+  if (!dst || dst_size == 0)
+    return 0;
+
+  va_list args;
+  va_start(args, fmt);
+  int written = vsnprintf(dst, dst_size, fmt, args);
+  va_end(args);
+
+  if (written < 0) {
+    dst[0] = '\0';
+    return 0;
+  }
+  if ((size_t)written >= dst_size) {
+    dst[dst_size - 1] = '\0';
+    return dst_size - 1;
+  }
+  return (size_t)written;
+}
+
 static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len, char *dst,
                                      size_t dst_size, bool leading_space) {
   if (!dst || dst_size == 0)
@@ -141,49 +171,48 @@ static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len) {
   if (!buf || len == 0)
     return 0;
 
-  int written = snprintf(buf, len, "%s%s%s%s%s%s%s",
-                         (r1 & 0x01) ? "IDLE" : "READY",
-                         (r1 & 0x02) ? " ERASE_RESET" : "",
-                         (r1 & 0x04) ? " ILLEGAL_CMD" : "",
-                         (r1 & 0x08) ? " CRC_ERR" : "",
-                         (r1 & 0x10) ? " ERASE_SEQ" : "",
-                         (r1 & 0x20) ? " ADDR_ERR" : "",
-                         (r1 & 0x40) ? " PARAM_ERR" : "");
-  if (written < 0) {
-    buf[0] = '\0';
-    return 0;
-  }
-  if ((size_t)written >= len) {
-    buf[len - 1] = '\0';
-    return len - 1;
-  }
-  return (size_t)written;
+  return sd_extcs_safe_snprintf(buf, len, "%s%s%s%s%s%s%s",
+                                (r1 & 0x01) ? "IDLE" : "READY",
+                                (r1 & 0x02) ? " ERASE_RESET" : "",
+                                (r1 & 0x04) ? " ILLEGAL_CMD" : "",
+                                (r1 & 0x08) ? " CRC_ERR" : "",
+                                (r1 & 0x10) ? " ERASE_SEQ" : "",
+                                (r1 & 0x20) ? " ADDR_ERR" : "",
+                                (r1 & 0x40) ? " PARAM_ERR" : "");
 }
 
 // --- GPIO Helpers ---
-static esp_err_t sd_extcs_set_cs(bool asserted) {
+// Drive SD CS through the CH32V003 IO extender and log the requested level so
+// we can distinguish IO path failures from card absence during bring-up.
+static esp_err_t sd_extcs_set_cs_level(bool level_high) {
   if (!s_ioext_ready || s_ioext_handle == NULL) {
-    ESP_LOGE(TAG, "CS %s failed: IO expander not ready", asserted ? "assert" :
-                                                           "deassert");
+    ESP_LOGE(TAG, "CS %s failed: IO expander not ready", level_high ? "HIGH" :
+                                                           "LOW");
     return ESP_ERR_INVALID_STATE;
   }
 
   // IO4: 0 = Low (Assert), 1 = High (Deassert)
-  const int desired_level = asserted ? 0 : 1;
+  const int desired_level = level_high ? 1 : 0;
   if (s_cs_level == desired_level) {
+    ESP_LOGD(TAG, "CS already %s (IOEXT4)", level_high ? "HIGH" : "LOW");
     return ESP_OK; // Skip redundant I2C write
   }
 
   esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, desired_level);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CS %s failed: %s", asserted ? "assert" : "deassert",
+    ESP_LOGW(TAG, "CS->%s failed: %s", level_high ? "HIGH" : "LOW",
              esp_err_to_name(err));
   } else {
     s_cs_level = desired_level;
-    ESP_LOGD(TAG, "CS=%s via IOEXT4", asserted ? "LOW" : "HIGH");
+    ESP_LOGI(TAG, "CS->%s via IOEXT4 (result=%s)", level_high ? "HIGH" : "LOW",
+             esp_err_to_name(err));
   }
   return err;
 }
+
+static inline esp_err_t sd_extcs_assert_cs(void) { return sd_extcs_set_cs_level(false); }
+
+static inline esp_err_t sd_extcs_deassert_cs(void) { return sd_extcs_set_cs_level(true); }
 
 static void sd_extcs_send_dummy_clocks(size_t byte_count) {
   if (!s_cleanup_handle)
@@ -192,8 +221,8 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     return;
 
   // Ensure CS is deasserted (HIGH) during dummy clocks to comply with SPI mode
-  // entry and NCR requirements.
-  sd_extcs_set_cs(false);
+  // entry and NCR requirements. Keep the return code to log IO extender health.
+  esp_err_t cs_ret = sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
   uint8_t dummy = 0xFF;
@@ -205,11 +234,8 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     };
     spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
   }
-  if (byte_count >= SD_EXTCS_CMD0_EXTRA_CLKS_BYTES) {
-    ESP_LOGI(TAG, "Dummy clocks done: %u byte(s) with CS=HIGH", (unsigned)byte_count);
-  } else {
-    ESP_LOGD(TAG, "Sent %u dummy clock byte for NCR with CS=HIGH", (unsigned)byte_count);
-  }
+  ESP_LOGI(TAG, "Dummy clocks: %u byte(s) with CS=HIGH (cs_ret=%s)",
+           (unsigned)byte_count, esp_err_to_name(cs_ret));
   sd_extcs_unlock();
 }
 
@@ -286,7 +312,7 @@ static void sd_extcs_log_miso_health(void) {
   bool low_all_ff = true;
 
   // CS high sampling (bus should idle to 0xFF)
-  sd_extcs_set_cs(false);
+  sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   for (size_t i = 0; i < sizeof(sample_high); ++i) {
     spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
@@ -298,7 +324,7 @@ static void sd_extcs_log_miso_health(void) {
 
   // CS low sampling without command: if everything is 0xFF here, CS may not be
   // asserted electrically or MISO is floating.
-  if (sd_extcs_set_cs(true) == ESP_OK) {
+  if (sd_extcs_assert_cs() == ESP_OK) {
     ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
     for (size_t i = 0; i < sizeof(sample_low); ++i) {
       spi_transaction_t t_rx = {.flags = SPI_TRANS_USE_RXDATA, .length = 8};
@@ -308,7 +334,7 @@ static void sd_extcs_log_miso_health(void) {
       low_all_ff = low_all_ff && (t_rx.rx_data[0] == 0xFF);
     }
   }
-  sd_extcs_set_cs(false);
+  sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
   if (!high_all_ff) {
@@ -337,7 +363,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     return ESP_ERR_TIMEOUT;
 
   // Force SPI mode: CS high then >=80 clocks
-  sd_extcs_set_cs(false);
+  sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   vTaskDelay(pdMS_TO_TICKS(2));
   sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
@@ -373,7 +399,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     bool all_ff = true;
     size_t ff_before_resp = 0;
 
-    esp_err_t err = sd_extcs_set_cs(true);
+    esp_err_t err = sd_extcs_assert_cs();
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "CMD0 try %d/%d: CS assert failed: %s", attempt + 1,
                SD_EXTCS_CMD0_RETRIES, esp_err_to_name(err));
@@ -391,7 +417,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
       ESP_LOGW(TAG, "CMD0 try %d/%d TX failed: %s", attempt + 1,
                SD_EXTCS_CMD0_RETRIES, esp_err_to_name(err));
       last_err = err;
-      sd_extcs_set_cs(false);
+      sd_extcs_deassert_cs();
       ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
       sd_extcs_send_dummy_clocks(1);
       vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
@@ -430,7 +456,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
       all_ff_attempts++;
 
     sd_extcs_send_dummy_clocks(1);
-    sd_extcs_set_cs(false);
+    sd_extcs_deassert_cs();
     ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
     char dump[CMD0_DUMP_LEN];
@@ -443,19 +469,22 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
       char r1_bits[64];
       size_t r1_bits_len = sd_extcs_decode_r1(r1, r1_bits, sizeof(r1_bits));
       int r1_width = (int)sd_extcs_strnlen_cap(r1_bits, SD_EXTCS_R1_BITS_MAX);
-      snprintf(result_str, sizeof(result_str),
-               "R1=0x%02X (%.*s) ff_before_resp=%u first_valid_r1_index=%d "
-               "bit7_violation_seen=%u",
-               r1, r1_width, r1_bits_len ? r1_bits : "<none>",
-               (unsigned)ff_before_resp, idx_valid + 1, bit7_violation ? 1 : 0);
+      sd_extcs_safe_snprintf(
+          result_str, sizeof(result_str),
+          "R1=0x%02X (%.*s) ff_before_resp=%u first_valid_r1_index=%d "
+          "bit7_violation_seen=%u",
+          r1, r1_width, sd_extcs_str_or_empty(r1_bits_len ? r1_bits : NULL),
+          (unsigned)ff_before_resp, idx_valid + 1, bit7_violation ? 1 : 0);
     } else if (bit7_violation) {
-      snprintf(result_str, sizeof(result_str),
-               "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 ff_before_resp=%u raw=%.*s",
-               (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
+      sd_extcs_safe_snprintf(
+          result_str, sizeof(result_str),
+          "no valid R1 (non-FF but bit7=1) bit7_violation_seen=1 ff_before_resp=%u raw=%.*s",
+          (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
     } else {
-      snprintf(result_str, sizeof(result_str),
-               "timeout (all 0xFF) bit7_violation_seen=0 ff_before_resp=%u raw=%.*s",
-               (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
+      sd_extcs_safe_snprintf(
+          result_str, sizeof(result_str),
+          "timeout (all 0xFF) bit7_violation_seen=0 ff_before_resp=%u raw=%.*s",
+          (unsigned)ff_before_resp, (int)dump_width, dump_ptr);
     }
 
     if (CONFIG_ARS_SD_EXTCS_DEBUG_CMD0) {
@@ -469,9 +498,9 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
                SD_EXTCS_CMD0_RETRIES, result_str);
     }
 
-    snprintf(last_result, sizeof(last_result), "%.*s",
-             (int)sizeof(last_result) - 1, result_str);
-    snprintf(last_dump, sizeof(last_dump), "%.*s", (int)dump_width, dump_ptr);
+    sd_extcs_safe_snprintf(last_result, sizeof(last_result), "%s", result_str);
+    sd_extcs_safe_snprintf(last_dump, sizeof(last_dump), "%.*s", (int)dump_width,
+                           dump_ptr);
     last_r1 = r1;
     last_r1_valid = valid_r1;
     last_idx_valid = idx_valid;
@@ -484,7 +513,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     }
 
     if (valid_r1 && r1 == 0x05) {
-      sd_extcs_set_cs(false);
+      sd_extcs_deassert_cs();
       ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
       sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_EXTRA_CLKS_BYTES);
       ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
@@ -498,7 +527,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
     } else {
       last_err = saw_data ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_TIMEOUT;
     }
-    sd_extcs_set_cs(false);
+    sd_extcs_deassert_cs();
     ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
     sd_extcs_send_dummy_clocks(1);
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CMD0_BACKOFF_MS));
@@ -511,7 +540,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
   // Ensure CS returns high and provide a settling window before leaving the
   // routine, regardless of success/failure.
-  sd_extcs_set_cs(false);
+  sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   sd_extcs_send_dummy_clocks(1);
   vTaskDelay(pdMS_TO_TICKS(1));
@@ -556,7 +585,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   frame[4] = arg & 0xFF;
   frame[5] = crc | 0x01; // end bit required
 
-  esp_err_t err = sd_extcs_set_cs(true);
+  esp_err_t err = sd_extcs_assert_cs();
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CS Assert failed before CMD%u: %s", cmd,
              esp_err_to_name(err));
@@ -570,7 +599,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CMD%u TX failed: %s", cmd, esp_err_to_name(err));
-    sd_extcs_set_cs(false);
+    sd_extcs_deassert_cs();
     sd_extcs_send_dummy_clocks(1);
     sd_extcs_unlock();
     return err;
@@ -598,7 +627,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     }
   }
 
-  sd_extcs_set_cs(false);
+  sd_extcs_deassert_cs();
   sd_extcs_send_dummy_clocks(1);
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
@@ -617,7 +646,7 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   if (!sd_extcs_lock())
     return ESP_ERR_TIMEOUT;
 
-  esp_err_t ret = sd_extcs_set_cs(true);
+  esp_err_t ret = sd_extcs_assert_cs();
   if (ret != ESP_OK) {
     // If CS fails (e.g. I2C timeout), we can't trust the transaction.
     // But we must return an error compatible with storage stack.
@@ -633,7 +662,7 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
   ret = s_original_do_transaction(slot, cmdinfo);
 
   // 3. Deassert CS
-  sd_extcs_set_cs(false); // Best effort deassert
+  sd_extcs_deassert_cs(); // Best effort deassert
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
   // 4. Dummy Clocks (8 cycles)
@@ -796,7 +825,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   IO_EXTENSION_IO_Mode(0xFF); // ensure outputs (push-pull)
   s_cs_level = -1;
   if (sd_extcs_lock()) {
-    sd_extcs_set_cs(false);
+    sd_extcs_deassert_cs();
     sd_extcs_unlock();
   } else {
     return ESP_ERR_TIMEOUT;
