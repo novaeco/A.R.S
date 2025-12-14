@@ -26,9 +26,26 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
  * output).
  */
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "io_ext";
 static bool s_ioext_initialized = false;
+static SemaphoreHandle_t s_ioext_mutex = NULL;
+
+static bool ioext_lock(void) {
+  if (!s_ioext_mutex) {
+    s_ioext_mutex = xSemaphoreCreateMutex();
+  }
+  if (!s_ioext_mutex)
+    return false;
+  return xSemaphoreTake(s_ioext_mutex, pdMS_TO_TICKS(200)) == pdTRUE;
+}
+
+static void ioext_unlock(void) {
+  if (s_ioext_mutex)
+    xSemaphoreGive(s_ioext_mutex);
+}
 
 /**
  * @brief Set the IO mode for the specified pins.
@@ -43,7 +60,14 @@ void IO_EXTENSION_IO_Mode(uint8_t pin) {
   uint8_t data[2] = {IO_EXTENSION_Mode,
                      pin}; // Prepare the data to write to the mode register
   // Write the 8-bit value to the IO mode register
-  esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  esp_err_t ret = ESP_OK;
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "IO_Mode Failed: mutex unavailable");
+    return;
+  }
+
+  ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  ioext_unlock();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IO_Mode Failed: %s", esp_err_to_name(ret));
   }
@@ -65,7 +89,14 @@ esp_err_t IO_EXTENSION_Init() {
 
   // PROBE: Try to write Mode register to check if device ACK
   uint8_t data[2] = {IO_EXTENSION_Mode, 0xff}; // Set all to output
-  esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  esp_err_t ret = ESP_OK;
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "IOEXT PROBE FAIL: mutex unavailable");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  ioext_unlock();
 
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT PROBE FAIL addr=0x%02X err=%s", IO_EXTENSION_ADDR,
@@ -93,6 +124,11 @@ esp_err_t IO_EXTENSION_Init() {
  * @param value The value to set on the specified pin (0 = low, 1 = high).
  */
 esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "Output Failed: mutex unavailable");
+    return ESP_ERR_TIMEOUT;
+  }
+
   // Update the output value based on the pin and value
   if (value == 1)
     IO_EXTENSION.Last_io_value |= (1 << pin); // Set the pin high
@@ -105,6 +141,7 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
           .Last_io_value}; // Prepare the data to write to the output register
   // Write the 8-bit value to the IO output register
   esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  ioext_unlock();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Output Failed: %s", esp_err_to_name(ret));
   }
@@ -124,8 +161,14 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
 uint8_t IO_EXTENSION_Input(uint8_t pin) {
   uint8_t value = 0;
 
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "Input Failed: mutex unavailable");
+    return 0;
+  }
+
   // Read the value of the input pins
   DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_INPUT_ADDR, &value, 1);
+  ioext_unlock();
   // Return the value of the specific pin(s) by masking with the provided bit
   // mask
   return ((value & (1 << pin)) > 0);
@@ -151,7 +194,13 @@ esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value) {
   // Calculate the duty cycle based on the resolution (12 bits)
   data[1] = Value * (255 / 100.0);
   // Write the 8-bit value to the PWM output register
-  return DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "PWM Failed: mutex unavailable");
+    return ESP_ERR_TIMEOUT;
+  }
+  esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+  ioext_unlock();
+  return ret;
 }
 
 /**
