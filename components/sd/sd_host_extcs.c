@@ -25,6 +25,10 @@
 #define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 20000
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_DEBUG_CMD0
+#define CONFIG_ARS_SD_EXTCS_DEBUG_CMD0 0
+#endif
+
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
@@ -35,13 +39,6 @@
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
 
 static const char *TAG = "sd_extcs";
-
-typedef enum {
-  SD_EXTCS_STATE_UNINITIALIZED = 0,
-  SD_EXTCS_STATE_IDLE_READY,
-  SD_EXTCS_STATE_ABSENT,
-  SD_EXTCS_STATE_INIT_FAIL,
-} sd_extcs_state_t;
 
 // --- Internal State ---
 static spi_host_device_t s_host_id = SPI2_HOST;
@@ -400,10 +397,8 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
 
 // --- Transaction Wrapper ---
 static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
-  int64_t t_start_us = 0;
-
 #if CONFIG_ARS_SD_EXTCS_TIMING_LOG
-  t_start_us = esp_timer_get_time();
+  int64_t t_start_us = esp_timer_get_time();
 #endif
 
   // 1. Assert CS
@@ -466,7 +461,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
                                : SD_EXTCS_STATE_ABSENT;
     ESP_LOGW(TAG, "CMD0 failed: state=%s err=%s (saw_non_ff=%d)",
-             s_extcs_state_str(s_extcs_state), esp_err_to_name(err),
+             sd_extcs_state_str(s_extcs_state), esp_err_to_name(err),
              saw_non_ff);
     return saw_non_ff ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
   }
