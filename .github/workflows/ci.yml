@@ -1,7 +1,7 @@
 name: CI
-
-on:
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
@@ -11,32 +11,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync system clock to avoid future build timestamps
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ntpdate
-          if ! sudo ntpdate -u pool.ntp.org; then
-            echo "[warn] ntpdate failed, falling back to HTTPS Date header"
-            date_hdr=$(curl -sI https://google.com | grep -i '^date:' | cut -d' ' -f2-)
-            if [ -n "$date_hdr" ]; then
-              sudo date -u -s "$date_hdr"
-            else
-              echo "[warn] Unable to retrieve Date header; proceeding with existing clock"
-            fi
-          fi
-          date -u
-
       - name: ESP-IDF build
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.3
+          esp_idf_version: latest
           target: esp32s3
           path: .
           command: |
             idf.py set-target esp32s3
-            idf.py reconfigure
             idf.py build
             idf.py size
-            idf.py fullclean
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: firmware
+          path: |
+            build/flasher_args.json
+            build/partition_table/partition-table.bin
+            build/bootloader/bootloader.bin
+            build/reptiles_assistant.bin
+            build/reptiles_assistant.elf
