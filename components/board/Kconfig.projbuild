@@ -4,8 +4,8 @@ config ARS_BACKLIGHT_USE_IO_EXPANDER
     bool "Piloter le rétroéclairage via l'IO expander"
     default y
     help
-        Utiliser le CH422G pour activer le rétroéclairage (IO_2). Désactiver
-        pour forcer l'usage d'un GPIO direct.
+        Utiliser l'IO expander CH32V003 (Waveshare) pour activer le
+        rétroéclairage (IO_2). Désactiver pour forcer l'usage d'un GPIO direct.
 
 config ARS_BACKLIGHT_GPIO
     int "GPIO de secours pour le rétroéclairage (LEDC)"
