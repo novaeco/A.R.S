@@ -7,6 +7,7 @@
 #include "screens/ui_wifi.h"
 #include "ui.h"
 #include "ui_calibration.h"
+#include "ui_navigation.h"
 
 static const char *TAG = "ui_wizard";
 
@@ -126,7 +127,7 @@ void ui_wizard_next(void) {
       lv_obj_del(scr_ask_wifi);
       scr_ask_wifi = NULL;
     }
-    ui_init(); // Launch Main App
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
     break;
   }
 }
