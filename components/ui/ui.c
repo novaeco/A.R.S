@@ -1,33 +1,54 @@
 #include "ui.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
+#include "nvs.h"
+#include "ui_navigation.h"
+#include "ui_screen_manager.h"
+#include "ui_theme.h"
+#include "ui_wizard.h"
+#include <stdbool.h>
 
 static const char *TAG = "ui";
 
-void ui_init(void) {
-  ESP_LOGI(TAG, "Initializing UI...");
-  ESP_LOGI(TAG, "UI: ui_init() (real UI) called");
+static bool ui_is_setup_done(void) {
+  nvs_handle_t handle;
+  uint8_t done = 0;
 
-  // Create the default theme
-  lv_disp_t *dispp = lv_display_get_default();
-  if (dispp) {
-    lv_theme_t *theme = lv_theme_default_init(
-        dispp, lv_palette_main(LV_PALETTE_BLUE),
-        lv_palette_main(LV_PALETTE_RED), true, LV_FONT_DEFAULT);
-    lv_disp_set_theme(dispp, theme);
+  esp_err_t err = nvs_open("system", NVS_READONLY, &handle);
+  if (err == ESP_OK) {
+    err = nvs_get_u8(handle, "setup_done", &done);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+      ESP_LOGW(TAG, "Failed to read setup_done flag from NVS: %s",
+               esp_err_to_name(err));
+    }
+    nvs_close(handle);
+  } else {
+    ESP_LOGW(TAG, "NVS open failed while checking setup flag: %s",
+             esp_err_to_name(err));
   }
 
-  // Create a simple screen to guarantee visibility
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_screen_load(scr);
+  return done == 1;
+}
 
-  lv_obj_t *label = lv_label_create(scr);
-  lv_label_set_text(label, "Reptiles Assistant");
-  lv_obj_center(label);
+void ui_init(void) {
+  ESP_LOGI(TAG, "Initializing UI orchestration...");
 
-  // Call the main screen creation function as declared in ui.h
-  // ui_create_dashboard(); // Existing call preserved but ensuring simple label
-  // is first
+  lv_display_t *display = lv_display_get_default();
+  if (!display) {
+    ESP_LOGE(TAG, "No default display found; aborting UI init");
+    return;
+  }
 
-  ESP_LOGI(TAG, "UI Initialized (Basic Screen Loaded)");
+  ui_theme_init();
+  ui_screen_manager_init();
+  ui_nav_init();
+
+  if (ui_is_setup_done()) {
+    ESP_LOGI(TAG, "Setup already completed -> loading dashboard");
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
+  } else {
+    ESP_LOGI(TAG, "Setup pending -> starting wizard flow");
+    ui_wizard_start();
+  }
 }
