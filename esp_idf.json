@@ -1,0 +1,10 @@
+{
+  "idfInstalled": [
+    {
+      "idfId": "esp-idf-6.1-dev",
+      "version": "6.1-dev",
+      "path": "C:\\Espressif\\frameworks\\esp-idf-6.1-dev"
+    }
+  ],
+  "idfSelectedId": "esp-idf-6.1-dev"
+}

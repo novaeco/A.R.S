@@ -36,6 +36,7 @@ esp_err_t sd_card_init() {
     sd_set_state(SD_STATE_INIT_OK);
   } else if (ext_state == SD_EXTCS_STATE_ABSENT) {
     sd_set_state(SD_STATE_ABSENT);
+    ESP_LOGW(TAG, "SD init: NO_CARD detected (ext-CS path healthy)");
   } else if (ext_state == SD_EXTCS_STATE_INIT_FAIL) {
     sd_set_state(SD_STATE_INIT_FAIL);
   } else {

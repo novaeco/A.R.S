@@ -23,7 +23,15 @@
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
-#define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 20000
+#define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 10000
+#endif
+
+#ifndef CONFIG_ARS_SD_EXTCS_RECOVERY_FREQ_KHZ
+#define CONFIG_ARS_SD_EXTCS_RECOVERY_FREQ_KHZ 8000
+#endif
+
+#ifndef CONFIG_ARS_SD_EXTCS_SAFE_FREQ_KHZ
+#define CONFIG_ARS_SD_EXTCS_SAFE_FREQ_KHZ 4000
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_DEBUG_CMD0
@@ -36,6 +44,14 @@
 
 #ifndef CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS
 #define CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS 1
+#endif
+
+#ifndef CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US
+#define CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US 50
+#endif
+
+#ifndef CONFIG_ARS_SD_EXTCS_CMD58_RETRIES
+#define CONFIG_ARS_SD_EXTCS_CMD58_RETRIES 5
 #endif
 
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
@@ -212,6 +228,42 @@ static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len) {
                                 (r1 & 0x40) ? " PARAM_ERR" : "");
 }
 
+static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
+                                      uint32_t card_limit_khz,
+                                      uint32_t init_khz) {
+  const uint32_t candidates[] = {host_target_khz, CONFIG_ARS_SD_EXTCS_RECOVERY_FREQ_KHZ,
+                                 CONFIG_ARS_SD_EXTCS_SAFE_FREQ_KHZ};
+
+  esp_err_t last_err = ESP_ERR_INVALID_STATE;
+  for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+    uint32_t candidate = candidates[i];
+    if (candidate == 0)
+      continue;
+
+    if (card_limit_khz > 0 && candidate > card_limit_khz)
+      candidate = card_limit_khz;
+    if (candidate < init_khz)
+      candidate = init_khz;
+    if (candidate == s_active_freq_khz)
+      continue;
+
+    last_err = sdspi_host_set_card_clk(s_host_id, candidate);
+    if (last_err == ESP_OK) {
+      s_active_freq_khz = candidate;
+      sd_extcs_configure_cleanup_device(candidate);
+      ESP_LOGI(TAG,
+               "Raised SD SPI clock to %u kHz (card limit=%u kHz host target=%u)",
+               candidate, card_limit_khz, host_target_khz);
+      return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "Clock switch to %u kHz failed: %s", candidate,
+             esp_err_to_name(last_err));
+  }
+
+  return last_err;
+}
+
 // --- GPIO Helpers ---
 // Drive SD CS through the CH32V003 IO extender and log the requested level so
 // we can distinguish IO path failures from card absence during bring-up.
@@ -248,6 +300,10 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
 
   if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
+  }
+
+  if (SD_EXTCS_CS_I2C_SETTLE_US > 0) {
+    ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
   }
 
   return err;
@@ -947,22 +1003,36 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   }
   ESP_LOGI(TAG, "ACMD41 completed in %d attempt(s), card ready", acmd41_attempts);
 
-  // CMD58: read OCR
+  // CMD58: read OCR with bounded retries for deterministic behavior
   uint8_t resp_r3[5] = {0};
-  err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3, sizeof(resp_r3),
-                              SD_EXTCS_CMD_TIMEOUT_TICKS);
-  if (err != ESP_OK || resp_r3[0] != 0x00) {
-    ESP_LOGE(TAG,
-             "CMD58 failed (resp=0x%02X). Insert SD card or check wiring.",
-             resp_r3[0]);
+  bool ocr_ok = false;
+  int ocr_attempt = 0;
+  for (int attempt = 0; attempt < SD_EXTCS_CMD58_RETRIES; ++attempt) {
+    ocr_attempt = attempt + 1;
+    memset(resp_r3, 0, sizeof(resp_r3));
+    err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3, sizeof(resp_r3),
+                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+    if (err == ESP_OK && resp_r3[0] == 0x00) {
+      ocr_ok = true;
+      break;
+    }
+    ESP_LOGW(TAG, "CMD58 attempt %d/%d resp=0x%02X err=%s", ocr_attempt,
+             SD_EXTCS_CMD58_RETRIES, resp_r3[0], esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(25));
+  }
+
+  if (!ocr_ok) {
+    ESP_LOGE(TAG, "CMD58 failed after %d attempt(s). Insert SD card or check wiring.",
+             ocr_attempt);
     s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
-    return ESP_ERR_TIMEOUT;
+    return err != ESP_OK ? err : ESP_ERR_TIMEOUT;
   }
 
   uint32_t ocr = ((uint32_t)resp_r3[1] << 24) | ((uint32_t)resp_r3[2] << 16) |
                  ((uint32_t)resp_r3[3] << 8) | resp_r3[4];
   bool high_capacity = (ocr & (1 << 30)) != 0;
-  ESP_LOGI(TAG, "OCR=0x%08" PRIX32 " (CCS=%d)", ocr, high_capacity);
+  ESP_LOGI(TAG, "OCR=0x%08" PRIX32 " (CCS=%d) (attempt=%d)", ocr,
+           high_capacity, ocr_attempt);
 
   return ESP_OK;
 }
@@ -1093,19 +1163,11 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
       }
     }
 
-    uint32_t target_khz = host_target_khz;
-    if (card_limit_khz < target_khz)
-      target_khz = card_limit_khz;
-
-    esp_err_t clk_ret = sdspi_host_set_card_clk(s_host_id, target_khz);
-    if (clk_ret == ESP_OK) {
-      ESP_LOGI(TAG,
-               "Raised SD SPI clock to %u kHz (card limit=%u kHz host target=%u kHz)",
-               target_khz, card_limit_khz, host_target_khz);
-      s_active_freq_khz = target_khz;
-      sd_extcs_configure_cleanup_device(target_khz);
-    } else {
-      ESP_LOGW(TAG, "Failed to raise SD SPI clock: %s", esp_err_to_name(clk_ret));
+    esp_err_t clk_ret = sd_extcs_raise_clock(host_target_khz, card_limit_khz,
+                                             init_freq_khz);
+    if (clk_ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to raise SD SPI clock after mount: %s",
+               esp_err_to_name(clk_ret));
     }
   } else {
     ESP_LOGE(TAG, "Mount Failed: %s. Insert SD card or verify wiring.",
