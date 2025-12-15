@@ -863,15 +863,20 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   sd_extcs_miso_diag_t precheck_diag = {0};
   esp_err_t err = sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff,
                                           &cs_low_stuck_warning, &precheck_diag);
+  const char *cs_low_stuck_note =
+      cs_low_stuck_warning
+          ? " (MISO stuck high while CS asserted before CMD0; check CS path)"
+          : "";
   if (!card_idle) {
     s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
                                : SD_EXTCS_STATE_ABSENT;
     ESP_LOGW(TAG,
-             "CMD0 failed: state=%s err=%s (saw_non_ff=%d miso_precheck_all_ff=%d)"
+             "CMD0 failed: state=%s err=%s (saw_non_ff=%d miso_precheck_all_ff=%d)%s"
              " cs_level=%d host=%d freq=%u kHz"
              " miso_high=%02X %02X %02X %02X miso_low=%02X %02X %02X %02X",
              sd_extcs_state_str(s_extcs_state), esp_err_to_name(err),
-             saw_non_ff, cs_low_stuck_warning, s_cs_level, s_host_id,
+             saw_non_ff, cs_low_stuck_warning, cs_low_stuck_note, s_cs_level,
+             s_host_id,
              s_active_freq_khz, precheck_diag.sample_high[0],
              precheck_diag.sample_high[1], precheck_diag.sample_high[2],
              precheck_diag.sample_high[3], precheck_diag.sample_low[0],
