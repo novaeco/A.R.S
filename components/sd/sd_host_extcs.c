@@ -71,6 +71,14 @@ static int s_cs_level = -1; // -1 = unknown, 0 = asserted (LOW), 1 = deasserted 
 static i2c_master_dev_handle_t s_ioext_handle = NULL;
 static SemaphoreHandle_t s_sd_mutex = NULL;
 static sd_extcs_state_t s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
+static bool s_warned_cs_low_stuck = false;
+
+typedef struct {
+  uint8_t sample_high[4];
+  uint8_t sample_low[4];
+  bool high_all_ff;
+  bool low_all_ff;
+} sd_extcs_miso_diag_t;
 
 // Pointer to original implementation
 static esp_err_t (*s_original_do_transaction)(int slot,
@@ -82,8 +90,10 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
-                                         bool *cs_low_stuck_warning);
-static bool sd_extcs_check_miso_health(bool *cs_low_all_ff);
+                                         bool *cs_low_stuck_warning,
+                                         sd_extcs_miso_diag_t *miso_diag);
+static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
+                                       sd_extcs_miso_diag_t *miso_diag);
 static inline bool sd_extcs_lock(void);
 static inline void sd_extcs_unlock(void);
 static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len);
@@ -369,9 +379,13 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
   return (rx == 0xFF) ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
-static bool sd_extcs_check_miso_health(bool *cs_low_all_ff) {
+static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
+                                       sd_extcs_miso_diag_t *miso_diag) {
   if (cs_low_all_ff)
     *cs_low_all_ff = false;
+
+  if (miso_diag)
+    memset(miso_diag, 0, sizeof(*miso_diag));
 
   if (!s_cleanup_handle)
     return false;
@@ -415,6 +429,13 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff) {
   sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
 
+  if (miso_diag) {
+    memcpy(miso_diag->sample_high, sample_high, sizeof(sample_high));
+    memcpy(miso_diag->sample_low, sample_low, sizeof(sample_low));
+    miso_diag->high_all_ff = high_all_ff;
+    miso_diag->low_all_ff = low_all_ff;
+  }
+
   if (!high_all_ff) {
     ESP_LOGW(TAG,
              "MISO health: noise with CS high (samples=%02X %02X %02X %02X)",
@@ -434,7 +455,8 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff) {
 }
 
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
-                                         bool *cs_low_stuck_warning) {
+                                         bool *cs_low_stuck_warning,
+                                         sd_extcs_miso_diag_t *miso_diag) {
   if (card_idle)
     *card_idle = false;
   if (saw_non_ff)
@@ -459,11 +481,12 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
   vTaskDelay(pdMS_TO_TICKS(2));
 
   bool cs_low_all_ff = false;
-  bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff);
+  bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff, miso_diag);
   bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
   if (cs_low_stuck_warning)
     *cs_low_stuck_warning = cs_low_stuck_warning_local;
-  if (cs_low_stuck_warning_local) {
+  if (cs_low_stuck_warning_local && !s_warned_cs_low_stuck) {
+    s_warned_cs_low_stuck = true;
     ESP_LOGW(TAG,
              "MISO stuck high with CS asserted before CMD0; continuing with retries.");
   }
@@ -823,6 +846,7 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
 
 static esp_err_t sd_extcs_low_speed_init(void) {
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
+  s_warned_cs_low_stuck = false;
 
   uint32_t init_khz = SD_EXTCS_INIT_FREQ_KHZ;
   if (init_khz > SD_EXTCS_CMD0_SLOW_FREQ_KHZ)
@@ -836,15 +860,23 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   bool card_idle = false;
   bool saw_non_ff = false;
   bool cs_low_stuck_warning = false;
-  esp_err_t err =
-      sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff, &cs_low_stuck_warning);
+  sd_extcs_miso_diag_t precheck_diag = {0};
+  esp_err_t err = sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff,
+                                          &cs_low_stuck_warning, &precheck_diag);
   if (!card_idle) {
     s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
                                : SD_EXTCS_STATE_ABSENT;
     ESP_LOGW(TAG,
-             "CMD0 failed: state=%s err=%s (saw_non_ff=%d miso_precheck_all_ff=%d)",
+             "CMD0 failed: state=%s err=%s (saw_non_ff=%d miso_precheck_all_ff=%d)"
+             " cs_level=%d host=%d freq=%u kHz"
+             " miso_high=%02X %02X %02X %02X miso_low=%02X %02X %02X %02X",
              sd_extcs_state_str(s_extcs_state), esp_err_to_name(err),
-             saw_non_ff, cs_low_stuck_warning);
+             saw_non_ff, cs_low_stuck_warning, s_cs_level, s_host_id,
+             s_active_freq_khz, precheck_diag.sample_high[0],
+             precheck_diag.sample_high[1], precheck_diag.sample_high[2],
+             precheck_diag.sample_high[3], precheck_diag.sample_low[0],
+             precheck_diag.sample_low[1], precheck_diag.sample_low[2],
+             precheck_diag.sample_low[3]);
     return saw_non_ff ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
   }
 
