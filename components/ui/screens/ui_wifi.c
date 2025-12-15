@@ -252,6 +252,8 @@ static void back_event_cb(lv_event_t *e) {
 }
 
 lv_obj_t *ui_create_screen_wifi(void) {
+
+void ui_create_screen_wifi(void) {
   ui_ScreenWifi = lv_obj_create(NULL);
   ui_theme_apply(ui_ScreenWifi);
   lv_obj_clear_flag(ui_ScreenWifi, LV_OBJ_FLAG_SCROLLABLE);
