@@ -1,5 +1,6 @@
 #include "ui_logs.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "../ui_theme.h"
 #include "core_service.h"
 #include "lvgl.h"
@@ -9,9 +10,11 @@
 #include <string.h>
 #include <time.h>
 
-static void back_event_cb(lv_event_t *e) { ui_create_dashboard(); }
+static void back_event_cb(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
+}
 
-static void refresh_btn_cb(lv_event_t *e) { ui_create_logs_screen(); }
+static void refresh_btn_cb(lv_event_t *e) { ui_nav_navigate(UI_SCREEN_LOGS, false); }
 
 static void __attribute__((unused)) clear_btn_cb(lv_event_t *e) {
   // Audit Rec: Clear logs
@@ -22,7 +25,7 @@ static void __attribute__((unused)) clear_btn_cb(lv_event_t *e) {
   // button.
 }
 
-void ui_create_logs_screen(void) {
+lv_obj_t *ui_create_logs_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -103,5 +106,5 @@ void ui_create_logs_screen(void) {
     lv_list_add_text(list, "Erreur lecture logs.");
   }
 
-  lv_screen_load(scr);
+  return scr;
 }

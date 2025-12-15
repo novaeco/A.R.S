@@ -1,5 +1,6 @@
 #include "ui_animal_form.h"
 #include "../ui_helpers.h"
+#include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "core_service.h"
 #include "lvgl.h"
@@ -80,18 +81,6 @@ static void ta_event_cb(lv_event_t *e) {
   }
 }
 
-static lv_obj_t *ui_msgbox_notify(const char *title, const char *text) {
-  lv_obj_t *mbox = lv_msgbox_create(NULL);
-  if (title)
-    lv_msgbox_add_title(mbox, title);
-  if (text)
-    lv_msgbox_add_text(mbox, text);
-  lv_msgbox_add_close_button(mbox);
-  lv_msgbox_add_footer_button(mbox, "OK");
-  lv_obj_center(mbox);
-  return mbox;
-}
-
 static void back_event_cb(lv_event_t *e) {
   // If editing, go back to details? Else list.
   // Navigation stack would be better, but for now simple check.
@@ -135,7 +124,7 @@ static void delete_btn_cb(lv_event_t *e) {
 static void save_btn_cb(lv_event_t *e) {
   const char *name = lv_textarea_get_text(ta_name);
   if (strlen(name) == 0) {
-    ui_msgbox_notify("Erreur", "Le nom est obligatoire.");
+    ui_show_toast("Le nom est obligatoire", UI_TOAST_ERROR);
     return;
   }
 
@@ -181,7 +170,7 @@ static void save_btn_cb(lv_event_t *e) {
   if (core_save_animal(&animal) == ESP_OK) {
     ui_create_animal_list_screen();
   } else {
-    ui_msgbox_notify("Erreur", "Echec de la sauvegarde.");
+    ui_show_toast("Echec de la sauvegarde", UI_TOAST_ERROR);
   }
 }
 

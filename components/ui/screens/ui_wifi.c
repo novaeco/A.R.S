@@ -1,14 +1,15 @@
 #include "screens/ui_wifi.h"
 #include "../ui_helpers.h"
 #include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "net_manager.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 #include "ui.h"
+#include "../ui_wizard.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,8 @@ static lv_obj_t *ta_pass;
 static lv_obj_t *kb;
 static lv_obj_t *btn_connect;
 static lv_obj_t *lbl_status;
+static ui_wifi_result_cb_t s_result_cb = NULL;
+static bool s_waiting_for_connection = false;
 
 static esp_event_handler_instance_t s_wifi_evt_handler;
 static esp_event_handler_instance_t s_ip_evt_handler;
@@ -64,13 +67,18 @@ static void apply_wifi_ui_update(void *user_data) {
     return;
   }
 
-  ui_helper_hide_spinner();
+  ui_show_loading(false);
 
   if (update->got_ip) {
     char buf[64];
     snprintf(buf, sizeof(buf), "Connect\u00e9: %s", update->ip_str);
     set_status_label(buf, lv_palette_main(LV_PALETTE_GREEN));
     set_inputs_enabled(true);
+    bool notify = s_waiting_for_connection;
+    s_waiting_for_connection = false;
+    if (notify && s_result_cb) {
+      s_result_cb(UI_WIFI_RESULT_SUCCESS, WIFI_REASON_UNSPECIFIED);
+    }
   } else if (update->disconnected) {
     char buf[96];
     snprintf(buf, sizeof(buf),
@@ -78,6 +86,11 @@ static void apply_wifi_ui_update(void *user_data) {
              (int)update->reason);
     set_status_label(buf, lv_palette_main(LV_PALETTE_RED));
     set_inputs_enabled(true);
+    ui_show_error(buf);
+    if (s_waiting_for_connection && s_result_cb) {
+      s_result_cb(UI_WIFI_RESULT_FAILED, update->reason);
+    }
+    s_waiting_for_connection = false;
   }
 
   free(update);
@@ -140,6 +153,18 @@ static esp_err_t ensure_wifi_event_listener(void) {
   return ESP_OK;
 }
 
+static void unregister_wifi_event_listener(void) {
+  if (!s_wifi_evt_registered) {
+    return;
+  }
+
+  esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                        s_wifi_evt_handler);
+  esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        s_ip_evt_handler);
+  s_wifi_evt_registered = false;
+}
+
 static void event_connect_handler(lv_event_t *e) {
   const char *ssid = lv_textarea_get_text(ta_ssid);
   const char *pass = lv_textarea_get_text(ta_pass);
@@ -183,6 +208,12 @@ static void event_connect_handler(lv_event_t *e) {
     }
   }
 
+  esp_err_t ensure_evt = ensure_wifi_event_listener();
+  if (ensure_evt != ESP_OK) {
+    ui_show_error("Moniteur Wi-Fi indisponible");
+    return;
+  }
+
   ESP_LOGI(TAG, "Connecting to SSID: %s", ssid);
   // Call Net Manager to start Wi-Fi
   esp_err_t err = net_connect(ssid, pass);
@@ -190,14 +221,15 @@ static void event_connect_handler(lv_event_t *e) {
     char buf[96];
     snprintf(buf, sizeof(buf), "Connexion refus\u00e9e (%s)", esp_err_to_name(err));
     set_status_label(buf, lv_palette_main(LV_PALETTE_RED));
+    ui_show_error(buf);
+    ui_show_loading(false);
     return;
   }
 
-  // Helper Spinner
-  ui_helper_show_spinner();
-
+  ui_show_loading(true);
   set_status_label("Connexion en cours...", lv_palette_main(LV_PALETTE_BLUE));
   set_inputs_enabled(false);
+  s_waiting_for_connection = true;
 }
 
 static void ta_event_cb(lv_event_t *e) {
@@ -223,105 +255,160 @@ static void keyboard_event_cb(lv_event_t *e) {
   }
 }
 
-#include "../ui_wizard.h"
-
 static void back_event_cb(lv_event_t *e) {
-  // If we are in wizard mode (checked via NVS or simple heuristic), we should
-  // go next. For now, let's assume if this screen is called during wizard, the
-  // user wants to go forward or back. Simpler: Just call ui_wizard_next(). The
-  // wizard state machine will handle "WIFI_CONFIG -> DONE" transition. But if
-  // we are in dashboard mode, we don't want to call wizard next. Let's rely on
-  // the Wizard module to manage what happens next, but here we just need to
-  // exit. Ideally, ui_wifi should emit a signal. Let's just call
-  // ui_wizard_next() which acts as "Finish/Skip" for this step. BUT! If called
-  // from Dashboard, ui_wizard_next might trigger weird state. Safe bet: Check
-  // if setup is done.
-
-  nvs_handle_t h;
-  uint8_t done = 0;
-  if (nvs_open("system", NVS_READONLY, &h) == ESP_OK) {
-    nvs_get_u8(h, "setup_done", &done);
-    nvs_close(h);
+  (void)e;
+  if (ui_wizard_handle_wifi_cancel()) {
+    return;
   }
-
-  if (!done) {
-    ui_wizard_next();
-  } else {
-    ui_create_dashboard();
-  }
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
 }
 
-void ui_create_screen_wifi(void) {
+lv_obj_t *ui_create_screen_wifi(void) {
   ui_ScreenWifi = lv_obj_create(NULL);
   ui_theme_apply(ui_ScreenWifi);
   lv_obj_clear_flag(ui_ScreenWifi, LV_OBJ_FLAG_SCROLLABLE);
 
-  lv_obj_t *lbl_hint = lv_label_create(ui_ScreenWifi);
+  // Header Helper
+  lv_obj_t *header =
+      ui_helper_create_header(ui_ScreenWifi, "Wi-Fi Settings", back_event_cb,
+                              "Retour");
+  lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+
+  // Body container with two responsive columns (form + keyboard/status)
+  lv_obj_t *body = lv_obj_create(ui_ScreenWifi);
+  lv_obj_set_size(body, LV_PCT(100), LV_PCT(100));
+  lv_obj_align(body, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT + UI_SPACE_MD);
+  lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(body, 0, 0);
+  lv_obj_set_style_pad_left(body, UI_SPACE_XL, 0);
+  lv_obj_set_style_pad_right(body, UI_SPACE_XL, 0);
+  lv_obj_set_style_pad_top(body, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_bottom(body, UI_SPACE_XL, 0);
+  lv_obj_set_style_pad_gap(body, UI_SPACE_XL, 0);
+  lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_START);
+
+  lv_obj_t *form_col = lv_obj_create(body);
+  lv_obj_set_width(form_col, LV_PCT(55));
+  lv_obj_set_style_min_width(form_col, 320, 0);
+  lv_obj_set_style_flex_grow(form_col, 1, 0);
+  lv_obj_set_style_bg_opa(form_col, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(form_col, 0, 0);
+  lv_obj_set_style_pad_all(form_col, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_gap(form_col, UI_SPACE_MD, 0);
+  lv_obj_set_flex_flow(form_col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(form_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_START);
+
+  lv_obj_t *lbl_hint = lv_label_create(form_col);
   lv_label_set_text(lbl_hint, "Renseignez le SSID et le mot de passe puis "
                               "appuyez sur 'Connect'.\nL'appareil reste en "
                               "attente proprement tant qu'aucun identifiant n"
                               "'est fourni.");
   lv_label_set_long_mode(lbl_hint, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(lbl_hint, 420);
-  lv_obj_align(lbl_hint, LV_ALIGN_TOP_LEFT, 20, 20);
-
-  // Header Helper
-  ui_helper_create_header(ui_ScreenWifi, "Wi-Fi Settings", back_event_cb,
-                          "Retour");
+  lv_obj_set_width(lbl_hint, LV_PCT(100));
+  lv_obj_add_style(lbl_hint, &ui_style_text_muted, 0);
 
   // SSID Label & TextArea
-  lv_obj_t *lbl_ssid = lv_label_create(ui_ScreenWifi);
+  lv_obj_t *lbl_ssid = lv_label_create(form_col);
   lv_label_set_text(lbl_ssid, "SSID:");
-  lv_obj_align(lbl_ssid, LV_ALIGN_TOP_LEFT, 20, 70);
+  lv_obj_add_style(lbl_ssid, &ui_style_text_body, 0);
 
-  ta_ssid = lv_textarea_create(ui_ScreenWifi);
+  ta_ssid = lv_textarea_create(form_col);
   lv_textarea_set_one_line(ta_ssid, true);
-  lv_obj_set_width(ta_ssid, 200);
-  lv_obj_align(ta_ssid, LV_ALIGN_TOP_LEFT, 20, 95);
+  lv_obj_set_width(ta_ssid, LV_PCT(100));
+  lv_obj_set_height(ta_ssid, 56);
+  lv_obj_set_style_pad_all(ta_ssid, UI_SPACE_SM, 0);
+  lv_obj_add_style(ta_ssid, &ui_style_text_body, 0);
   lv_obj_add_event_cb(ta_ssid, ta_event_cb, LV_EVENT_ALL, NULL);
 
   // Password Label & TextArea
-  lv_obj_t *lbl_pass = lv_label_create(ui_ScreenWifi);
+  lv_obj_t *lbl_pass = lv_label_create(form_col);
   lv_label_set_text(lbl_pass, "Password:");
-  lv_obj_align(lbl_pass, LV_ALIGN_TOP_LEFT, 20, 140);
+  lv_obj_add_style(lbl_pass, &ui_style_text_body, 0);
 
-  ta_pass = lv_textarea_create(ui_ScreenWifi);
+  ta_pass = lv_textarea_create(form_col);
   lv_textarea_set_one_line(ta_pass, true);
   lv_textarea_set_password_mode(ta_pass, true);
-  lv_obj_set_width(ta_pass, 200);
-  lv_obj_align(ta_pass, LV_ALIGN_TOP_LEFT, 20, 165);
+  lv_obj_set_width(ta_pass, LV_PCT(100));
+  lv_obj_set_height(ta_pass, 56);
+  lv_obj_set_style_pad_all(ta_pass, UI_SPACE_SM, 0);
+  lv_obj_add_style(ta_pass, &ui_style_text_body, 0);
   lv_obj_add_event_cb(ta_pass, ta_event_cb, LV_EVENT_ALL, NULL);
 
   // Connect Button
-  btn_connect = lv_button_create(ui_ScreenWifi);
-  lv_obj_align(btn_connect, LV_ALIGN_TOP_RIGHT, -20, 95);
-  lv_obj_set_size(btn_connect, 100, 50);
-  lv_obj_set_style_bg_color(btn_connect, lv_palette_darken(LV_PALETTE_BLUE, 2),
-                            LV_STATE_PRESSED);
+  btn_connect = lv_button_create(form_col);
+  lv_obj_add_style(btn_connect, &ui_style_btn_primary, 0);
+  lv_obj_set_style_min_height(btn_connect, 56, 0);
+  lv_obj_set_style_min_width(btn_connect, 200, 0);
+  lv_obj_set_style_pad_left(btn_connect, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_right(btn_connect, UI_SPACE_LG, 0);
   lv_obj_add_event_cb(btn_connect, event_connect_handler, LV_EVENT_CLICKED,
                       NULL);
 
   lv_obj_t *lbl_btn = lv_label_create(btn_connect);
   lv_label_set_text(lbl_btn, "Connect");
+  lv_obj_add_style(lbl_btn, &ui_style_text_body, 0);
   lv_obj_center(lbl_btn);
 
+  // Secondary column: status + keyboard
+  lv_obj_t *side_col = lv_obj_create(body);
+  lv_obj_set_width(side_col, LV_PCT(40));
+  lv_obj_set_style_min_width(side_col, 280, 0);
+  lv_obj_set_style_flex_grow(side_col, 1, 0);
+  lv_obj_set_style_bg_opa(side_col, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(side_col, 0, 0);
+  lv_obj_set_style_pad_all(side_col, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_gap(side_col, UI_SPACE_MD, 0);
+  lv_obj_set_flex_flow(side_col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(side_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_START);
+
+  // Status Label
+  lbl_status = lv_label_create(side_col);
+  lv_label_set_text(lbl_status, "Pr\u00eat");
+  lv_obj_add_style(lbl_status, &ui_style_text_body, 0);
+  lv_obj_set_width(lbl_status, LV_PCT(100));
+
   // --- AZERTY Keyboard Helper ---
-  kb = lv_keyboard_create(ui_ScreenWifi);
+  kb = lv_keyboard_create(side_col);
   ui_helper_setup_keyboard(kb);
+  lv_obj_set_width(kb, LV_PCT(100));
+  lv_obj_set_height(kb, 260);
 
   // Hide initially
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_event_cb(kb, keyboard_event_cb, LV_EVENT_ALL, NULL);
 
-  // Status Label
-  lbl_status = lv_label_create(ui_ScreenWifi);
-  lv_label_set_text(lbl_status, "Pr\u00eat");
-  lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_LEFT, 20, -20);
+  return ui_ScreenWifi;
+}
 
-  lv_screen_load(ui_ScreenWifi);
+void ui_wifi_set_result_cb(ui_wifi_result_cb_t cb) {
+  s_result_cb = cb;
+  s_waiting_for_connection = false;
+}
 
+void ui_wifi_on_enter(void) {
   esp_err_t evt_err = ensure_wifi_event_listener();
   if (evt_err != ESP_OK) {
-    set_status_label("Moniteur Wi-Fi indisponible", lv_palette_main(LV_PALETTE_RED));
+    set_status_label("Moniteur Wi-Fi indisponible",
+                     lv_palette_main(LV_PALETTE_RED));
+    ui_show_error("Moniteur Wi-Fi indisponible");
   }
+  s_waiting_for_connection = false;
+  ui_show_loading(false);
+  set_inputs_enabled(true);
+  set_status_label("Pr\u00eat", lv_palette_main(LV_PALETTE_GREY));
+}
+
+void ui_wifi_on_leave(void) {
+  ui_show_loading(false);
+  set_inputs_enabled(true);
+  if (kb) {
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  }
+  s_waiting_for_connection = false;
+  ui_wifi_set_result_cb(NULL);
+  unregister_wifi_event_listener();
 }

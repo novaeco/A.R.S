@@ -1,5 +1,6 @@
 #include "ui_helpers.h"
 #include "ui.h" // For ui_battery_cb_t
+#include "ui_screen_manager.h"
 #include "ui_theme.h"
 #include <stdio.h>
 
@@ -15,48 +16,32 @@ int ui_get_battery_level(uint8_t *percent, uint16_t *voltage_mv) {
   return -1; // Error or Not Implemented
 }
 
-// ======================= SPINNER =======================
-static lv_obj_t *spinner_cont = NULL;
+// ======================= SPINNER (delegated to screen manager) =======================
+void ui_helper_show_spinner(void) { ui_show_loading(true); }
 
-static void __attribute__((unused)) stop_spinner_cb(lv_timer_t *t) {
-  ui_helper_hide_spinner();
-}
-
-void ui_helper_show_spinner(void) {
-  if (spinner_cont)
-    return;
-  spinner_cont = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(spinner_cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_bg_color(spinner_cont, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(spinner_cont, LV_OPA_50, 0);
-  lv_obj_t *spin = lv_spinner_create(spinner_cont);
-  lv_obj_center(spin);
-}
-
-void ui_helper_hide_spinner(void) {
-  if (spinner_cont) {
-    lv_obj_del(spinner_cont);
-    spinner_cont = NULL;
-  }
-}
+void ui_helper_hide_spinner(void) { ui_show_loading(false); }
 
 // ======================= HEADER =======================
 lv_obj_t *ui_helper_create_header(lv_obj_t *parent, const char *title,
                                   lv_event_cb_t back_cb,
                                   const char *back_text) {
   lv_obj_t *header = lv_obj_create(parent);
-  lv_obj_set_size(header, LV_PCT(100), 60);
+  lv_obj_set_size(header, LV_PCT(100), UI_HEADER_HEIGHT);
   lv_obj_set_pos(header, 0, 0);
-  // Use theme color if possible, or fallback
-  lv_obj_set_style_bg_color(header, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_style(header, &ui_style_card, 0);
+  lv_obj_set_style_radius(header, 0, 0);
+  lv_obj_set_style_shadow_width(header, 0, 0);
+  lv_obj_set_style_pad_all(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_pad_gap(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_bg_color(header, UI_COLOR_PRIMARY, 0);
 
   if (back_cb) {
     lv_obj_t *btn_back = lv_button_create(header);
-    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_add_style(btn_back, &ui_style_btn_primary, 0); // Use theme style
-    // Override color for back button? Usually Blue or consistent
-    lv_obj_set_style_bg_color(btn_back, lv_palette_darken(LV_PALETTE_BLUE, 2),
-                              LV_STATE_PRESSED);
+    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, UI_SPACE_SM, 0);
+    lv_obj_add_style(btn_back, &ui_style_btn_secondary, 0); // Use theme style
+    lv_obj_set_style_pad_left(btn_back, UI_SPACE_MD, 0);
+    lv_obj_set_style_pad_right(btn_back, UI_SPACE_MD, 0);
 
     lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
 
@@ -65,10 +50,12 @@ lv_obj_t *ui_helper_create_header(lv_obj_t *parent, const char *title,
     snprintf(buf, sizeof(buf), "%s %s", LV_SYMBOL_LEFT,
              back_text ? back_text : "Retour");
     lv_label_set_text(lbl, buf);
+    lv_obj_add_style(lbl, &ui_style_text_body, 0);
   }
 
   lv_obj_t *lbl_title = lv_label_create(header);
   lv_label_set_text(lbl_title, title);
+  lv_obj_add_style(lbl_title, &ui_style_title, 0);
   lv_obj_set_style_text_color(lbl_title, lv_color_white(), 0);
   lv_obj_align(lbl_title, LV_ALIGN_CENTER, 0, 0);
 

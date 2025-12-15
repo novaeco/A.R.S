@@ -1,5 +1,7 @@
 #include "screens/ui_settings.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "board.h"
 #include "core_export.h"
@@ -20,21 +22,9 @@ static lv_obj_t *kb;
 static lv_obj_t *slider_bl;
 static lv_obj_t *label_bl_value;
 
-// Spinner removed (using shared)
-
-static lv_obj_t *ui_msgbox_notify(const char *title, const char *text) {
-  lv_obj_t *mbox = lv_msgbox_create(NULL);
-  if (title)
-    lv_msgbox_add_title(mbox, title);
-  if (text)
-    lv_msgbox_add_text(mbox, text);
-  lv_msgbox_add_close_button(mbox);
-  lv_msgbox_add_footer_button(mbox, "OK");
-  lv_obj_center(mbox);
-  return mbox;
+static void back_event_cb(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
 }
-
-static void back_event_cb(lv_event_t *e) { ui_create_dashboard(); }
 
 static void save_wifi_cb(lv_event_t *e) {
   const char *ssid = lv_textarea_get_text(ta_ssid);
@@ -44,20 +34,19 @@ static void save_wifi_cb(lv_event_t *e) {
     storage_nvs_set_str("wifi_ssid", ssid);
     storage_nvs_set_str("wifi_pwd", pwd);
     net_connect(ssid, pwd);
-    ui_msgbox_notify("Info", "WiFi credentials saved.");
+    ui_show_toast("WiFi enregistré", UI_TOAST_SUCCESS);
   }
 }
 
 static void save_pin_cb(lv_event_t *e) {
   const char *pin = lv_textarea_get_text(ta_pin);
   storage_nvs_set_str("sys_pin", pin);
-  ui_msgbox_notify("Info", "Code PIN enregistre.");
+  ui_show_toast("Code PIN enregistré", UI_TOAST_SUCCESS);
 }
 
 static void export_cb(lv_event_t *e) {
   if (!board_sd_is_mounted()) {
-    ui_msgbox_notify("SD desactivee",
-                     "Aucune carte SD montee. Export indisponible.");
+    ui_show_toast("Aucune carte SD montée", UI_TOAST_ERROR);
     return;
   }
 
@@ -66,17 +55,17 @@ static void export_cb(lv_event_t *e) {
 
   if (core_export_csv("/sdcard/export.csv") == ESP_OK) {
     ui_helper_hide_spinner();
-    ui_msgbox_notify("Succes", "Export CSV termine:\n/sdcard/export.csv");
+    ui_show_toast("Export CSV terminé", UI_TOAST_SUCCESS);
   } else {
     ui_helper_hide_spinner();
-    ui_msgbox_notify("Erreur", "Echec de l'export.");
+    ui_show_toast("Echec de l'export", UI_TOAST_ERROR);
   }
 }
 
 static void ota_btn_cb(lv_event_t *e) {
   const char *url = lv_textarea_get_text(ta_ota_url);
   if (strlen(url) < 10 || (strstr(url, "http") != url)) {
-    ui_msgbox_notify("Erreur", "URL invalide (http... required)");
+    ui_show_toast("URL invalide (http…)", UI_TOAST_ERROR);
     return;
   }
   if (strlen(url) > 0) {
@@ -120,7 +109,7 @@ static void ta_event_cb(lv_event_t *e) {
   }
 }
 
-void ui_create_settings_screen(void) {
+lv_obj_t *ui_create_settings_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -230,5 +219,5 @@ void ui_create_settings_screen(void) {
   ui_helper_setup_keyboard(kb);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
 
-  lv_screen_load(scr);
+  return scr;
 }

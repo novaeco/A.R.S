@@ -3,6 +3,12 @@
 
 #include "lvgl.h"
 
+typedef enum {
+  UI_TOAST_INFO = 0,
+  UI_TOAST_SUCCESS,
+  UI_TOAST_ERROR,
+} ui_toast_type_t;
+
 // Initialize the screen manager
 void ui_screen_manager_init(void);
 
@@ -15,5 +21,8 @@ void ui_show_loading(bool show);
 
 // Show a temporary error toast/notification
 void ui_show_error(const char *msg);
+
+// Generic toast (info/success/error) with auto-dismiss
+void ui_show_toast(const char *msg, ui_toast_type_t type);
 
 #endif
