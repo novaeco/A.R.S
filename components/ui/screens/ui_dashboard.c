@@ -195,6 +195,7 @@ lv_obj_t *ui_create_dashboard(void) {
   lv_obj_add_style(battery_label, &ui_style_text_body, 0);
   lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
   lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
 
   // 3. Grid
   lv_obj_t *grid = lv_obj_create(scr);

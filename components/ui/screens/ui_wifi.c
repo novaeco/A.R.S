@@ -270,6 +270,33 @@ lv_obj_t *ui_create_screen_wifi(void) {
   ui_helper_create_header(ui_ScreenWifi, "Wi-Fi Settings", back_event_cb,
                           "Retour");
 
+  if (!done) {
+    ui_wizard_next();
+  } else {
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
+  }
+}
+
+lv_obj_t *ui_create_screen_wifi(void) {
+
+void ui_create_screen_wifi(void) {
+  ui_ScreenWifi = lv_obj_create(NULL);
+  ui_theme_apply(ui_ScreenWifi);
+  lv_obj_clear_flag(ui_ScreenWifi, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *lbl_hint = lv_label_create(ui_ScreenWifi);
+  lv_label_set_text(lbl_hint, "Renseignez le SSID et le mot de passe puis "
+                              "appuyez sur 'Connect'.\nL'appareil reste en "
+                              "attente proprement tant qu'aucun identifiant n"
+                              "'est fourni.");
+  lv_label_set_long_mode(lbl_hint, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(lbl_hint, 420);
+  lv_obj_align(lbl_hint, LV_ALIGN_TOP_LEFT, 20, 20);
+
+  // Header Helper
+  ui_helper_create_header(ui_ScreenWifi, "Wi-Fi Settings", back_event_cb,
+                          "Retour");
+
   // SSID Label & TextArea
   lv_obj_t *lbl_ssid = lv_label_create(ui_ScreenWifi);
   lv_label_set_text(lbl_ssid, "SSID:");
@@ -328,6 +355,51 @@ lv_obj_t *ui_create_screen_wifi(void) {
   lv_label_set_text(lbl_status, "Pr\u00eat");
   lv_obj_add_style(lbl_status, &ui_style_text_body, 0);
   lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_LEFT, UI_SPACE_LG, -UI_SPACE_LG);
+
+  return ui_ScreenWifi;
+}
+
+void ui_wifi_on_enter(void) {
+  esp_err_t evt_err = ensure_wifi_event_listener();
+  if (evt_err != ESP_OK) {
+    set_status_label("Moniteur Wi-Fi indisponible", lv_palette_main(LV_PALETTE_RED));
+  }
+  ui_helper_hide_spinner();
+  set_inputs_enabled(true);
+}
+
+void ui_wifi_on_leave(void) {
+  ui_helper_hide_spinner();
+  set_inputs_enabled(true);
+  if (kb) {
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+  // Connect Button
+  btn_connect = lv_button_create(ui_ScreenWifi);
+  lv_obj_align(btn_connect, LV_ALIGN_TOP_RIGHT, -20, 95);
+  lv_obj_set_size(btn_connect, 100, 50);
+  lv_obj_set_style_bg_color(btn_connect, lv_palette_darken(LV_PALETTE_BLUE, 2),
+                            LV_STATE_PRESSED);
+  lv_obj_add_event_cb(btn_connect, event_connect_handler, LV_EVENT_CLICKED,
+                      NULL);
+
+  lv_obj_t *lbl_btn = lv_label_create(btn_connect);
+  lv_label_set_text(lbl_btn, "Connect");
+  lv_obj_center(lbl_btn);
+
+  // --- AZERTY Keyboard Helper ---
+  kb = lv_keyboard_create(ui_ScreenWifi);
+  ui_helper_setup_keyboard(kb);
+
+  // Hide initially
+  lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(kb, keyboard_event_cb, LV_EVENT_ALL, NULL);
+
+  // Status Label
+  lbl_status = lv_label_create(ui_ScreenWifi);
+  lv_label_set_text(lbl_status, "Pr\u00eat");
+  lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_LEFT, 20, -20);
 
   return ui_ScreenWifi;
 }
