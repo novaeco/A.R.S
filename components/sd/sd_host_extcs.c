@@ -888,8 +888,11 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   esp_err_t ret;
 
-  ESP_LOGI(TAG, "Mounting SD (SDSPI ext-CS) init=%u kHz target=%u kHz",\
-           SD_EXTCS_INIT_FREQ_KHZ, SD_EXTCS_TARGET_FREQ_KHZ);
+  const uint32_t init_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
+  const uint32_t host_target_khz = SD_EXTCS_TARGET_FREQ_KHZ;
+
+  ESP_LOGI(TAG, "Mounting SD (SDSPI ext-CS) init=%u kHz target=%u kHz",
+           init_freq_khz, host_target_khz);
 
   s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
 
@@ -950,7 +953,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   // 3. Cleanup Device
   if (!s_cleanup_handle) {
-    ret = sd_extcs_configure_cleanup_device(SD_EXTCS_INIT_FREQ_KHZ);
+    ret = sd_extcs_configure_cleanup_device(init_freq_khz);
     if (ret != ESP_OK)
       return ret;
   }
@@ -965,7 +968,6 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   // 5. Host Config
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = s_host_id;
-  const uint32_t host_target_khz = SD_EXTCS_TARGET_FREQ_KHZ;
   host.max_freq_khz = host_target_khz;
 
   s_original_do_transaction = host.do_transaction;
@@ -991,9 +993,17 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     sdmmc_card_print_info(stdout, s_card);
 
     // Increase clock after OCR stable and card enumerated
-    uint32_t card_limit_khz =
-        (s_card && s_card->max_freq_khz > 0) ? s_card->max_freq_khz
-                                             : host_target_khz;
+    uint32_t card_limit_khz = host_target_khz;
+    if (s_card && s_card->max_freq_khz > 0) {
+      if (s_card->max_freq_khz > init_freq_khz) {
+        card_limit_khz = s_card->max_freq_khz;
+      } else {
+        ESP_LOGW(TAG,
+                 "Card max_freq_khz=%u kHz matches init clock; honoring host target",
+                 s_card->max_freq_khz);
+      }
+    }
+
     uint32_t target_khz = host_target_khz;
     if (card_limit_khz < target_khz)
       target_khz = card_limit_khz;
@@ -1004,6 +1014,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
                "Raised SD SPI clock to %u kHz (card limit=%u kHz host target=%u kHz)",
                target_khz, card_limit_khz, host_target_khz);
       s_active_freq_khz = target_khz;
+      sd_extcs_configure_cleanup_device(target_khz);
     } else {
       ESP_LOGW(TAG, "Failed to raise SD SPI clock: %s", esp_err_to_name(clk_ret));
     }
