@@ -16,17 +16,29 @@ static bool ui_is_setup_done(void) {
   uint8_t done = 0;
 
   esp_err_t err = nvs_open("system", NVS_READONLY, &handle);
-  if (err == ESP_OK) {
-    err = nvs_get_u8(handle, "setup_done", &done);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-      ESP_LOGW(TAG, "Failed to read setup_done flag from NVS: %s",
-               esp_err_to_name(err));
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(TAG, "Setup flag namespace not found in NVS (first boot assumed)");
+    // Create namespace to avoid repeating the info log on next boot
+    if (nvs_open("system", NVS_READWRITE, &handle) == ESP_OK) {
+      nvs_close(handle);
     }
-    nvs_close(handle);
-  } else {
+    return false;
+  }
+
+  if (err != ESP_OK) {
     ESP_LOGW(TAG, "NVS open failed while checking setup flag: %s",
              esp_err_to_name(err));
+    return false;
   }
+
+  err = nvs_get_u8(handle, "setup_done", &done);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(TAG, "Setup flag not set yet (first boot)");
+  } else if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to read setup_done flag from NVS: %s",
+             esp_err_to_name(err));
+  }
+  nvs_close(handle);
 
   return done == 1;
 }
