@@ -52,17 +52,6 @@ void ui_theme_init(void) {
   lv_style_set_text_font(&ui_style_btn_primary, UI_FONT_BODY);
   lv_style_set_border_width(&ui_style_btn_primary, 0);
   lv_style_set_shadow_width(&ui_style_btn_primary, 0);
-  // Pressed / checked / disabled / focus states
-  lv_style_set_bg_color(&ui_style_btn_primary, UI_COLOR_PRIMARY_DARK,
-                        LV_STATE_PRESSED | LV_STATE_CHECKED);
-  lv_style_set_bg_opa(&ui_style_btn_primary, LV_OPA_60, LV_STATE_DISABLED);
-  lv_style_set_text_opa(&ui_style_btn_primary, LV_OPA_60, LV_STATE_DISABLED);
-  lv_style_set_outline_color(&ui_style_btn_primary, UI_COLOR_OUTLINE,
-                             LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
-  lv_style_set_outline_width(&ui_style_btn_primary, 2,
-                             LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
-  lv_style_set_outline_pad(&ui_style_btn_primary, 2,
-                           LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
 
   // 7. Secondary Button Style (or Alert)
   lv_style_init(&ui_style_btn_secondary);
@@ -73,16 +62,6 @@ void ui_theme_init(void) {
   lv_style_set_text_font(&ui_style_btn_secondary, UI_FONT_BODY);
   lv_style_set_border_width(&ui_style_btn_secondary, 0);
   lv_style_set_shadow_width(&ui_style_btn_secondary, 0);
-  lv_style_set_bg_color(&ui_style_btn_secondary, UI_COLOR_SECONDARY_DARK,
-                        LV_STATE_PRESSED | LV_STATE_CHECKED);
-  lv_style_set_bg_opa(&ui_style_btn_secondary, LV_OPA_60, LV_STATE_DISABLED);
-  lv_style_set_text_opa(&ui_style_btn_secondary, LV_OPA_60, LV_STATE_DISABLED);
-  lv_style_set_outline_color(&ui_style_btn_secondary, UI_COLOR_OUTLINE,
-                             LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
-  lv_style_set_outline_width(&ui_style_btn_secondary, 2,
-                             LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
-  lv_style_set_outline_pad(&ui_style_btn_secondary, 2,
-                           LV_STATE_FOCUS_KEY | LV_STATE_FOCUSED);
 
   // 8. Global Theme (LVGL Default)
   lv_display_t *disp = lv_display_get_default();

@@ -54,6 +54,9 @@
 #define UI_RADIUS_LG 16
 
 #define UI_SHADOW_WIDTH 18
+#ifndef UI_SHADOW_MD
+#define UI_SHADOW_MD 16
+#endif
 #define UI_SHADOW_OPA LV_OPA_10
 
 #define UI_HEADER_HEIGHT 64
