@@ -3,4 +3,6 @@
 
 extern lv_obj_t *ui_ScreenWifi;
 
-void ui_create_screen_wifi(void);
+lv_obj_t *ui_create_screen_wifi(void);
+void ui_wifi_on_enter(void);
+void ui_wifi_on_leave(void);

@@ -4,10 +4,12 @@
 extern "C" {
 #endif
 
+#include "lvgl.h"
+
 /**
  * @brief Create the Documents Screen (List reports & Generate).
  */
-void ui_create_documents_screen(void);
+lv_obj_t *ui_create_documents_screen(void);
 
 #ifdef __cplusplus
 }

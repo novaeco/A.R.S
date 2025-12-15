@@ -1,5 +1,6 @@
 #include "screens/ui_lockscreen.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "lvgl.h"
 #include "reptile_storage.h"
 #include "ui.h"
@@ -29,18 +30,18 @@ static void kb_event_cb(lv_event_t *e) {
     if (storage_nvs_get_str("sys_pin", current_pin, sizeof(current_pin)) !=
         ESP_OK) {
       // No PIN set, allow unlock
-      ui_create_dashboard();
+      ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
       return;
     }
 
     // If PIN stored is empty, allow unlock
     if (strlen(current_pin) == 0) {
-      ui_create_dashboard();
+      ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
       return;
     }
 
     if (strcmp(entered, current_pin) == 0) {
-      ui_create_dashboard();
+      ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
     } else {
       lv_textarea_set_text(ta_pin, "");
       ui_show_msgbox("Erreur", "Code PIN Incorrect");
@@ -48,7 +49,7 @@ static void kb_event_cb(lv_event_t *e) {
   }
 }
 
-void ui_create_lockscreen(void) {
+lv_obj_t *ui_create_lockscreen(void) {
   lv_obj_t *scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
@@ -71,5 +72,5 @@ void ui_create_lockscreen(void) {
   lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_ALL, NULL); // Catch READY
 
-  lv_screen_load(scr);
+  return scr;
 }
