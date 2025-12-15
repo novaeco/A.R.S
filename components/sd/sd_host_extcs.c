@@ -559,9 +559,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
   bool cs_low_all_ff = false;
   bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff, miso_diag);
   bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
+  bool log_cs_warning = cs_low_stuck_warning_local && !s_warned_cs_low_stuck;
   if (cs_low_stuck_warning)
     *cs_low_stuck_warning = cs_low_stuck_warning_local;
-  if (cs_low_stuck_warning_local && !s_warned_cs_low_stuck) {
+  if (log_cs_warning) {
     s_warned_cs_low_stuck = true;
     ESP_LOGW(TAG,
              "MISO stuck high with CS asserted before CMD0; continuing with retries.");
@@ -585,11 +586,6 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
   bool last_bit7_violation = false;
   bool slow_path_applied = false;
   int idle_attempt = -1;
-
-  bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
-  if (cs_low_stuck_warning)
-    *cs_low_stuck_warning = cs_low_stuck_warning_local;
-  bool log_cs_warning = cs_low_stuck_warning_local && !s_warned_cs_low_stuck;
 
   if (!s_cmd0_diag_logged) {
     s_cmd0_diag_logged = true;
