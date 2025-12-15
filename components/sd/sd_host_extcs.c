@@ -77,7 +77,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff);
-static void sd_extcs_log_miso_health(void);
+static bool sd_extcs_check_miso_health(bool *cs_low_all_ff);
 static inline bool sd_extcs_lock(void);
 static inline void sd_extcs_unlock(void);
 static size_t sd_extcs_decode_r1(uint8_t r1, char *buf, size_t len);
@@ -349,10 +349,12 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
   return (rx == 0xFF) ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
-static void sd_extcs_log_miso_health(void) {
-#if CONFIG_ARS_SD_EXTCS_MISO_HEALTH_CHECK
+static bool sd_extcs_check_miso_health(bool *cs_low_all_ff) {
+  if (cs_low_all_ff)
+    *cs_low_all_ff = false;
+
   if (!s_cleanup_handle)
-    return;
+    return false;
 
   uint8_t sample_high[4] = {0};
   uint8_t sample_low[4] = {0};
@@ -404,7 +406,11 @@ static void sd_extcs_log_miso_health(void) {
              " -> check CS path / pull-ups",
              sample_low[0], sample_low[1], sample_low[2], sample_low[3]);
   }
-#endif
+
+  if (cs_low_all_ff)
+    *cs_low_all_ff = low_all_ff;
+
+  return true;
 }
 
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
@@ -425,7 +431,13 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   sd_extcs_send_dummy_clocks(SD_EXTCS_CMD0_PRE_CLKS_BYTES);
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  sd_extcs_log_miso_health();
+  bool cs_low_all_ff = false;
+  bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff);
+  if (miso_checked && cs_low_all_ff) {
+    sd_extcs_unlock();
+    ESP_LOGE(TAG, "MISO stuck high with CS asserted before CMD0; aborting init.");
+    return ESP_ERR_NOT_FOUND;
+  }
 
   bool idle_seen = false;
   bool saw_data = false;
