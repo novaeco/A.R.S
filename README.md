@@ -14,6 +14,11 @@ Assistant Reptiles Système (A.R.S) pour ESP32-S3 avec écran LVGL, stockage Lit
 - **Vérification**: Lancez `idf.py --version`. Assurez-vous que `IDF_PATH` pointe vers la version choisie.
 - **Python**: Un environnement virtuel propre est recommandé.
 
+### Initialisation express (Windows)
+- PowerShell: ` .\\tools\\env.ps1`
+- CMD: `tools\\env.cmd`
+Ces commandes forcent `IDF_PATH` vers `C:\\Espressif\\frameworks\\esp-idf-6.1-dev`, appellent `export.ps1/.bat`, puis affichent `idf.py --version` pour vérifier le chemin actif.
+
 ## Build rapide
 Consultez `docs/BUILD.md` pour les détails complets. Raccourci principal :
 ```bash
