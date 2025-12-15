@@ -46,12 +46,18 @@ void ui_nav_navigate(ui_screen_t screen, bool anim) {
 
   // 2. Manage Stack (basic)
   static ui_screen_t current_screen_id = UI_SCREEN_DASHBOARD;
+  ui_screen_t previous_screen_id = current_screen_id;
   if (screen == UI_SCREEN_DASHBOARD) {
     nav_stack_ptr = 0; // Reset stack on dashboard
   } else if (screen != current_screen_id) {
     ui_nav_push(current_screen_id);
   }
   current_screen_id = screen;
+
+  if (previous_screen_id == UI_SCREEN_DASHBOARD &&
+      screen != UI_SCREEN_DASHBOARD) {
+    ui_dashboard_cleanup();
+  }
 
   // 3. Create and Load new screen
   // NOTE: Each ui_create_... function MUST call lv_scr_load(new_scr) at the
