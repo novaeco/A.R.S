@@ -81,7 +81,8 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        TickType_t timeout_ticks);
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
-static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff);
+static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
+                                         bool *cs_low_stuck_warning);
 static bool sd_extcs_check_miso_health(bool *cs_low_all_ff);
 static inline bool sd_extcs_lock(void);
 static inline void sd_extcs_unlock(void);
@@ -432,11 +433,14 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff) {
   return true;
 }
 
-static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
+static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
+                                         bool *cs_low_stuck_warning) {
   if (card_idle)
     *card_idle = false;
   if (saw_non_ff)
     *saw_non_ff = false;
+  if (cs_low_stuck_warning)
+    *cs_low_stuck_warning = false;
 
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
@@ -456,8 +460,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
   bool cs_low_all_ff = false;
   bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff);
-  bool cs_low_stuck_warning = miso_checked && cs_low_all_ff;
-  if (cs_low_stuck_warning) {
+  bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
+  if (cs_low_stuck_warning)
+    *cs_low_stuck_warning = cs_low_stuck_warning_local;
+  if (cs_low_stuck_warning_local) {
     ESP_LOGW(TAG,
              "MISO stuck high with CS asserted before CMD0; continuing with retries.");
   }
@@ -829,7 +835,9 @@ static esp_err_t sd_extcs_low_speed_init(void) {
 
   bool card_idle = false;
   bool saw_non_ff = false;
-  esp_err_t err = sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff);
+  bool cs_low_stuck_warning = false;
+  esp_err_t err =
+      sd_extcs_reset_and_cmd0(&card_idle, &saw_non_ff, &cs_low_stuck_warning);
   if (!card_idle) {
     s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
                                : SD_EXTCS_STATE_ABSENT;
