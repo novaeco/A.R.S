@@ -10,6 +10,9 @@ typedef enum {
 typedef void (*ui_wifi_result_cb_t)(ui_wifi_result_t result,
                                     wifi_err_reason_t reason);
 
+#pragma once
+#include "lvgl.h"
+
 extern lv_obj_t *ui_ScreenWifi;
 
 lv_obj_t *ui_create_screen_wifi(void);
