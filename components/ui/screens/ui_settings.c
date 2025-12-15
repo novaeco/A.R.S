@@ -26,10 +26,6 @@ static void back_event_cb(lv_event_t *e) {
   ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
 }
 
-static void back_event_cb(lv_event_t *e) {
-  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
-}
-
 static void save_wifi_cb(lv_event_t *e) {
   const char *ssid = lv_textarea_get_text(ta_ssid);
   const char *pwd = lv_textarea_get_text(ta_pwd);

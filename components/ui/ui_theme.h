@@ -15,6 +15,8 @@
 #define UI_COLOR_SECONDARY_DARK lv_color_hex(0xB58E62)
 // Background: Soft Off-White
 #define UI_COLOR_BACKGROUND lv_color_hex(0xF4F4F4)
+// Page background (alias of background for clarity)
+#define UI_COLOR_PAGE_BG UI_COLOR_BACKGROUND
 // Card/Panel: White
 #define UI_COLOR_CARD lv_color_hex(0xFFFFFF)
 // Text: Dark Charcoal
@@ -23,6 +25,8 @@
 #define UI_COLOR_TEXT_MUTED lv_color_hex(0x7F8C8D)
 // Alert: Burnt Orange
 #define UI_COLOR_ALERT lv_color_hex(0xE67E22)
+// Danger/Error: Deep Red
+#define UI_COLOR_DANGER lv_color_hex(0xC0392B)
 // Success: Moss Green
 #define UI_COLOR_SUCCESS lv_color_hex(0x4CAF50)
 // Border/Outline: Deep Slate

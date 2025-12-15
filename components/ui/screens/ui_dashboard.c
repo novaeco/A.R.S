@@ -157,74 +157,52 @@ static void battery_timer_cb(lv_timer_t *timer) {
 }
 
 // Main Creation
-lv_obj_t *ui_create_dashboard(void) {
-  // 1. Create Screen with Theme Background
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
-  ui_theme_apply(scr);
+  lv_obj_t *ui_create_dashboard(void) {
+    // 1. Create Screen with Theme Background
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
+    ui_theme_apply(scr);
 
-  // 2. Header (shared helper)
-  lv_obj_t *header =
-      ui_helper_create_header(scr, "Reptiles Assistant", NULL, NULL);
-  lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
-  lv_obj_set_style_pad_left(header, UI_SPACE_XL, 0);
-  lv_obj_set_style_pad_right(header, UI_SPACE_XL, 0);
+    // 2. Header (shared helper)
+    lv_obj_t *header =
+        ui_helper_create_header(scr, "Reptiles Assistant", NULL, NULL);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_pad_left(header, UI_SPACE_XL, 0);
+    lv_obj_set_style_pad_right(header, UI_SPACE_XL, 0);
 
-  // Status cluster (clock + battery) aligned to the right
-  lv_obj_t *status_row = lv_obj_create(header);
-  lv_obj_set_style_bg_opa(status_row, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(status_row, 0, 0);
-  lv_obj_set_style_pad_all(status_row, 0, 0);
-  lv_obj_set_size(status_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(status_row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_gap(status_row, UI_SPACE_SM, 0);
-  lv_obj_align(status_row, LV_ALIGN_RIGHT_MID, 0, 0);
+    // Status cluster (clock + battery) aligned to the right
+    lv_obj_t *status_row = lv_obj_create(header);
+    lv_obj_set_style_bg_opa(status_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(status_row, 0, 0);
+    lv_obj_set_style_pad_all(status_row, 0, 0);
+    lv_obj_set_size(status_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(status_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(status_row, UI_SPACE_SM, 0);
+    lv_obj_align(status_row, LV_ALIGN_RIGHT_MID, 0, 0);
 
-  clock_label = lv_label_create(status_row);
-  // 2. Header
-  lv_obj_t *header = lv_obj_create(scr);
-  lv_obj_set_size(header, LV_PCT(100), UI_HEADER_HEIGHT);
-  lv_obj_set_align(header, LV_ALIGN_TOP_MID);
-  lv_obj_add_style(header, &ui_style_card, 0);
-  // Custom header tweaks
-  lv_obj_set_style_radius(header, 0, 0);
-  lv_obj_set_style_bg_color(header, UI_COLOR_PRIMARY, 0);
-  lv_obj_set_style_pad_all(header, UI_SPACE_MD, 0);
-  lv_obj_set_style_pad_left(header, UI_SPACE_LG, 0);
-  lv_obj_set_style_pad_right(header, UI_SPACE_LG, 0);
-  lv_obj_set_style_border_width(header, 0, 0);
+    clock_label = lv_label_create(status_row);
+    lv_label_set_text(clock_label, "00:00");
+    lv_obj_add_style(clock_label, &ui_style_title, 0);
+    lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
 
-  // Title
-  lv_obj_t *title = lv_label_create(header);
-  lv_label_set_text(title, "Reptiles Assistant");
-  lv_obj_add_style(title, &ui_style_title, 0);
-  lv_obj_set_style_text_color(title, lv_color_white(), 0);
-  lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+    battery_label = lv_label_create(status_row);
+    lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
+    lv_obj_add_style(battery_label, &ui_style_text_body, 0);
+    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
 
-  // Clock
-  clock_label = lv_label_create(header);
-  lv_label_set_text(clock_label, "00:00");
-  lv_obj_add_style(clock_label, &ui_style_title, 0);
-  lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
+    // 3. Grid container using flex with responsive sizing
+    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
 
-  battery_label = lv_label_create(status_row);
-  lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
-  lv_obj_add_style(battery_label, &ui_style_text_body, 0);
-  lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
-
-  // 3. Grid container using flex with responsive sizing
-  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
-  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
-
-  // 3. Grid
-  lv_obj_t *grid = lv_obj_create(scr);
-  lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
-  lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT + UI_SPACE_MD);
-  lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(grid, 0, 0);
-  lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF); // Disable scrollbars
-  lv_obj_clear_flag(
-      grid, LV_OBJ_FLAG_SCROLLABLE); // Disable scrolling to ensure clicks work
+    // 3. Grid
+    lv_obj_t *grid = lv_obj_create(scr);
+    lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
+    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT + UI_SPACE_MD);
+    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(grid, 0, 0);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF); // Disable scrollbars
+    lv_obj_clear_flag(
+        grid, LV_OBJ_FLAG_SCROLLABLE); // Disable scrolling to ensure clicks work
 
   // Flex Layout for auto-wrap, evenly spaced tiles and generous touch targets
   lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
