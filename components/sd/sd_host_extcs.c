@@ -18,6 +18,16 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
+
+#ifndef SD_EXTCS_CS_I2C_SETTLE_US
+#define SD_EXTCS_CS_I2C_SETTLE_US SD_EXTCS_CS_ASSERT_SETTLE_US
+#endif
+
+#ifndef SD_EXTCS_CMD58_RETRIES
+#define SD_EXTCS_CMD58_RETRIES SD_EXTCS_CMD0_RETRIES
+#endif
+
 #ifndef CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ 200
 #endif
