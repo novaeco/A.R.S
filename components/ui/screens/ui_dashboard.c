@@ -164,12 +164,15 @@ lv_obj_t *ui_create_dashboard(void) {
 
   // 2. Header
   lv_obj_t *header = lv_obj_create(scr);
-  lv_obj_set_size(header, LV_PCT(100), 60);
+  lv_obj_set_size(header, LV_PCT(100), UI_HEADER_HEIGHT);
   lv_obj_set_align(header, LV_ALIGN_TOP_MID);
   lv_obj_add_style(header, &ui_style_card, 0);
   // Custom header tweaks
   lv_obj_set_style_radius(header, 0, 0);
   lv_obj_set_style_bg_color(header, UI_COLOR_PRIMARY, 0);
+  lv_obj_set_style_pad_all(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_pad_left(header, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_right(header, UI_SPACE_LG, 0);
   lv_obj_set_style_border_width(header, 0, 0);
 
   // Title
@@ -177,18 +180,21 @@ lv_obj_t *ui_create_dashboard(void) {
   lv_label_set_text(title, "Reptiles Assistant");
   lv_obj_add_style(title, &ui_style_title, 0);
   lv_obj_set_style_text_color(title, lv_color_white(), 0);
-  lv_obj_align(title, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
 
   // Clock
   clock_label = lv_label_create(header);
   lv_label_set_text(clock_label, "00:00");
+  lv_obj_add_style(clock_label, &ui_style_title, 0);
   lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
   lv_obj_align(clock_label, LV_ALIGN_CENTER, 0, 0);
 
   // Battery
   battery_label = lv_label_create(header);
   lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
+  lv_obj_add_style(battery_label, &ui_style_text_body, 0);
   lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
+  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
 
   // 3. Grid
@@ -205,18 +211,20 @@ lv_obj_t *ui_create_dashboard(void) {
   lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START,
                         LV_FLEX_ALIGN_START);
-  lv_obj_set_style_pad_all(grid, 20, 0);
-  lv_obj_set_style_pad_gap(grid, 20, 0);
+  lv_obj_set_style_pad_all(grid, UI_SPACE_XL, 0);
+  lv_obj_set_style_pad_gap(grid, UI_SPACE_XL, 0);
 
   // 4. Tiles
   int tile_count = sizeof(tiles) / sizeof(tiles[0]);
   for (int i = 0; i < tile_count; i++) {
     lv_obj_t *btn = lv_button_create(grid);
-    lv_obj_set_size(btn, 140, 120);
+    lv_obj_set_size(btn, 160, 130);
     lv_obj_add_style(btn, &ui_style_card, 0);
-    // Audit Fix: Pressed State
+    lv_obj_add_style(btn, &ui_style_btn_secondary, 0);
+    lv_obj_set_style_bg_color(btn, UI_COLOR_CARD, 0);
     lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_GREY, 1),
                               LV_STATE_PRESSED);
+    lv_obj_set_style_pad_all(btn, UI_SPACE_MD, 0);
 
     // Override for Alert
     bool has_alert =
