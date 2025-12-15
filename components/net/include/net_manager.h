@@ -1,6 +1,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_event.h"
+#include "esp_wifi_types.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -38,6 +40,26 @@ typedef struct {
   char ip_addr[16];
   esp_err_t last_error;
 } net_status_t;
+
+typedef enum {
+  WIFI_PROV_STATE_NOT_PROVISIONED = 0,
+  WIFI_PROV_STATE_CONNECTING,
+  WIFI_PROV_STATE_CONNECTED,
+  WIFI_PROV_STATE_FAILED,
+  WIFI_PROV_STATE_CAPTIVE,
+  WIFI_PROV_STATE_WRONG_PASSWORD,
+} wifi_prov_state_t;
+
+typedef enum {
+  NET_MANAGER_EVENT_STATE_CHANGED = 0,
+} net_manager_event_id_t;
+
+typedef struct {
+  wifi_prov_state_t state;
+  wifi_err_reason_t reason;
+} net_manager_state_evt_t;
+
+ESP_EVENT_DECLARE_BASE(NET_MANAGER_EVENT);
 
 /**
  * @brief Get the current network status.
@@ -82,6 +104,12 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
  * @return true if credentials are set, false otherwise.
  */
 bool net_manager_is_provisioned(void);
+
+wifi_prov_state_t net_manager_get_prov_state(void);
+
+wifi_err_reason_t net_manager_get_last_reason(void);
+
+esp_err_t net_manager_forget_credentials(void);
 
 #ifdef __cplusplus
 }
