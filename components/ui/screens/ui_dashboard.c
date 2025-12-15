@@ -47,6 +47,48 @@ static lv_timer_t *battery_timer = NULL;
 
 #include "../ui_screen_manager.h" // ARS: Include Manager
 
+static void dashboard_stop_timers(void) {
+  if (clock_timer) {
+    lv_timer_del(clock_timer);
+    clock_timer = NULL;
+  }
+  if (battery_timer) {
+    lv_timer_del(battery_timer);
+    battery_timer = NULL;
+  }
+}
+
+static void dashboard_start_timers(void) {
+  dashboard_stop_timers();
+
+  if (clock_label && lv_obj_is_valid(clock_label)) {
+    clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
+    clock_timer_cb(clock_timer);
+  } else {
+    clock_timer = NULL;
+  }
+
+  if (battery_label && lv_obj_is_valid(battery_label)) {
+    battery_timer = lv_timer_create(battery_timer_cb, 5000, NULL);
+    battery_timer_cb(battery_timer);
+  } else {
+    battery_timer = NULL;
+  }
+}
+
+static void dashboard_delete_event_cb(lv_event_t *e) {
+  (void)e;
+  dashboard_stop_timers();
+  clock_label = NULL;
+  battery_label = NULL;
+}
+
+void ui_dashboard_cleanup(void) {
+  dashboard_stop_timers();
+  clock_label = NULL;
+  battery_label = NULL;
+}
+
 // Event Handler
 static void tile_event_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
@@ -77,6 +119,9 @@ static void tile_event_cb(lv_event_t *e) {
 // Clock Timer
 static void clock_timer_cb(lv_timer_t *timer) {
   (void)timer;
+  if (!clock_label || !lv_obj_is_valid(clock_label)) {
+    return;
+  }
   time_t now;
   struct tm timeinfo;
   time(&now);
@@ -85,9 +130,7 @@ static void clock_timer_cb(lv_timer_t *timer) {
   char strftime_buf[64];
   strftime(strftime_buf, sizeof(strftime_buf), "%H:%M", &timeinfo);
 
-  if (clock_label && lv_obj_is_valid(clock_label)) {
-    lv_label_set_text(clock_label, strftime_buf);
-  }
+  lv_label_set_text(clock_label, strftime_buf);
 }
 
 // Battery Timer
@@ -112,6 +155,7 @@ static void battery_timer_cb(lv_timer_t *timer) {
 void ui_create_dashboard(void) {
   // 1. Create Screen with Theme Background
   lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
   ui_theme_apply(scr);
 
   // 2. Header
@@ -144,15 +188,7 @@ void ui_create_dashboard(void) {
   lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
 
   // Start Timers
-  if (clock_timer)
-    lv_timer_del(clock_timer);
-  clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
-  clock_timer_cb(clock_timer);
-
-  if (battery_timer)
-    lv_timer_del(battery_timer);
-  battery_timer = lv_timer_create(battery_timer_cb, 5000, NULL);
-  battery_timer_cb(battery_timer);
+  dashboard_start_timers();
 
   // 3. Grid
   lv_obj_t *grid = lv_obj_create(scr);

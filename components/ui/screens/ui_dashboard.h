@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 void ui_create_dashboard(void);
+void ui_dashboard_cleanup(void);
 
 #ifdef __cplusplus
 } /*extern "C"*/
