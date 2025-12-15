@@ -1,5 +1,6 @@
 #include "screens/ui_settings.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "../ui_theme.h"
 #include "board.h"
 #include "core_export.h"
@@ -34,7 +35,9 @@ static lv_obj_t *ui_msgbox_notify(const char *title, const char *text) {
   return mbox;
 }
 
-static void back_event_cb(lv_event_t *e) { ui_create_dashboard(); }
+static void back_event_cb(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
+}
 
 static void save_wifi_cb(lv_event_t *e) {
   const char *ssid = lv_textarea_get_text(ta_ssid);
@@ -120,7 +123,7 @@ static void ta_event_cb(lv_event_t *e) {
   }
 }
 
-void ui_create_settings_screen(void) {
+lv_obj_t *ui_create_settings_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -230,5 +233,5 @@ void ui_create_settings_screen(void) {
   ui_helper_setup_keyboard(kb);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
 
-  lv_screen_load(scr);
+  return scr;
 }

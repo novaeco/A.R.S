@@ -156,7 +156,7 @@ static void battery_timer_cb(lv_timer_t *timer) {
 }
 
 // Main Creation
-void ui_create_dashboard(void) {
+lv_obj_t *ui_create_dashboard(void) {
   // 1. Create Screen with Theme Background
   lv_obj_t *scr = lv_obj_create(NULL);
   lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
@@ -190,9 +190,6 @@ void ui_create_dashboard(void) {
   lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
   lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
   lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
-
-  // Start Timers
-  dashboard_start_timers();
 
   // 3. Grid
   lv_obj_t *grid = lv_obj_create(scr);
@@ -266,5 +263,12 @@ void ui_create_dashboard(void) {
     lv_obj_align(label, LV_ALIGN_CENTER, 0, 20);
   }
 
-  lv_scr_load(scr);
+  return scr;
+}
+
+void ui_dashboard_on_enter(void) { dashboard_start_timers(); }
+
+void ui_dashboard_on_leave(void) {
+  dashboard_stop_timers();
+  ui_show_loading(false);
 }

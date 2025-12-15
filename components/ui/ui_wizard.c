@@ -109,7 +109,7 @@ void ui_wizard_next(void) {
       // Launch Wifi Screen
       // We need a version of wifi screen that calls back wizard instead of
       // dashboard
-      ui_create_screen_wifi();
+      ui_nav_navigate(UI_SCREEN_WIFI, true);
     } else if (current_step == WIZARD_STEP_DONE) {
       ui_wizard_next(); // Recurse to finish
     }

@@ -5,7 +5,11 @@
 extern "C" {
 #endif
 
-void ui_create_dashboard(void);
+#include "lvgl.h"
+
+lv_obj_t *ui_create_dashboard(void);
+void ui_dashboard_on_enter(void);
+void ui_dashboard_on_leave(void);
 void ui_dashboard_cleanup(void);
 
 #ifdef __cplusplus

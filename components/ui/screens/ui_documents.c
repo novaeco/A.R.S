@@ -1,5 +1,6 @@
 #include "ui_documents.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "../ui_theme.h"
 #include "core_service.h"
 #include "lvgl.h"
@@ -24,7 +25,7 @@ static char *ui_strdup(const char *src) {
 static void back_event_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED) {
-    ui_create_dashboard();
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
   }
 }
 
@@ -45,7 +46,7 @@ static void animal_select_event_cb(lv_event_t *e) {
 
       ui_helper_hide_spinner();
       // Reload documents screen
-      ui_create_documents_screen();
+      ui_nav_navigate(UI_SCREEN_DOCUMENTS, false);
     }
   }
 }
@@ -104,10 +105,10 @@ static void generate_report_btn_cb(lv_event_t *e) {
 static void __attribute__((unused)) delete_report_event_cb(lv_event_t *e) {
   // Logic to delete file could be added here
   // For now purely UI refresh
-  ui_create_documents_screen();
+  ui_nav_navigate(UI_SCREEN_DOCUMENTS, false);
 }
 
-void ui_create_documents_screen(void) {
+lv_obj_t *ui_create_documents_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -158,5 +159,5 @@ void ui_create_documents_screen(void) {
     }
   }
 
-  lv_screen_load(scr);
+  return scr;
 }
