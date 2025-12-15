@@ -516,7 +516,8 @@ lv_obj_t *ui_create_screen_wifi(void) {
   lv_obj_add_style(lbl_status, &ui_style_text_body, 0);
   lv_obj_set_width(lbl_status, LV_PCT(100));
 
-  spn_connect = lv_spinner_create(side_col, 1000, 60);
+  spn_connect = lv_spinner_create(side_col);
+  lv_spinner_set_anim_params(spn_connect, 1000, 60);
   lv_obj_set_size(spn_connect, 48, 48);
   lv_obj_add_flag(spn_connect, LV_OBJ_FLAG_HIDDEN);
   lv_obj_center(spn_connect);
