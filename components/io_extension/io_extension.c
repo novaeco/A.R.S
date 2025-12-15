@@ -124,10 +124,20 @@ esp_err_t IO_EXTENSION_Init() {
  * @param value The value to set on the specified pin (0 = low, 1 = high).
  */
 esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
+  return IO_EXTENSION_Output_With_Readback(pin, value, NULL, NULL);
+}
+
+esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
+                                            uint8_t *latched_level,
+                                            uint8_t *input_level) {
   if (!ioext_lock()) {
     ESP_LOGE(TAG, "Output Failed: mutex unavailable");
     return ESP_ERR_TIMEOUT;
   }
+
+  // Serialize I2C access for the whole write+readback window to avoid collisions
+  // with other users (e.g., touch) while SD is driving CS.
+  bool bus_locked = DEV_I2C_TakeLock(pdMS_TO_TICKS(200));
 
   // Update the output value based on the pin and value
   if (value == 1)
@@ -135,13 +145,41 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
   else
     IO_EXTENSION.Last_io_value &= (~(1 << pin)); // Set the pin low
 
-  uint8_t data[2] = {
-      IO_EXTENSION_IO_OUTPUT_ADDR,
-      IO_EXTENSION
-          .Last_io_value}; // Prepare the data to write to the output register
-  // Write the 8-bit value to the IO output register
+  uint8_t data[2] = {IO_EXTENSION_IO_OUTPUT_ADDR, IO_EXTENSION.Last_io_value};
   esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
+
+  if (ret == ESP_OK && latched_level) {
+    uint8_t out_reg = 0;
+    esp_err_t rb_ret =
+        DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
+                           &out_reg, 1);
+    if (rb_ret == ESP_OK) {
+      *latched_level = (out_reg >> pin) & 0x1;
+    } else {
+      ESP_LOGW(TAG, "Output readback failed: %s", esp_err_to_name(rb_ret));
+      ret = rb_ret;
+    }
+  }
+
+  if (ret == ESP_OK && input_level) {
+    uint8_t in_reg = 0;
+    esp_err_t in_ret =
+        DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_INPUT_ADDR,
+                           &in_reg, 1);
+    if (in_ret == ESP_OK) {
+      *input_level = (in_reg >> pin) & 0x1;
+    } else {
+      ESP_LOGW(TAG, "Input sample failed: %s", esp_err_to_name(in_ret));
+      ret = in_ret;
+    }
+  }
+
+  if (bus_locked) {
+    DEV_I2C_GiveLock();
+  }
+
   ioext_unlock();
+
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Output Failed: %s", esp_err_to_name(ret));
   }

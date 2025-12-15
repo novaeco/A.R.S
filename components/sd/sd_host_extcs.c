@@ -34,11 +34,16 @@
 #define CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES 20
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS
+#define CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS 1
+#endif
+
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
 #define SD_EXTCS_CMD0_PRE_CLKS_BYTES CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
+#define SD_EXTCS_CS_POST_TOGGLE_DELAY_MS CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
-#define SD_EXTCS_CMD0_RETRIES 5
+#define SD_EXTCS_CMD0_RETRIES 12
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
 #define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 64
 #define SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES 8
@@ -213,15 +218,27 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     return ESP_OK; // Skip redundant I2C write
   }
 
-  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, desired_level);
+  uint8_t latched = 0xFF;
+  uint8_t sampled = 0xFF;
+
+  esp_err_t err = IO_EXTENSION_Output_With_Readback(IO_EXTENSION_IO_4,
+                                                    desired_level, &latched,
+                                                    &sampled);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CS->%s failed: %s", level_high ? "HIGH" : "LOW",
              esp_err_to_name(err));
   } else {
     s_cs_level = desired_level;
-    ESP_LOGI(TAG, "CS->%s via IOEXT4 (result=%s)", level_high ? "HIGH" : "LOW",
+    ESP_LOGI(TAG,
+             "CS->%s via IOEXT4 (latched=%u input=%u result=%s)",
+             level_high ? "HIGH" : "LOW", latched, sampled,
              esp_err_to_name(err));
   }
+
+  if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
+    vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
+  }
+
   return err;
 }
 
@@ -234,6 +251,8 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
     return;
   if (!sd_extcs_lock())
     return;
+
+  ESP_LOGI(TAG, "Issuing %u dummy clock byte(s) with CS high", (unsigned)byte_count);
 
   // Ensure CS is deasserted (HIGH) during dummy clocks to comply with SPI mode
   // entry and NCR requirements. Keep the return code to log IO extender health.
@@ -424,6 +443,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
   if (!sd_extcs_lock())
     return ESP_ERR_TIMEOUT;
 
+  ESP_LOGI(TAG,
+           "CMD0 pre-sequence: CS high -> %u dummy bytes -> CS low -> CMD0",
+           (unsigned)SD_EXTCS_CMD0_PRE_CLKS_BYTES);
+
   // Force SPI mode: CS high then >=80 clocks
   sd_extcs_deassert_cs();
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
@@ -433,10 +456,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff) {
 
   bool cs_low_all_ff = false;
   bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff);
-  if (miso_checked && cs_low_all_ff) {
-    sd_extcs_unlock();
-    ESP_LOGE(TAG, "MISO stuck high with CS asserted before CMD0; aborting init.");
-    return ESP_ERR_NOT_FOUND;
+  bool cs_low_stuck_warning = miso_checked && cs_low_all_ff;
+  if (cs_low_stuck_warning) {
+    ESP_LOGW(TAG,
+             "MISO stuck high with CS asserted before CMD0; continuing with retries.");
   }
 
   bool idle_seen = false;
@@ -795,8 +818,14 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
 static esp_err_t sd_extcs_low_speed_init(void) {
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
 
-  s_active_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
-  ESP_LOGI(TAG, "Low-speed init at %u kHz", s_active_freq_khz);
+  uint32_t init_khz = SD_EXTCS_INIT_FREQ_KHZ;
+  if (init_khz > SD_EXTCS_CMD0_SLOW_FREQ_KHZ)
+    init_khz = SD_EXTCS_CMD0_SLOW_FREQ_KHZ;
+
+  s_active_freq_khz = init_khz;
+  ESP_LOGI(TAG, "Low-speed init at %u kHz (cmd0 slow path=%u kHz)",
+           s_active_freq_khz, SD_EXTCS_CMD0_SLOW_FREQ_KHZ);
+  sd_extcs_configure_cleanup_device(init_khz);
 
   bool card_idle = false;
   bool saw_non_ff = false;
@@ -804,9 +833,10 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   if (!card_idle) {
     s_extcs_state = saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL
                                : SD_EXTCS_STATE_ABSENT;
-    ESP_LOGW(TAG, "CMD0 failed: state=%s err=%s (saw_non_ff=%d)",
+    ESP_LOGW(TAG,
+             "CMD0 failed: state=%s err=%s (saw_non_ff=%d miso_precheck_all_ff=%d)",
              sd_extcs_state_str(s_extcs_state), esp_err_to_name(err),
-             saw_non_ff);
+             saw_non_ff, cs_low_stuck_warning);
     return saw_non_ff ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
   }
 
@@ -900,7 +930,9 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   esp_err_t ret;
 
-  const uint32_t init_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
+  uint32_t init_freq_khz = SD_EXTCS_INIT_FREQ_KHZ;
+  if (init_freq_khz > SD_EXTCS_CMD0_SLOW_FREQ_KHZ)
+    init_freq_khz = SD_EXTCS_CMD0_SLOW_FREQ_KHZ;
   const uint32_t host_target_khz = SD_EXTCS_TARGET_FREQ_KHZ;
 
   ESP_LOGI(TAG, "Mounting SD (SDSPI ext-CS) init=%u kHz target=%u kHz",
@@ -980,7 +1012,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   // 5. Host Config
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = s_host_id;
-  host.max_freq_khz = host_target_khz;
+  host.max_freq_khz = init_freq_khz;
 
   s_original_do_transaction = host.do_transaction;
   host.do_transaction = sd_extcs_do_transaction;
