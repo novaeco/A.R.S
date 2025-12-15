@@ -11,9 +11,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char *TAG = "UI_ANIMALS";
+
 static lv_obj_t *ta_search;
 static lv_obj_t *list_animals;
 static lv_obj_t *kb; // Add keyboard reference for AZERTY setup
+
+typedef struct {
+  char *id_copy;
+} animal_btn_ctx_t;
 
 static char *ui_strdup(const char *src) {
   if (!src)
@@ -27,13 +33,37 @@ static char *ui_strdup(const char *src) {
 }
 
 static void animal_item_wrapper_cb(lv_event_t *e) {
-  const char *id = (const char *)lv_event_get_user_data(e);
-  if (id)
-    ui_create_animal_details_screen(id);
+  lv_event_code_t code = lv_event_get_code(e);
+  animal_btn_ctx_t *ctx = (animal_btn_ctx_t *)lv_event_get_user_data(e);
+
+  if (!ctx)
+    return;
+
+  if (code == LV_EVENT_CLICKED) {
+    if (ctx->id_copy)
+      ui_create_animal_details_screen(ctx->id_copy);
+  } else if (code == LV_EVENT_DELETE) {
+    if (ctx->id_copy) {
+      ESP_LOGD(TAG, "Free animal list user_data for btn %s", ctx->id_copy);
+      free(ctx->id_copy);
+      ctx->id_copy = NULL;
+    }
+    free(ctx);
+  }
+}
+
+static void clear_animal_list_items(void) {
+  if (!list_animals)
+    return;
+
+  while (lv_obj_get_child_count(list_animals) > 0) {
+    lv_obj_t *child = lv_obj_get_child(list_animals, 0);
+    lv_obj_del(child);
+  }
 }
 
 static void load_animal_list_correct(const char *query) {
-  lv_obj_clean(list_animals);
+  clear_animal_list_items();
 
   animal_summary_t *animals = NULL;
   size_t count = 0;
@@ -55,14 +85,21 @@ static void load_animal_list_correct(const char *query) {
       }
     } else {
       for (size_t i = 0; i < count; i++) {
-        char *id_copy = ui_strdup(animals[i].id);
+        animal_btn_ctx_t *ctx = calloc(1, sizeof(animal_btn_ctx_t));
+        if (!ctx)
+          continue;
+
+        ctx->id_copy = ui_strdup(animals[i].id);
+        if (!ctx->id_copy) {
+          free(ctx);
+          continue;
+        }
         char label[256];
         snprintf(label, sizeof(label), "%s (%s)", animals[i].name,
                  animals[i].species);
 
         lv_obj_t *btn = lv_list_add_btn(list_animals, LV_SYMBOL_PASTE, label);
-        lv_obj_add_event_cb(btn, animal_item_wrapper_cb, LV_EVENT_CLICKED,
-                            id_copy);
+        lv_obj_add_event_cb(btn, animal_item_wrapper_cb, LV_EVENT_ALL, ctx);
       }
       core_free_animal_list(animals);
     }
