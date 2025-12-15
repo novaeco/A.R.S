@@ -4,10 +4,12 @@
 extern "C" {
 #endif
 
+#include "lvgl.h"
+
 /**
  * @brief Create the Web Requests Screen (API Test).
  */
-void ui_create_web_screen(void);
+lv_obj_t *ui_create_web_screen(void);
 
 #ifdef __cplusplus
 }

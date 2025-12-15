@@ -12,9 +12,9 @@ extern "C" {
 void ui_init(void);
 
 /**
- * @brief Create and show the dashboard screen.
+ * @brief Create the dashboard screen (loaded via ui_switch_screen).
  */
-void ui_create_dashboard(void);
+lv_obj_t *ui_create_dashboard(void);
 
 /**
  * @brief Function pointer type for getting battery level.

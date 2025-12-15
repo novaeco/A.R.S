@@ -1,4 +1,5 @@
 #include "screens/ui_alerts.h"
+#include "../ui_navigation.h"
 #include "core_service_alerts.h"
 #include "esp_err.h"
 #include "lvgl.h"
@@ -10,11 +11,11 @@
 static void back_event_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED) {
-    ui_create_dashboard();
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
   }
 }
 
-void ui_create_alerts_screen(void) {
+lv_obj_t *ui_create_alerts_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -65,5 +66,5 @@ void ui_create_alerts_screen(void) {
     lv_list_add_text(list, "Erreur verification alertes.");
   }
 
-  lv_screen_load(scr);
+  return scr;
 }

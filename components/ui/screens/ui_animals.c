@@ -1,6 +1,7 @@
 #include "screens/ui_animals.h"
 #include "../ui_helpers.h"
 #include "../ui_theme.h" // Assuming theme header
+#include "../ui_navigation.h"
 #include "core_service.h"
 #include "esp_log.h"
 #include "lvgl.h"
@@ -122,7 +123,9 @@ static void search_event_cb(lv_event_t *e) {
   }
 }
 
-static void back_event_cb(lv_event_t *e) { ui_create_dashboard(); }
+static void back_event_cb(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
+}
 
 static void add_animal_event_cb(lv_event_t *e) {
   ui_create_animal_form_screen(NULL);
@@ -135,7 +138,7 @@ static void kb_event_cb(lv_event_t *e) {
   }
 }
 
-void ui_create_animal_list_screen(void) {
+lv_obj_t *ui_create_animal_list_screen(void) {
   ESP_LOGI("UI_ANIMALS", "Creating Animal List Screen");
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
@@ -188,5 +191,5 @@ void ui_create_animal_list_screen(void) {
   load_animal_list_correct(NULL);
 
   ESP_LOGI("UI_ANIMALS", "Loading screen...");
-  lv_scr_load(scr);
+  return scr;
 }

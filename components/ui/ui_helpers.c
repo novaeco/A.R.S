@@ -45,18 +45,22 @@ lv_obj_t *ui_helper_create_header(lv_obj_t *parent, const char *title,
                                   lv_event_cb_t back_cb,
                                   const char *back_text) {
   lv_obj_t *header = lv_obj_create(parent);
-  lv_obj_set_size(header, LV_PCT(100), 60);
+  lv_obj_set_size(header, LV_PCT(100), UI_HEADER_HEIGHT);
   lv_obj_set_pos(header, 0, 0);
-  // Use theme color if possible, or fallback
-  lv_obj_set_style_bg_color(header, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_style(header, &ui_style_card, 0);
+  lv_obj_set_style_radius(header, 0, 0);
+  lv_obj_set_style_shadow_width(header, 0, 0);
+  lv_obj_set_style_pad_all(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_pad_gap(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_bg_color(header, UI_COLOR_PRIMARY, 0);
 
   if (back_cb) {
     lv_obj_t *btn_back = lv_button_create(header);
-    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_add_style(btn_back, &ui_style_btn_primary, 0); // Use theme style
-    // Override color for back button? Usually Blue or consistent
-    lv_obj_set_style_bg_color(btn_back, lv_palette_darken(LV_PALETTE_BLUE, 2),
-                              LV_STATE_PRESSED);
+    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, UI_SPACE_SM, 0);
+    lv_obj_add_style(btn_back, &ui_style_btn_secondary, 0); // Use theme style
+    lv_obj_set_style_pad_left(btn_back, UI_SPACE_MD, 0);
+    lv_obj_set_style_pad_right(btn_back, UI_SPACE_MD, 0);
 
     lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
 
@@ -65,10 +69,12 @@ lv_obj_t *ui_helper_create_header(lv_obj_t *parent, const char *title,
     snprintf(buf, sizeof(buf), "%s %s", LV_SYMBOL_LEFT,
              back_text ? back_text : "Retour");
     lv_label_set_text(lbl, buf);
+    lv_obj_add_style(lbl, &ui_style_text_body, 0);
   }
 
   lv_obj_t *lbl_title = lv_label_create(header);
   lv_label_set_text(lbl_title, title);
+  lv_obj_add_style(lbl_title, &ui_style_title, 0);
   lv_obj_set_style_text_color(lbl_title, lv_color_white(), 0);
   lv_obj_align(lbl_title, LV_ALIGN_CENTER, 0, 0);
 
