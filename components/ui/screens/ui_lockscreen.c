@@ -1,6 +1,7 @@
 #include "screens/ui_lockscreen.h"
 #include "../ui_helpers.h"
 #include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "lvgl.h"
 #include "reptile_storage.h"
 #include "ui.h"
@@ -9,17 +10,6 @@
 
 static lv_obj_t *ta_pin;
 static char current_pin[8] = {0};
-
-static void ui_show_msgbox(const char *title, const char *text) {
-  lv_obj_t *mbox = lv_msgbox_create(NULL);
-  if (title)
-    lv_msgbox_add_title(mbox, title);
-  if (text)
-    lv_msgbox_add_text(mbox, text);
-  lv_msgbox_add_close_button(mbox);
-  lv_msgbox_add_footer_button(mbox, "OK");
-  lv_obj_center(mbox);
-}
 
 static void kb_event_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
@@ -44,7 +34,7 @@ static void kb_event_cb(lv_event_t *e) {
       ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
     } else {
       lv_textarea_set_text(ta_pin, "");
-      ui_show_msgbox("Erreur", "Code PIN Incorrect");
+      ui_show_toast("Code PIN incorrect", UI_TOAST_ERROR);
     }
   }
 }

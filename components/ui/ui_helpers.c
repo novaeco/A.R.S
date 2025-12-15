@@ -1,5 +1,6 @@
 #include "ui_helpers.h"
 #include "ui.h" // For ui_battery_cb_t
+#include "ui_screen_manager.h"
 #include "ui_theme.h"
 #include <stdio.h>
 
@@ -15,30 +16,10 @@ int ui_get_battery_level(uint8_t *percent, uint16_t *voltage_mv) {
   return -1; // Error or Not Implemented
 }
 
-// ======================= SPINNER =======================
-static lv_obj_t *spinner_cont = NULL;
+// ======================= SPINNER (delegated to screen manager) =======================
+void ui_helper_show_spinner(void) { ui_show_loading(true); }
 
-static void __attribute__((unused)) stop_spinner_cb(lv_timer_t *t) {
-  ui_helper_hide_spinner();
-}
-
-void ui_helper_show_spinner(void) {
-  if (spinner_cont)
-    return;
-  spinner_cont = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(spinner_cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_bg_color(spinner_cont, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(spinner_cont, LV_OPA_50, 0);
-  lv_obj_t *spin = lv_spinner_create(spinner_cont);
-  lv_obj_center(spin);
-}
-
-void ui_helper_hide_spinner(void) {
-  if (spinner_cont) {
-    lv_obj_del(spinner_cont);
-    spinner_cont = NULL;
-  }
-}
+void ui_helper_hide_spinner(void) { ui_show_loading(false); }
 
 // ======================= HEADER =======================
 lv_obj_t *ui_helper_create_header(lv_obj_t *parent, const char *title,

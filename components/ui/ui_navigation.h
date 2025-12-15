@@ -13,8 +13,7 @@ typedef enum {
   UI_SCREEN_WEB,
   UI_SCREEN_LOGS,
   UI_SCREEN_ALERTS,
-  UI_SCREEN_REPRODUCTION,
-  UI_SCREEN_LOCK
+  UI_SCREEN_REPRODUCTION
 } ui_screen_t;
 
 // Navigation API
