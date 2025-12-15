@@ -59,6 +59,16 @@ menu "SD Card Configuration"
             external CS mode. Increase for cards that need >80 clocks before
             entering SPI mode.
 
+    config ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US
+        int "CS settle delay before first CMD0 (ExtCS, us)"
+        default 180
+        range 0 1000
+        help
+            Extra settling delay (microseconds) applied immediately after
+            driving CS low during the CMD0 pre-sequence. Use this to let the
+            IO extender output stabilize before the first transaction if MISO
+            occasionally reads stuck-high.
+
     config ARS_SD_EXTCS_TARGET_FREQ_KHZ
         int "SDSPI target frequency after init (kHz)"
         default 20000

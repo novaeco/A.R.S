@@ -64,10 +64,15 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
 #define CONFIG_ARS_SD_EXTCS_CMD58_RETRIES 5
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US
+#define CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US 0
+#endif
+
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
 #define SD_EXTCS_CMD0_PRE_CLKS_BYTES CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
 #define SD_EXTCS_CS_POST_TOGGLE_DELAY_MS CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS
+#define SD_EXTCS_CS_PRE_CMD0_DELAY_US CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
 #define SD_EXTCS_CMD0_RETRIES 12
 #define SD_EXTCS_CMD0_BACKOFF_MS 8
@@ -98,6 +103,9 @@ static i2c_master_dev_handle_t s_ioext_handle = NULL;
 static SemaphoreHandle_t s_sd_mutex = NULL;
 static sd_extcs_state_t s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
 static bool s_warned_cs_low_stuck = false;
+static bool s_cmd0_diag_logged = false;
+static uint8_t s_last_cs_latched = 0xFF;
+static uint8_t s_last_cs_input = 0xFF;
 
 typedef struct {
   uint8_t sample_high[4];
@@ -302,6 +310,8 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
              esp_err_to_name(err));
   } else {
     s_cs_level = desired_level;
+    s_last_cs_latched = latched;
+    s_last_cs_input = sampled;
     ESP_LOGI(TAG,
              "CS->%s via IOEXT4 (latched=%u input=%u result=%s)",
              level_high ? "HIGH" : "LOW", latched, sampled,
@@ -572,8 +582,23 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
   uint8_t last_r1 = 0xFF;
   bool last_r1_valid = false;
   int last_idx_valid = -1;
-    bool last_bit7_violation = false;
-    bool slow_path_applied = false;
+  bool last_bit7_violation = false;
+  bool slow_path_applied = false;
+  int idle_attempt = -1;
+
+  bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
+  if (cs_low_stuck_warning)
+    *cs_low_stuck_warning = cs_low_stuck_warning_local;
+  bool log_cs_warning = cs_low_stuck_warning_local && !s_warned_cs_low_stuck;
+
+  if (!s_cmd0_diag_logged) {
+    s_cmd0_diag_logged = true;
+    ESP_LOGI(TAG,
+             "CMD0 preamble: dummy_bytes=%u cs_pre_delay_us=%u ioext(latched=%u input=%u)",
+             (unsigned)SD_EXTCS_CMD0_PRE_CLKS_BYTES,
+             (unsigned)SD_EXTCS_CS_PRE_CMD0_DELAY_US, s_last_cs_latched,
+             s_last_cs_input);
+  }
 
   for (int attempt = 0; attempt < SD_EXTCS_CMD0_RETRIES; ++attempt) {
     uint8_t frame[6] = {0x40 | 0, 0, 0, 0, 0, 0x95};
@@ -595,6 +620,10 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
       last_err = err;
       sd_extcs_unlock();
       return err;
+    }
+
+    if (attempt == 0 && SD_EXTCS_CS_PRE_CMD0_DELAY_US > 0) {
+      ets_delay_us(SD_EXTCS_CS_PRE_CMD0_DELAY_US);
     }
 
     ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
@@ -713,6 +742,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
 
     if (valid_r1 && r1 == 0x01) {
       idle_seen = true;
+      idle_attempt = attempt;
       last_err = ESP_OK;
       break;
     }
@@ -760,6 +790,19 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
   ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
   sd_extcs_send_dummy_clocks(1);
   vTaskDelay(pdMS_TO_TICKS(1));
+
+  if (log_cs_warning) {
+    if (idle_attempt >= 0 && idle_attempt < 2) {
+      ESP_LOGI(TAG,
+               "MISO stuck high with CS asserted before CMD0 (diagnostic)"
+               " cleared after %d attempt(s).",
+               idle_attempt + 1);
+    } else {
+      ESP_LOGW(TAG,
+               "MISO stuck high with CS asserted before CMD0; continuing with retries.");
+    }
+    s_warned_cs_low_stuck = true;
+  }
 
   if (!idle_seen) {
     const char *last_dump_ptr = last_dump[0] ? last_dump : "<none>";
@@ -1157,7 +1200,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
   if (ret == ESP_OK) {
     s_mounted = true;
-    s_active_freq_khz = host_target_khz;
+    s_active_freq_khz = init_freq_khz;
     // Verify user can read simple stats
     sdmmc_card_print_info(stdout, s_card);
 
@@ -1175,6 +1218,9 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 
     esp_err_t clk_ret = sd_extcs_raise_clock(host_target_khz, card_limit_khz,
                                              init_freq_khz);
+    ESP_LOGI(TAG,
+             "SD clock summary: init=%u kHz -> active=%u kHz (target=%u kHz, card_max=%u kHz)",
+             init_freq_khz, s_active_freq_khz, host_target_khz, card_limit_khz);
     if (clk_ret != ESP_OK) {
       ESP_LOGW(TAG, "Failed to raise SD SPI clock after mount: %s",
                esp_err_to_name(clk_ret));

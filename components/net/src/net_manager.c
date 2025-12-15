@@ -30,6 +30,9 @@ static net_status_t s_net_status = {.is_connected = false,
                                     .rssi = 0,
                                     .ip_addr = {0},
                                     .last_error = ESP_OK};
+static wifi_prov_state_t s_prov_state = WIFI_PROV_STATE_NOT_PROVISIONED;
+static wifi_err_reason_t s_last_reason = WIFI_REASON_UNSPECIFIED;
+static bool s_logged_waiting = false;
 
 static const char *TAG = "NET";
 static const char *NVS_NAMESPACE = "net";
@@ -48,6 +51,43 @@ static bool s_watchdog_task_created = false;
 static void schedule_wifi_retry(uint32_t delay_ms);
 static esp_err_t start_wifi_station_if_provisioned(void);
 static void wifi_provisioning_task(void *arg);
+ESP_EVENT_DEFINE_BASE(NET_MANAGER_EVENT);
+
+static wifi_prov_state_t
+disc_reason_to_state(wifi_err_reason_t reason, wifi_err_reason_t *out_reason) {
+  wifi_prov_state_t state = WIFI_PROV_STATE_FAILED;
+  switch (reason) {
+  case WIFI_REASON_AUTH_FAIL:
+  case WIFI_REASON_AUTH_EXPIRE:
+  case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    state = WIFI_PROV_STATE_WRONG_PASSWORD;
+    break;
+  case WIFI_REASON_NO_AP_FOUND:
+    state = WIFI_PROV_STATE_FAILED;
+    break;
+  default:
+    break;
+  }
+  if (out_reason)
+    *out_reason = reason;
+  return state;
+}
+
+static void net_manager_update_state(wifi_prov_state_t state,
+                                     wifi_err_reason_t reason) {
+  if (state == s_prov_state && reason == s_last_reason)
+    return;
+  s_prov_state = state;
+  s_last_reason = reason;
+  net_manager_state_evt_t evt = {.state = state, .reason = reason};
+  esp_err_t post_err = esp_event_post(NET_MANAGER_EVENT,
+                                      NET_MANAGER_EVENT_STATE_CHANGED, &evt,
+                                      sizeof(evt), portMAX_DELAY);
+  if (post_err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to emit provisioning state event: %s",
+             esp_err_to_name(post_err));
+  }
+}
 
 static esp_err_t
 apply_sta_config_with_recovery(const wifi_config_t *wifi_config_in) {
@@ -208,7 +248,12 @@ static void initialize_sntp(void) {
 
 static esp_err_t start_wifi_station_if_provisioned(void) {
   if (!has_credentials) {
-    ESP_LOGW(TAG, "Wi-Fi credentials missing, station start skipped");
+    if (!s_logged_waiting) {
+      ESP_LOGW(TAG, "Wi-Fi credentials missing, station start skipped");
+      s_logged_waiting = true;
+    }
+    net_manager_update_state(WIFI_PROV_STATE_NOT_PROVISIONED,
+                             WIFI_REASON_UNSPECIFIED);
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -224,10 +269,13 @@ static esp_err_t start_wifi_station_if_provisioned(void) {
 
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+    net_manager_update_state(WIFI_PROV_STATE_FAILED, WIFI_REASON_UNSPECIFIED);
     return err;
   }
 
   s_wifi_started = true;
+  net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
+                           WIFI_REASON_UNSPECIFIED);
   return ESP_OK;
 }
 
@@ -294,6 +342,8 @@ static void event_handler(void *arg, esp_event_base_t event_base,
       ESP_LOGI(TAG, "Wi-Fi autoconnect disabled; waiting for manual connect");
       return;
     }
+    net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
+                             WIFI_REASON_UNSPECIFIED);
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK) {
       ESP_LOGW(TAG, "esp_wifi_connect failed on STA start: %s",
@@ -312,6 +362,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     wifi_event_sta_disconnected_t *disc =
         (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%d).", disc ? disc->reason : -1);
+    wifi_err_reason_t reason = disc ? disc->reason : WIFI_REASON_UNSPECIFIED;
+    net_manager_update_state(disc_reason_to_state(reason, &reason), reason);
+
     if (CONFIG_ARS_WIFI_AUTOCONNECT) {
       // Exponential backoff capped at 30s
       if (s_wifi_backoff_ms < WIFI_RETRY_BACKOFF_MAX_MS) {
@@ -346,6 +399,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
 
     ESP_LOGI(TAG, "Network Ready - Starting Services");
+
+    net_manager_update_state(WIFI_PROV_STATE_CONNECTED,
+                             WIFI_REASON_UNSPECIFIED);
 
     // Init SNTP only after getting IP
     if (!esp_sntp_enabled()) {
@@ -442,6 +498,9 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
   esp_err_t err = apply_sta_config_with_recovery(&wifi_cfg);
   if (err == ESP_OK) {
     has_credentials = true;
+    s_logged_waiting = false;
+    net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
+                             WIFI_REASON_UNSPECIFIED);
     s_wifi_backoff_ms = 1000;
     esp_err_t start_err = start_wifi_station_if_provisioned();
     if (start_err == ESP_OK && CONFIG_ARS_WIFI_AUTOCONNECT) {
@@ -460,6 +519,9 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
     if (s_wifi_provisioning_task) {
       xTaskNotifyGive(s_wifi_provisioning_task);
     }
+  }
+  if (err != ESP_OK) {
+    net_manager_update_state(WIFI_PROV_STATE_FAILED, WIFI_REASON_UNSPECIFIED);
   }
   return err;
 }
@@ -541,11 +603,15 @@ esp_err_t net_init(void) {
              (char *)wifi_config.sta.ssid);
     if (apply_sta_config_with_recovery(&wifi_config) != ESP_OK) {
       has_credentials = false;
+      net_manager_update_state(WIFI_PROV_STATE_NOT_PROVISIONED,
+                               WIFI_REASON_UNSPECIFIED);
     }
   } else {
     // Provisioning mode: show clear instructions for the UI flow
     ESP_LOGI(TAG, "Wi-Fi not provisioned. UI -> Parametres -> Wi-Fi pour saisir "
                  "SSID/Mot de passe. Provisioning task waiting...");
+    net_manager_update_state(WIFI_PROV_STATE_NOT_PROVISIONED,
+                             WIFI_REASON_UNSPECIFIED);
   }
 
   err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
@@ -604,6 +670,38 @@ esp_err_t net_connect(const char *ssid, const char *password) {
 bool net_is_connected(void) { return is_connected; }
 
 bool net_manager_is_provisioned(void) { return has_credentials; }
+
+wifi_prov_state_t net_manager_get_prov_state(void) { return s_prov_state; }
+
+wifi_err_reason_t net_manager_get_last_reason(void) { return s_last_reason; }
+
+esp_err_t net_manager_forget_credentials(void) {
+  nvs_handle_t nvs = 0;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err == ESP_OK) {
+    nvs_erase_key(nvs, NVS_KEY_WIFI_SSID);
+    nvs_erase_key(nvs, NVS_KEY_WIFI_PASS);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+
+  stop_wifi_retry_timer_best_effort();
+  s_wifi_backoff_ms = 1000;
+  if (s_wifi_started) {
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    s_wifi_started = false;
+  }
+  is_connected = false;
+  s_net_status.is_connected = false;
+  s_net_status.got_ip = false;
+  memset(s_net_status.ip_addr, 0, sizeof(s_net_status.ip_addr));
+  has_credentials = false;
+  s_logged_waiting = false;
+  net_manager_update_state(WIFI_PROV_STATE_NOT_PROVISIONED,
+                           WIFI_REASON_UNSPECIFIED);
+  return err;
+}
 
 net_status_t net_get_status(void) { return s_net_status; }
 
