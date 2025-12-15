@@ -1,5 +1,6 @@
 #include "ui_web.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "../ui_theme.h"
 #include "lvgl.h"
 #include "net_manager.h"
@@ -44,9 +45,11 @@ static void search_event_cb(lv_event_t *e) {
   }
 }
 
-static void back_cb_wrapper(lv_event_t *e) { ui_create_dashboard(); }
+static void back_cb_wrapper(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
+}
 
-void ui_create_web_screen(void) {
+lv_obj_t *ui_create_web_screen(void) {
   lv_display_t *disp = lv_display_get_default();
   lv_coord_t disp_w = lv_display_get_horizontal_resolution(disp);
   lv_coord_t disp_h = lv_display_get_vertical_resolution(disp);
@@ -122,5 +125,5 @@ void ui_create_web_screen(void) {
   lv_label_set_text(lbl, "LANCER MISE A JOUR");
   lv_obj_center(lbl);
 
-  lv_scr_load(scr);
+  return scr;
 }
