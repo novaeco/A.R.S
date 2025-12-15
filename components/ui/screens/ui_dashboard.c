@@ -45,6 +45,10 @@ static lv_timer_t *clock_timer = NULL;
 static lv_obj_t *battery_label = NULL;
 static lv_timer_t *battery_timer = NULL;
 
+// Forward declarations for timer callbacks
+static void clock_timer_cb(lv_timer_t *timer);
+static void battery_timer_cb(lv_timer_t *timer);
+
 #include "../ui_screen_manager.h" // ARS: Include Manager
 
 static void dashboard_stop_timers(void) {
