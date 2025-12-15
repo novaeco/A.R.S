@@ -247,11 +247,11 @@ static void back_event_cb(lv_event_t *e) {
   if (!done) {
     ui_wizard_next();
   } else {
-    ui_create_dashboard();
+    ui_nav_navigate(UI_SCREEN_DASHBOARD, true);
   }
 }
 
-void ui_create_screen_wifi(void) {
+lv_obj_t *ui_create_screen_wifi(void) {
   ui_ScreenWifi = lv_obj_create(NULL);
   ui_theme_apply(ui_ScreenWifi);
   lv_obj_clear_flag(ui_ScreenWifi, LV_OBJ_FLAG_SCROLLABLE);
@@ -318,10 +318,22 @@ void ui_create_screen_wifi(void) {
   lv_label_set_text(lbl_status, "Pr\u00eat");
   lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_LEFT, 20, -20);
 
-  lv_screen_load(ui_ScreenWifi);
+  return ui_ScreenWifi;
+}
 
+void ui_wifi_on_enter(void) {
   esp_err_t evt_err = ensure_wifi_event_listener();
   if (evt_err != ESP_OK) {
     set_status_label("Moniteur Wi-Fi indisponible", lv_palette_main(LV_PALETTE_RED));
+  }
+  ui_helper_hide_spinner();
+  set_inputs_enabled(true);
+}
+
+void ui_wifi_on_leave(void) {
+  ui_helper_hide_spinner();
+  set_inputs_enabled(true);
+  if (kb) {
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
   }
 }
