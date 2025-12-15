@@ -181,6 +181,28 @@ lv_obj_t *ui_create_dashboard(void) {
   lv_obj_align(status_row, LV_ALIGN_RIGHT_MID, 0, 0);
 
   clock_label = lv_label_create(status_row);
+  // 2. Header
+  lv_obj_t *header = lv_obj_create(scr);
+  lv_obj_set_size(header, LV_PCT(100), UI_HEADER_HEIGHT);
+  lv_obj_set_align(header, LV_ALIGN_TOP_MID);
+  lv_obj_add_style(header, &ui_style_card, 0);
+  // Custom header tweaks
+  lv_obj_set_style_radius(header, 0, 0);
+  lv_obj_set_style_bg_color(header, UI_COLOR_PRIMARY, 0);
+  lv_obj_set_style_pad_all(header, UI_SPACE_MD, 0);
+  lv_obj_set_style_pad_left(header, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_right(header, UI_SPACE_LG, 0);
+  lv_obj_set_style_border_width(header, 0, 0);
+
+  // Title
+  lv_obj_t *title = lv_label_create(header);
+  lv_label_set_text(title, "Reptiles Assistant");
+  lv_obj_add_style(title, &ui_style_title, 0);
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+  lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+
+  // Clock
+  clock_label = lv_label_create(header);
   lv_label_set_text(clock_label, "00:00");
   lv_obj_add_style(clock_label, &ui_style_title, 0);
   lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
@@ -191,6 +213,10 @@ lv_obj_t *ui_create_dashboard(void) {
   lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
 
   // 3. Grid container using flex with responsive sizing
+  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -10, 0);
+
+  // 3. Grid
   lv_obj_t *grid = lv_obj_create(scr);
   lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
   lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT + UI_SPACE_MD);
@@ -211,6 +237,7 @@ lv_obj_t *ui_create_dashboard(void) {
   int tile_count = sizeof(tiles) / sizeof(tiles[0]);
   for (int i = 0; i < tile_count; i++) {
     lv_obj_t *btn = lv_button_create(grid);
+    lv_obj_set_size(btn, 160, 130);
     lv_obj_add_style(btn, &ui_style_card, 0);
     lv_obj_add_style(btn, &ui_style_btn_secondary, 0);
     lv_obj_set_style_bg_color(btn, UI_COLOR_CARD, 0);

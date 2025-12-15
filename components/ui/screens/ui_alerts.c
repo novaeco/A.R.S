@@ -2,6 +2,7 @@
 #include "../ui_helpers.h"
 #include "../ui_navigation.h"
 #include "../ui_theme.h"
+#include "../ui_navigation.h"
 #include "core_service_alerts.h"
 #include "esp_err.h"
 #include "lvgl.h"
