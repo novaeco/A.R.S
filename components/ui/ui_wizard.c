@@ -93,8 +93,7 @@ static lv_obj_t *wizard_create_result_screen(const char *title, const char *body
                         LV_FLEX_ALIGN_CENTER);
 
   lv_obj_t *icon = lv_label_create(body_cont);
-  lv_color32_t accent32 = lv_color_to_32(accent, LV_OPA_COVER);
-  uint32_t accent_hex = (uint32_t)accent32.full & 0x00FFFFFF;
+  uint32_t accent_hex = lv_color_to_u32(accent) & 0x00FFFFFF;
   lv_label_set_text_fmt(icon, "#%06x %s#", (unsigned int)accent_hex,
                         success_icon ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
   lv_label_set_recolor(icon, true);
