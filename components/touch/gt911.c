@@ -58,6 +58,8 @@ static volatile uint32_t s_gt911_irq_storm = 0;
 static volatile uint32_t s_gt911_irq_empty = 0;
 static volatile uint32_t s_gt911_i2c_errors = 0;
 static int64_t s_last_irq_us = 0;
+static int64_t s_spurious_block_until_us = 0;
+static int64_t s_last_empty_log_us = 0;
 static int s_gt911_int_gpio = -1;
 static int16_t s_gt911_last_raw_x = -1;
 static int16_t s_gt911_last_raw_y = -1;
@@ -385,6 +387,9 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_gt911_irq_empty++;
     s_gt911_irq_storm++;
     int64_t now = esp_timer_get_time();
+    if (s_spurious_block_until_us < now) {
+      s_spurious_block_until_us = now + 20000; // 20 ms cooldown
+    }
     if (s_empty_window_start_us == 0 ||
         (now - s_empty_window_start_us) > GT911_EMPTY_WINDOW_US) {
       s_empty_window_start_us = now;
@@ -396,6 +401,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
       s_poll_mode_until_us = now + GT911_POLL_DURATION_US;
       ESP_LOGW(TAG, "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
                s_empty_window_count);
+    }
+
+    if ((now - s_last_empty_log_us) > 500000) {
+      s_last_empty_log_us = now;
+      ESP_LOGD(TAG, "GT911 interrupt with no points (storm=%" PRIu32 ")",
+               s_gt911_irq_storm);
     }
 
     portENTER_CRITICAL(&tp->data.lock);
@@ -419,7 +430,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   if (err != ESP_OK) {
     s_gt911_i2c_errors++;
     s_gt911_consecutive_errors++;
-    ESP_LOGE(TAG, "I2C read points error: %s", esp_err_to_name(err));
+    int64_t now = esp_timer_get_time();
+    static int64_t last_err_log = 0;
+    if ((now - last_err_log) > 1000000) {
+      last_err_log = now;
+      ESP_LOGW(TAG, "I2C read points error: %s", esp_err_to_name(err));
+    }
     return err;
   }
 
@@ -427,8 +443,22 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   tp->data.points = touch_cnt;
   for (i = 0; i < touch_cnt; i++) {
     const uint8_t *p = &point_buf[i * 8];
-    tp->data.coords[i].x = ((uint16_t)p[2] << 8) | p[1];
-    tp->data.coords[i].y = ((uint16_t)p[4] << 8) | p[3];
+    int16_t raw_x = ((uint16_t)p[2] << 8) | p[1];
+    int16_t raw_y = ((uint16_t)p[4] << 8) | p[3];
+
+    // Simple low-pass filter to suppress jitter before LVGL gets the data.
+    static int16_t filt_x = -1;
+    static int16_t filt_y = -1;
+    if (filt_x < 0 || filt_y < 0) {
+      filt_x = raw_x;
+      filt_y = raw_y;
+    } else {
+      filt_x = (filt_x + raw_x) / 2;
+      filt_y = (filt_y + raw_y) / 2;
+    }
+
+    tp->data.coords[i].x = filt_x;
+    tp->data.coords[i].y = filt_y;
     tp->data.coords[i].strength = ((uint16_t)p[6] << 8) | p[5];
   }
   if (touch_cnt > 0) {
@@ -437,6 +467,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_empty_window_count = 0;
     s_empty_window_start_us = 0;
     s_gt911_irq_storm = 0;
+    s_spurious_block_until_us = 0;
   }
   portEXIT_CRITICAL(&tp->data.lock);
 
@@ -816,6 +847,13 @@ static void gt911_irq_task(void *arg) {
   while (1) {
     uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(GT911_POLL_INTERVAL_MS));
     int64_t now = esp_timer_get_time();
+
+    if (s_spurious_block_until_us > now && !s_poll_mode) {
+      // Ignore rapid spurious IRQs for a short cooldown window
+      gt911_enable_irq_guarded();
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
 
     if (s_poll_mode) {
       esp_err_t err = esp_lcd_touch_gt911_read_data(tp);

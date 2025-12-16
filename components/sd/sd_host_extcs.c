@@ -314,6 +314,9 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     return ESP_OK;
   }
 
+  int64_t now_us = esp_timer_get_time();
+  static int64_t last_cs_warn_us = 0;
+
   for (int attempt = 0; attempt < SD_EXTCS_CS_READBACK_RETRIES; ++attempt) {
     if (!i2c_bus_shared_lock(pdMS_TO_TICKS(300))) {
       ESP_LOGW(TAG, "CS->%s lock timeout (attempt %d)",
@@ -341,10 +344,14 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
       break;
     }
 
-    ESP_LOGW(TAG,
-             "CS->%s verify mismatch (latched=%u err=%s) attempt=%d",
-             level_high ? "HIGH" : "LOW", latched, esp_err_to_name(err),
-             attempt + 1);
+    if ((now_us - last_cs_warn_us) > 2000000 ||
+        attempt == SD_EXTCS_CS_READBACK_RETRIES - 1) {
+      last_cs_warn_us = now_us;
+      ESP_LOGW(TAG,
+               "CS->%s verify mismatch (latched=%u err=%s) attempt=%d",
+               level_high ? "HIGH" : "LOW", latched, esp_err_to_name(err),
+               attempt + 1);
+    }
     ets_delay_us(SD_EXTCS_CS_READBACK_RETRY_US);
   }
 
@@ -569,12 +576,18 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
     miso_diag->low_all_ff = low_all_ff;
   }
 
-  if (!high_all_ff) {
+  static int64_t last_miso_warn_us = 0;
+  int64_t now_us = esp_timer_get_time();
+  bool log_allowed = (now_us - last_miso_warn_us) > 2000000;
+
+  if (!high_all_ff && log_allowed) {
+    last_miso_warn_us = now_us;
     ESP_LOGW(TAG,
              "MISO health: noise with CS high (samples=%02X %02X %02X %02X)",
              sample_high[0], sample_high[1], sample_high[2], sample_high[3]);
   }
-  if (low_all_ff) {
+  if (low_all_ff && log_allowed) {
+    last_miso_warn_us = now_us;
     ESP_LOGW(TAG,
              "MISO health: CS low but MISO stayed 0xFF (samples=%02X %02X %02X %02X)"
              " -> check CS path / pull-ups",
