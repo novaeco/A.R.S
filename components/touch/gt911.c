@@ -84,7 +84,7 @@ static esp_err_t esp_lcd_touch_gt911_get_button_state(esp_lcd_touch_handle_t tp,
 #endif
 static esp_err_t esp_lcd_touch_gt911_del(esp_lcd_touch_handle_t tp);
 static void gt911_irq_task(void *arg);
-static void IRAM_ATTR gt911_gpio_isr_handler(void *arg);
+static void gt911_gpio_isr_handler(void *arg);
 
 /* I2C read/write */
 static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
