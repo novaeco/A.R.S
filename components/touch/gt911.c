@@ -196,15 +196,11 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
     gpio_set_direction(esp_lcd_touch_gt911->config.int_gpio_num,
                        GPIO_MODE_INPUT);
   } else {
-    // Info log instead of warning, as this is the expected path for this board
-    // where RST is handled by BSP/IO Expander earlier.
+    // Info log to reflect external reset/INT wiring
     ESP_LOGI(TAG,
-             "Address init skipped (no rst/int GPIO), using configured address "
-             "0x%02X",
+             "Using external reset (IO expander) and INT GPIO=%d, addr=0x%02X",
+             (int)esp_lcd_touch_gt911->config.int_gpio_num,
              gt911_config ? gt911_config->dev_addr : 0);
-    /* Reset controller */
-    ret = touch_gt911_reset(esp_lcd_touch_gt911);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 reset failed");
   }
 
   /* Prepare pin for touch interrupt */
@@ -496,27 +492,45 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
   // 2. Perform Robust Reset Sequence (Waveshare specific)
   const int int_pin = EXAMPLE_PIN_NUM_TOUCH_INT;
-  // USE ENUM HERE
   const int rst_pin_io = IO_EXTENSION_IO_1;
 
-  ESP_LOGI(TAG, "Starting GT911 Reset Sequence...");
+  ESP_LOGI(TAG,
+           "Starting GT911 Reset Sequence (IRQ=GPIO%d, RST=IOEXT%d addr=0x%02X)",
+           int_pin, rst_pin_io, ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS);
 
-  // Step A: Set INT Output Low (Select 0x5D)
-  gpio_set_direction(int_pin, GPIO_MODE_OUTPUT);
+  gpio_config_t int_out_cfg = {
+      .pin_bit_mask = BIT64(int_pin),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = 1,
+      .pull_down_en = 0,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&int_out_cfg);
   gpio_set_level(int_pin, 0);
 
-  // Step B: Set RST Low (IO Expander)
-  // Step B: Set RST Low (IO Expander)
-  IO_EXTENSION_Output(rst_pin_io, 0);
+  // Step B: Set RST Low via IO Extension
+  esp_err_t io_ret = IO_EXTENSION_Output(rst_pin_io, 0);
+  if (io_ret != ESP_OK) {
+    ESP_LOGE(TAG, "IOEXT touch reset low failed: %s", esp_err_to_name(io_ret));
+  }
   vTaskDelay(pdMS_TO_TICKS(20));
 
   // Step C: Set RST High
-  // Step C: Set RST High
-  IO_EXTENSION_Output(rst_pin_io, 1);
+  io_ret = IO_EXTENSION_Output(rst_pin_io, 1);
+  if (io_ret != ESP_OK) {
+    ESP_LOGE(TAG, "IOEXT touch reset high failed: %s", esp_err_to_name(io_ret));
+  }
   vTaskDelay(pdMS_TO_TICKS(60)); // Wait >50ms
 
   // Step D: Set INT Input (End of address selection)
-  gpio_set_direction(int_pin, GPIO_MODE_INPUT);
+  gpio_config_t int_in_cfg = {
+      .pin_bit_mask = BIT64(int_pin),
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = 1,
+      .pull_down_en = 0,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&int_in_cfg);
   vTaskDelay(pdMS_TO_TICKS(50));
 
   // 3. I2C Address Scan / Validation

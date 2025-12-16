@@ -1,4 +1,5 @@
 #include "ui_wizard.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include "nvs.h"
@@ -27,15 +28,26 @@ typedef enum {
 static wizard_step_t current_step = WIZARD_STEP_NONE;
 static wifi_err_reason_t last_wifi_reason = WIFI_REASON_UNSPECIFIED;
 
-static void save_setup_done(void) {
+static esp_err_t save_setup_done(void) {
   nvs_handle_t handle;
-  if (nvs_open("system", NVS_READWRITE, &handle) == ESP_OK) {
-    uint8_t done = 1;
-    nvs_set_u8(handle, "setup_done", done);
-    nvs_commit(handle);
-    nvs_close(handle);
-    ESP_LOGI(TAG, "Setup marked as done in NVS.");
+  esp_err_t err = nvs_open("system", NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS for setup flag: %s", esp_err_to_name(err));
+    return err;
   }
+
+  err = nvs_set_u8(handle, "setup_done", 1);
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  nvs_close(handle);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Setup marked as done in NVS.");
+  } else {
+    ESP_LOGE(TAG, "Failed to persist setup flag: %s", esp_err_to_name(err));
+  }
+  return err;
 }
 
 static const char *wifi_reason_to_text(wifi_err_reason_t reason) {
@@ -65,6 +77,8 @@ static void wizard_finish(bool mark_setup_done) {
   current_step = WIZARD_STEP_DONE;
   ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
 }
+
+esp_err_t ui_wizard_mark_setup_done(void) { return save_setup_done(); }
 
 static lv_obj_t *wizard_create_result_screen(const char *title, const char *body,
                                              lv_color_t accent,
@@ -210,6 +224,11 @@ void ui_wizard_next(void) {
   if (current_step == WIZARD_STEP_CALIBRATION) {
     wizard_start_wifi_step();
   }
+}
+
+void ui_wizard_complete_from_calibration(void) {
+  ESP_LOGI(TAG, "Calibration validated, completing wizard");
+  wizard_finish(true);
 }
 
 bool ui_wizard_handle_wifi_cancel(void) {

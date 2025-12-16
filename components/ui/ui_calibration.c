@@ -1,4 +1,5 @@
 #include "ui_calibration.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include "ui_helpers.h"
@@ -10,8 +11,12 @@ static const char *TAG = "ui_calibration";
 
 static void calibration_event_cb(lv_event_t *e) {
   (void)e;
-  ESP_LOGI(TAG, "Calibration completed, continuing wizard");
-  ui_wizard_next();
+  ESP_LOGI(TAG, "Calibration completed, persisting setup flag");
+  esp_err_t err = ui_wizard_mark_setup_done();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to persist setup_done flag: %s", esp_err_to_name(err));
+  }
+  ui_wizard_complete_from_calibration();
 }
 
 void ui_calibration_start(void) {
