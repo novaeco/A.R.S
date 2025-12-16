@@ -238,13 +238,8 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 // --- 3. Input Device ---
 // --- 3. Input Device ---
 
-static volatile bool s_touch_irq_triggered = false;
-static volatile uint32_t s_touch_irq_count = 0;
 static int64_t s_last_touch_diag_us = 0;
-static void lvgl_touch_isr_cb(esp_lcd_touch_handle_t tp) {
-  s_touch_irq_triggered = true;
-  s_touch_irq_count++;
-}
+static uint32_t s_touch_event_seq = 0;
 
 static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   esp_lcd_touch_handle_t tp =
@@ -252,28 +247,12 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   if (!tp)
     return;
 
-  bool should_read = s_touch_irq_triggered;
-
-  // ARS: Periodic fallback to prevent stuck state (every ~100ms)
-  static int s_poll_fallback_count = 0;
-  s_poll_fallback_count++;
-  if (s_poll_fallback_count >
-      5) { // Assuming read_cb is called every ~20-30ms by LVGL
-    should_read = true;
-    s_poll_fallback_count = 0;
-  }
-
-  if (should_read) {
-    s_touch_irq_triggered = false;
-    esp_lcd_touch_read_data(tp);
-  }
-
   uint8_t touchpad_cnt = 0;
   esp_lcd_touch_point_data_t touch_points[1] = {0};
   static int16_t last_x = -1;
   static int16_t last_y = -1;
   static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
-  static uint32_t last_logged_irq_count = 0;
+  static int64_t last_press_us = 0;
 
   // Get coords from last read (buffered in driver data)
   bool pressed = esp_lcd_touch_get_data(tp, touch_points, &touchpad_cnt, 1);
@@ -283,13 +262,27 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   // ARS: Apply Calibration
   lv_indev_state_t prev_state = last_state;
 
-  if (pressed && touchpad_cnt > 0) {
+  int64_t now_us = esp_timer_get_time();
+  bool stable_pressed = pressed && touchpad_cnt > 0;
+
+  if (stable_pressed) {
     raw_x = touch_points[0].x;
     raw_y = touch_points[0].y;
     ars_touch_apply_calibration(touch_points, touchpad_cnt);
+    last_press_us = now_us;
   }
 
-  if (pressed && touchpad_cnt > 0) {
+  // Debounce release for short gaps
+  if (!stable_pressed && last_state == LV_INDEV_STATE_PRESSED &&
+      (now_us - last_press_us) < 100000) {
+    stable_pressed = true;
+    touch_points[0].x = last_x;
+    touch_points[0].y = last_y;
+    raw_x = last_x;
+    raw_y = last_y;
+  }
+
+  if (stable_pressed) {
     int16_t x = touch_points[0].x;
     int16_t y = touch_points[0].y;
 
@@ -337,22 +330,18 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     last_state = LV_INDEV_STATE_RELEASED;
   }
 
-  int64_t now_us = esp_timer_get_time();
   bool state_changed = data->state != prev_state;
-  bool rate_allow = (now_us - s_last_touch_diag_us) >= 200000;
+  bool rate_allow = (now_us - s_last_touch_diag_us) >= 1000000;
   if (state_changed || rate_allow) {
     s_last_touch_diag_us = now_us;
-    uint32_t irq_count = s_touch_irq_count;
-    uint32_t irq_delta = irq_count - last_logged_irq_count;
-    last_logged_irq_count = irq_count;
+    s_touch_event_seq++;
 
     const char *state_str =
         data->state == LV_INDEV_STATE_PRESSED ? "pressed" : "released";
-    ESP_LOGI("TOUCH_DIAG",
-             "state=%s x=%d y=%d raw_x=%d raw_y=%d irq_total=%" PRIu32
-             " irq_delta=%" PRIu32,
-             state_str, data->point.x, data->point.y, raw_x, raw_y, irq_count,
-             irq_delta);
+    ESP_LOGI("TOUCH_EVT",
+             "seq=%" PRIu32 " state=%s x=%d y=%d raw_x=%d raw_y=%d",
+             s_touch_event_seq, state_str, data->point.x, data->point.y, raw_x,
+             raw_y);
   }
 }
 
@@ -379,10 +368,6 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
   if (tp_handle) {
     lv_indev_t *indev = indev_init(tp_handle);
     assert(indev);
-
-    // ARS: Register Interrupt Callback
-    ESP_LOGI(TAG, "Registering Touch ISR for low latency");
-    esp_lcd_touch_register_interrupt_callback(tp_handle, lvgl_touch_isr_cb);
   }
 
   lvgl_mux = xSemaphoreCreateRecursiveMutex();
