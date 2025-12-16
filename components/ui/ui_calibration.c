@@ -11,7 +11,7 @@ static const char *TAG = "ui_calibration";
 
 static void calibration_event_cb(lv_event_t *e) {
   (void)e;
-  ESP_LOGI(TAG, "Calibration completed, persisting setup flag");
+  ESP_LOGI(TAG, "validate clicked");
   esp_err_t err = ui_wizard_mark_setup_done();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to persist setup_done flag: %s", esp_err_to_name(err));

@@ -30,7 +30,7 @@ static wifi_err_reason_t last_wifi_reason = WIFI_REASON_UNSPECIFIED;
 
 static esp_err_t save_setup_done(void) {
   nvs_handle_t handle;
-  esp_err_t err = nvs_open("system", NVS_READWRITE, &handle);
+  esp_err_t err = nvs_open(UI_SETUP_NVS_NAMESPACE, NVS_READWRITE, &handle);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open NVS for setup flag: %s", esp_err_to_name(err));
     return err;
