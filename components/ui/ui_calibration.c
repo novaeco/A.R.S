@@ -18,7 +18,7 @@ static void touch_debug_timer_cb(lv_timer_t *timer) {
     return;
   }
   lv_obj_t *label = (lv_obj_t *)lv_timer_get_user_data(timer);
-  if (!label) {
+  if (!label || !lv_obj_is_valid(label)) {
     return;
   }
   ars_touch_debug_info_t info = {0};

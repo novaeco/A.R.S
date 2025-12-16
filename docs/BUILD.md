@@ -58,3 +58,16 @@ idf.py reconfigure
 idf.py build
 idf.py size
 ```
+
+### Nettoyage complet et séquence flash/monitor
+Pour repartir d'un cache propre ou après mise à jour de l'ESP-IDF :
+```bash
+idf.py fullclean
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+Notes :
+- Des messages Kconfig liés à OpenThread ont été désactivés côté projet (OpenThread non utilisé).
+- Des warnings esp_wifi/wpa_supplicant issus de l'ESP-IDF peuvent subsister suivant la version utilisée; ils sont bénins et ne sont pas corrigés dans ce dépôt.

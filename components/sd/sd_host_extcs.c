@@ -112,6 +112,9 @@ static bool s_warned_cs_low_stuck = false;
 static bool s_cmd0_diag_logged = false;
 static uint8_t s_last_cs_latched = 0xFF;
 static uint8_t s_last_cs_input = 0xFF;
+static uint8_t s_miso_low_ff_streak = 0;
+static uint8_t s_miso_high_noise_streak = 0;
+static int64_t s_miso_last_diag_us = 0;
 
 typedef struct {
   uint8_t sample_high[4];
@@ -553,7 +556,9 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
   // CS low sampling without command: if everything is 0xFF here, CS may not be
   // asserted electrically or MISO is floating.
   if (sd_extcs_assert_cs() == ESP_OK) {
-    ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
+    // Allow additional settle time for IO extender propagation and bus release
+    // when toggling CS via I2C.
+    ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US + 80);
     for (size_t i = 0; i < sizeof(sample_low); ++i) {
       spi_transaction_t t_rx = {
           .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
@@ -576,26 +581,39 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
     miso_diag->low_all_ff = low_all_ff;
   }
 
-  static int64_t last_miso_warn_us = 0;
-  int64_t now_us = esp_timer_get_time();
-  bool log_allowed = (now_us - last_miso_warn_us) > 2000000;
+  bool cs_low_ff_detected = low_all_ff && (s_cs_level == 0);
+  bool high_noise_detected = !high_all_ff;
 
-  if (!high_all_ff && log_allowed) {
-    last_miso_warn_us = now_us;
+  s_miso_low_ff_streak = cs_low_ff_detected ? (uint8_t)(s_miso_low_ff_streak + 1)
+                                            : 0;
+  s_miso_high_noise_streak =
+      high_noise_detected ? (uint8_t)(s_miso_high_noise_streak + 1) : 0;
+
+  int64_t now_us = esp_timer_get_time();
+  bool log_allowed = (s_miso_last_diag_us == 0) ||
+                     ((now_us - s_miso_last_diag_us) > 2000000);
+
+  if (high_noise_detected && s_miso_high_noise_streak >= 2 && log_allowed) {
+    s_miso_last_diag_us = now_us;
     ESP_LOGW(TAG,
              "MISO health: noise with CS high (samples=%02X %02X %02X %02X)",
              sample_high[0], sample_high[1], sample_high[2], sample_high[3]);
   }
-  if (low_all_ff && log_allowed) {
-    last_miso_warn_us = now_us;
+  if (cs_low_ff_detected && s_miso_low_ff_streak >= 3 && log_allowed) {
+    s_miso_last_diag_us = now_us;
     ESP_LOGW(TAG,
-             "MISO health: CS low but MISO stayed 0xFF (samples=%02X %02X %02X %02X)"
-             " -> check CS path / pull-ups",
+             "MISO health: CS asserted but MISO stayed 0xFF (samples=%02X %02X %02X %02X);"
+             " recheck CS path or pulls",
+             sample_low[0], sample_low[1], sample_low[2], sample_low[3]);
+  } else if (cs_low_ff_detected && log_allowed) {
+    s_miso_last_diag_us = now_us;
+    ESP_LOGD(TAG,
+             "MISO health (diag only): CS asserted and MISO idle=0xFF (samples=%02X %02X %02X %02X)",
              sample_low[0], sample_low[1], sample_low[2], sample_low[3]);
   }
 
   if (cs_low_all_ff)
-    *cs_low_all_ff = low_all_ff;
+    *cs_low_all_ff = cs_low_ff_detected && s_miso_low_ff_streak >= 2;
 
   return true;
 }
