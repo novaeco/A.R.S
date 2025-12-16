@@ -20,7 +20,7 @@ static void calibration_event_cb(lv_event_t *e) {
 }
 
 void ui_calibration_start(void) {
-  ESP_LOGI(TAG, "Starting Calibration (UI stub)");
+  ESP_LOGI(TAG, "Starting Calibration UI");
 
   lv_obj_t *scr_cal = lv_obj_create(NULL);
   ui_theme_apply(scr_cal);
@@ -48,8 +48,8 @@ void ui_calibration_start(void) {
 
   lv_obj_t *lbl = lv_label_create(body);
   lv_label_set_text(lbl,
-                    "Suivez les instructions de calibration puis validez pour"
-                    " poursuivre.");
+                    "Touchez l\u2019\u00e9cran pour v\u00e9rifier le tactile puis validez pour "
+                    "passer au tableau de bord.");
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(lbl, LV_PCT(80));
   lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);

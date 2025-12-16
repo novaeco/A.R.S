@@ -9,6 +9,7 @@
 #include "lvgl.h"
 #include "sdkconfig.h"
 #include "ui.h"
+#include <inttypes.h>
 
 static const char *TAG = "lv_port";          // Tag for logging
 static SemaphoreHandle_t lvgl_mux = NULL;    // LVGL mutex for synchronization
@@ -238,9 +239,11 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 // --- 3. Input Device ---
 
 static volatile bool s_touch_irq_triggered = false;
+static volatile uint32_t s_touch_irq_count = 0;
 static int64_t s_last_touch_diag_us = 0;
 static void lvgl_touch_isr_cb(esp_lcd_touch_handle_t tp) {
   s_touch_irq_triggered = true;
+  s_touch_irq_count++;
 }
 
 static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -270,6 +273,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   static int16_t last_x = -1;
   static int16_t last_y = -1;
   static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
+  static uint32_t last_logged_irq_count = 0;
 
   // Get coords from last read (buffered in driver data)
   bool pressed = esp_lcd_touch_get_data(tp, touch_points, &touchpad_cnt, 1);
@@ -326,25 +330,29 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     last_x = x;
     last_y = y;
     last_state = LV_INDEV_STATE_PRESSED;
-
-    // Diagnostic logging on transitions, rate-limited to 5 Hz
-    int64_t now_us = esp_timer_get_time();
-    if (prev_state != LV_INDEV_STATE_PRESSED ||
-        (now_us - s_last_touch_diag_us) >= 200000) {
-      s_last_touch_diag_us = now_us;
-      ESP_LOGI("TOUCH_DIAG", "pressed x=%d y=%d raw_x=%d raw_y=%d", x, y, raw_x,
-               raw_y);
-    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
-    if (prev_state != LV_INDEV_STATE_RELEASED) {
-      int64_t now_us = esp_timer_get_time();
-      if ((now_us - s_last_touch_diag_us) >= 200000) {
-        s_last_touch_diag_us = now_us;
-        ESP_LOGI("TOUCH_DIAG", "released x=%d y=%d", last_x, last_y);
-      }
-    }
+    data->point.x = last_x;
+    data->point.y = last_y;
     last_state = LV_INDEV_STATE_RELEASED;
+  }
+
+  int64_t now_us = esp_timer_get_time();
+  bool state_changed = data->state != prev_state;
+  bool rate_allow = (now_us - s_last_touch_diag_us) >= 200000;
+  if (state_changed || rate_allow) {
+    s_last_touch_diag_us = now_us;
+    uint32_t irq_count = s_touch_irq_count;
+    uint32_t irq_delta = irq_count - last_logged_irq_count;
+    last_logged_irq_count = irq_count;
+
+    const char *state_str =
+        data->state == LV_INDEV_STATE_PRESSED ? "pressed" : "released";
+    ESP_LOGI("TOUCH_DIAG",
+             "state=%s x=%d y=%d raw_x=%d raw_y=%d irq_total=%" PRIu32
+             " irq_delta=%" PRIu32,
+             state_str, data->point.x, data->point.y, raw_x, raw_y, irq_count,
+             irq_delta);
   }
 }
 
