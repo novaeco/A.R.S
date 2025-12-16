@@ -772,11 +772,8 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
   /* Read data with retry */
   esp_err_t err = ESP_FAIL;
 
-  // TAKE MUTEX for the whole transaction
-  if (g_i2c_bus_mutex == NULL) {
-    i2c_bus_shared_init();
-  }
-  if (xSemaphoreTake(g_i2c_bus_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(200));
+  if (!locked) {
     return ESP_ERR_TIMEOUT;
   }
 
@@ -787,7 +784,7 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  xSemaphoreGive(g_i2c_bus_mutex);
+  i2c_bus_shared_unlock();
   return err;
 }
 
@@ -799,11 +796,8 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
   /* Write data with retry */
   esp_err_t err = ESP_FAIL;
 
-  // TAKE MUTEX for the whole transaction
-  if (g_i2c_bus_mutex == NULL) {
-    i2c_bus_shared_init();
-  }
-  if (xSemaphoreTake(g_i2c_bus_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(200));
+  if (!locked) {
     return ESP_ERR_TIMEOUT;
   }
 
@@ -814,7 +808,7 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  xSemaphoreGive(g_i2c_bus_mutex);
+  i2c_bus_shared_unlock();
   return err;
   // *INDENT-ON*
 }

@@ -59,7 +59,8 @@ esp_err_t DEV_I2C_Add_Device(uint8_t addr,
 
 /**
  * @brief Initialize legacy DEV_I2C_Port structure (for backward compatibility).
- * This internally uses DEV_I2C_Init_Bus and DEV_I2C_Add_Device.
+ *        Prefer calling DEV_I2C_Init_Bus/DEV_I2C_Add_Device directly in new
+ *        code to avoid duplicate init paths.
  */
 esp_err_t DEV_I2C_Init(DEV_I2C_Port *out_port);
 

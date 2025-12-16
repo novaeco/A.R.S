@@ -16,11 +16,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "esp_rom_sys.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "i2c.h"
-
 #include "i2c_bus_shared.h"
 
 static const char *TAG = "i2c";
@@ -43,20 +38,11 @@ uint8_t DEV_I2C_SanitizeAddr(uint8_t addr) {
 }
 
 bool DEV_I2C_TakeLock(TickType_t wait_ms) {
-  if (g_i2c_bus_mutex == NULL) {
-    // If mutex not ready, warn but allow proceeding (risky but prevents crash
-    // early boot) Ideally should assume taken or fail. For this boot sequence,
-    // if init not called yet, mutex is NULL. But DEV_I2C_Init_Bus initializes
-    // it.
-    return true;
-  }
-  return xSemaphoreTakeRecursive(g_i2c_bus_mutex, wait_ms) == pdTRUE;
+  return i2c_bus_shared_lock(wait_ms);
 }
 
 void DEV_I2C_GiveLock(void) {
-  if (g_i2c_bus_mutex != NULL) {
-    xSemaphoreGiveRecursive(g_i2c_bus_mutex);
-  }
+  i2c_bus_shared_unlock();
 }
 
 // --- Initialization ---

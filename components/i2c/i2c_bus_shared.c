@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "i2c.h" // Access DEV_I2C_Init_Bus
+#include <assert.h>
 
 static const char *TAG = "i2c_bus_shared";
 
