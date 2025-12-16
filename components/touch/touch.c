@@ -5,6 +5,7 @@
  */
 
 #include "touch.h"
+#include "gt911.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -34,6 +35,8 @@ static ars_touch_calibration_t s_calibration = {
     .offset_x = CONFIG_ARS_TOUCH_OFFSET_X,
     .offset_y = CONFIG_ARS_TOUCH_OFFSET_Y,
 };
+static ars_touch_debug_info_t s_touch_debug_info = {0};
+static portMUX_TYPE s_touch_debug_mux = portMUX_INITIALIZER_UNLOCKED;
 
 void ars_touch_set_calibration(esp_lcd_touch_handle_t tp,
                                const ars_touch_calibration_t *data) {
@@ -93,4 +96,33 @@ void ars_touch_apply_calibration(esp_lcd_touch_point_data_t *points,
     points[i].x = (uint16_t)val_x;
     points[i].y = (uint16_t)val_y;
   }
+}
+
+void ars_touch_debug_feed(int16_t raw_x, int16_t raw_y, int16_t x, int16_t y,
+                          bool pressed) {
+  gt911_stats_t stats = {0};
+  gt911_get_stats(&stats);
+
+  portENTER_CRITICAL(&s_touch_debug_mux);
+  s_touch_debug_info.raw_x = raw_x;
+  s_touch_debug_info.raw_y = raw_y;
+  s_touch_debug_info.x = x;
+  s_touch_debug_info.y = y;
+  s_touch_debug_info.pressed = pressed;
+  s_touch_debug_info.irq_total = stats.irq_total;
+  s_touch_debug_info.empty_irqs = stats.empty_irqs;
+  s_touch_debug_info.i2c_errors = stats.i2c_errors;
+  s_touch_debug_info.polling = stats.polling_active;
+  portEXIT_CRITICAL(&s_touch_debug_mux);
+}
+
+esp_err_t ars_touch_debug_get(ars_touch_debug_info_t *info) {
+  if (!info) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  portENTER_CRITICAL(&s_touch_debug_mux);
+  *info = s_touch_debug_info;
+  portEXIT_CRITICAL(&s_touch_debug_mux);
+  return ESP_OK;
 }

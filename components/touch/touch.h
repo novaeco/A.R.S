@@ -1,6 +1,19 @@
 #pragma once
 
+#include "esp_err.h"
 #include "esp_lcd_touch.h"
+
+typedef struct {
+  int16_t raw_x;
+  int16_t raw_y;
+  int16_t x;
+  int16_t y;
+  uint32_t irq_total;
+  uint32_t empty_irqs;
+  uint32_t i2c_errors;
+  bool pressed;
+  bool polling;
+} ars_touch_debug_info_t;
 
 // ARS Custom Calibration Struct
 typedef struct {
@@ -36,3 +49,7 @@ void ars_touch_get_calibration(esp_lcd_touch_handle_t tp,
  */
 void ars_touch_apply_calibration(esp_lcd_touch_point_data_t *points,
                                  uint8_t count);
+
+void ars_touch_debug_feed(int16_t raw_x, int16_t raw_y, int16_t x, int16_t y,
+                          bool pressed);
+esp_err_t ars_touch_debug_get(ars_touch_debug_info_t *info);

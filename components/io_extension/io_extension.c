@@ -26,6 +26,7 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
  * output).
  */
 #include "esp_log.h"
+#include <rom/ets_sys.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -149,6 +150,8 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
   esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
 
   if (ret == ESP_OK && latched_level) {
+    // Allow the output latch to settle before re-reading
+    ets_delay_us(120);
     uint8_t out_reg = 0;
     esp_err_t rb_ret =
         DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
@@ -183,6 +186,39 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Output Failed: %s", esp_err_to_name(ret));
   }
+  return ret;
+}
+
+esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
+                                         uint8_t *latched_level) {
+  if (!latched_level) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (!ioext_lock()) {
+    ESP_LOGE(TAG, "Read latch Failed: mutex unavailable");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  bool bus_locked = DEV_I2C_TakeLock(pdMS_TO_TICKS(200));
+
+  uint8_t out_reg = 0;
+  esp_err_t ret =
+      DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
+                         &out_reg, 1);
+
+  if (bus_locked) {
+    DEV_I2C_GiveLock();
+  }
+
+  ioext_unlock();
+
+  if (ret == ESP_OK) {
+    *latched_level = (out_reg >> pin) & 0x1;
+  } else {
+    ESP_LOGE(TAG, "Read latch Failed: %s", esp_err_to_name(ret));
+  }
+
   return ret;
 }
 
