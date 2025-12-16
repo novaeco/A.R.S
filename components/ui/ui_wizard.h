@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+#define UI_SETUP_NVS_NAMESPACE "ui"
+
 void ui_wizard_start(void);
 void ui_wizard_next(void);
 bool ui_wizard_handle_wifi_cancel(void);

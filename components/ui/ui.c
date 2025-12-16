@@ -15,11 +15,11 @@ static bool ui_is_setup_done(void) {
   nvs_handle_t handle;
   uint8_t done = 0;
 
-  esp_err_t err = nvs_open("system", NVS_READONLY, &handle);
+  esp_err_t err = nvs_open(UI_SETUP_NVS_NAMESPACE, NVS_READONLY, &handle);
   if (err == ESP_ERR_NVS_NOT_FOUND) {
     ESP_LOGI(TAG, "Setup flag namespace not found in NVS (first boot assumed)");
     // Create namespace to avoid repeating the info log on next boot
-    if (nvs_open("system", NVS_READWRITE, &handle) == ESP_OK) {
+    if (nvs_open(UI_SETUP_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
       nvs_close(handle);
     }
     return false;

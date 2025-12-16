@@ -238,6 +238,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 // --- 3. Input Device ---
 
 static volatile bool s_touch_irq_triggered = false;
+static int64_t s_last_touch_diag_us = 0;
 static void lvgl_touch_isr_cb(esp_lcd_touch_handle_t tp) {
   s_touch_irq_triggered = true;
 }
@@ -327,22 +328,20 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     last_state = LV_INDEV_STATE_PRESSED;
 
     // Diagnostic logging on transitions, rate-limited to 5 Hz
-    static int64_t last_diag_us = 0;
     int64_t now_us = esp_timer_get_time();
     if (prev_state != LV_INDEV_STATE_PRESSED ||
-        (now_us - last_diag_us) >= 200000) {
-      last_diag_us = now_us;
-      ESP_LOGI("TOUCH_DIAG", "pressed raw=(%d,%d) mapped=(%d,%d)", raw_x,
-               raw_y, x, y);
+        (now_us - s_last_touch_diag_us) >= 200000) {
+      s_last_touch_diag_us = now_us;
+      ESP_LOGI("TOUCH_DIAG", "pressed x=%d y=%d raw_x=%d raw_y=%d", x, y, raw_x,
+               raw_y);
     }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
     if (prev_state != LV_INDEV_STATE_RELEASED) {
-      static int64_t last_diag_us = 0;
       int64_t now_us = esp_timer_get_time();
-      if ((now_us - last_diag_us) >= 200000) {
-        last_diag_us = now_us;
-        ESP_LOGI("TOUCH_DIAG", "released last=(%d,%d)", last_x, last_y);
+      if ((now_us - s_last_touch_diag_us) >= 200000) {
+        s_last_touch_diag_us = now_us;
+        ESP_LOGI("TOUCH_DIAG", "released x=%d y=%d", last_x, last_y);
       }
     }
     last_state = LV_INDEV_STATE_RELEASED;
