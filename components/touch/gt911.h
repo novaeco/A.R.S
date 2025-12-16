@@ -56,6 +56,15 @@ typedef struct {
   uint8_t cnt;                          /*!< Number of detected touch points */
 } touch_gt911_point_t;
 
+typedef struct {
+  uint32_t irq_total;
+  uint32_t empty_irqs;
+  uint32_t i2c_errors;
+  bool polling_active;
+  int16_t last_raw_x;
+  int16_t last_raw_y;
+} gt911_stats_t;
+
 /**
  * @brief Create a new GT911 touch driver instance
  *
@@ -98,6 +107,8 @@ esp_lcd_touch_handle_t touch_gt911_init();
  * touch points.
  */
 touch_gt911_point_t touch_gt911_read_point(uint8_t max_touch_cnt);
+
+void gt911_get_stats(gt911_stats_t *stats);
 
 /**
  * @brief Touch IO configuration structure for GT911

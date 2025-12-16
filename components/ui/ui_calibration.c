@@ -2,12 +2,34 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
+#include <inttypes.h>
 #include "ui_helpers.h"
 #include "ui_screen_manager.h"
 #include "ui_theme.h"
 #include "ui_wizard.h"
+#include "touch.h"
 
 static const char *TAG = "ui_calibration";
+static lv_timer_t *s_touch_dbg_timer = NULL;
+static lv_obj_t *s_touch_dbg_label = NULL;
+
+static void touch_debug_timer_cb(lv_timer_t *timer) {
+  if (!timer || !timer->user_data) {
+    return;
+  }
+  lv_obj_t *label = (lv_obj_t *)timer->user_data;
+  ars_touch_debug_info_t info = {0};
+  if (ars_touch_debug_get(&info) != ESP_OK) {
+    return;
+  }
+
+  char buf[96];
+  lv_snprintf(buf, sizeof(buf), "raw:%d,%d xy:%d,%d irq:%" PRIu32 " empty:%" PRIu32
+                                " err:%" PRIu32 "%s", info.raw_x, info.raw_y,
+              info.x, info.y, info.irq_total, info.empty_irqs, info.i2c_errors,
+              info.polling ? " poll" : "");
+  lv_label_set_text(label, buf);
+}
 
 static void calibration_event_cb(lv_event_t *e) {
   (void)e;
@@ -64,6 +86,19 @@ void ui_calibration_start(void) {
   lv_obj_t *lbl_btn = lv_label_create(btn);
   lv_label_set_text(lbl_btn, "Valider");
   lv_obj_center(lbl_btn);
+
+  s_touch_dbg_label = lv_label_create(scr_cal);
+  lv_obj_set_style_bg_opa(s_touch_dbg_label, LV_OPA_50, 0);
+  lv_obj_set_style_bg_color(s_touch_dbg_label, lv_color_black(), 0);
+  lv_obj_set_style_text_color(s_touch_dbg_label, lv_color_white(), 0);
+  lv_obj_set_style_pad_all(s_touch_dbg_label, 6, 0);
+  lv_obj_align(s_touch_dbg_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lv_label_set_text(s_touch_dbg_label, "touch dbg");
+
+  if (s_touch_dbg_timer) {
+    lv_timer_del(s_touch_dbg_timer);
+  }
+  s_touch_dbg_timer = lv_timer_create(touch_debug_timer_cb, 200, s_touch_dbg_label);
 
   ui_switch_screen(scr_cal, LV_SCR_LOAD_ANIM_NONE);
 }

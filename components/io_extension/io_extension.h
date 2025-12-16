@@ -63,6 +63,8 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value);     // Set IO pin out
 esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
                                             uint8_t *latched_level,
                                             uint8_t *input_level);
+esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
+                                         uint8_t *latched_level);
 uint8_t IO_EXTENSION_Input(uint8_t pin);   // Read IO pin input state
 esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value);
 uint16_t IO_EXTENSION_Adc_Input();

@@ -302,7 +302,6 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
   const int desired_level = level_high ? 1 : 0; // IO4: 0=assert, 1=deassert
   esp_err_t err = ESP_FAIL;
   uint8_t latched = 0xFF;
-  uint8_t sampled = 0xFF;
 
   if (s_cs_level == desired_level) {
     // Still provide settling window when redundant calls happen to keep timing
@@ -324,31 +323,40 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     }
 
     err = IO_EXTENSION_Output_With_Readback(IO_EXTENSION_IO_4, desired_level,
-                                            &latched, &sampled);
+                                            &latched, NULL);
     i2c_bus_shared_unlock();
 
     bool latched_ok = latched <= 1 && latched == desired_level;
-    bool sampled_ok = sampled <= 1 && sampled == desired_level;
-    if (err == ESP_OK && latched_ok && sampled_ok) {
+    if (err == ESP_OK && !latched_ok) {
+      ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
+      uint8_t verify = 0xFF;
+      if (IO_EXTENSION_Read_Output_Latch(IO_EXTENSION_IO_4, &verify) ==
+          ESP_OK) {
+        latched = verify;
+        latched_ok = verify == desired_level;
+      }
+    }
+
+    if (err == ESP_OK && latched_ok) {
       break;
     }
 
     ESP_LOGW(TAG,
-             "CS->%s verify mismatch (latched=%u input=%u err=%s) attempt=%d",
-             level_high ? "HIGH" : "LOW", latched, sampled,
-             esp_err_to_name(err), attempt + 1);
+             "CS->%s verify mismatch (latched=%u err=%s) attempt=%d",
+             level_high ? "HIGH" : "LOW", latched, esp_err_to_name(err),
+             attempt + 1);
     ets_delay_us(SD_EXTCS_CS_READBACK_RETRY_US);
   }
 
   if (err == ESP_OK) {
     s_cs_level = desired_level;
     s_last_cs_latched = latched;
-    s_last_cs_input = sampled;
-    ESP_LOGI(TAG, "CS->%s via IOEXT4 (latched=%u input=%u)",
-             level_high ? "HIGH" : "LOW", latched, sampled);
+    s_last_cs_input = latched;
+    ESP_LOGI(TAG, "CS->%s via IOEXT4 (latched=%u)",
+             level_high ? "HIGH" : "LOW", latched);
   } else {
-    ESP_LOGW(TAG, "CS->%s failed after retries (latched=%u input=%u err=%s)",
-             level_high ? "HIGH" : "LOW", latched, sampled,
+    ESP_LOGW(TAG, "CS->%s failed after retries (latched=%u err=%s)",
+             level_high ? "HIGH" : "LOW", latched,
              esp_err_to_name(err));
   }
 

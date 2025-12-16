@@ -9,6 +9,7 @@
 #include "lvgl.h"
 #include "sdkconfig.h"
 #include "ui.h"
+#include "touch.h"
 #include <inttypes.h>
 
 static const char *TAG = "lv_port";          // Tag for logging
@@ -253,6 +254,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   static int16_t last_y = -1;
   static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
   static int64_t last_press_us = 0;
+  static bool has_valid_point = false;
 
   // Get coords from last read (buffered in driver data)
   bool pressed = esp_lcd_touch_get_data(tp, touch_points, &touchpad_cnt, 1);
@@ -270,6 +272,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     raw_y = touch_points[0].y;
     ars_touch_apply_calibration(touch_points, touchpad_cnt);
     last_press_us = now_us;
+    has_valid_point = true;
   }
 
   // Debounce release for short gaps
@@ -324,15 +327,24 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     last_y = y;
     last_state = LV_INDEV_STATE_PRESSED;
   } else {
-    data->state = LV_INDEV_STATE_RELEASED;
-    data->point.x = last_x;
-    data->point.y = last_y;
-    last_state = LV_INDEV_STATE_RELEASED;
+    if (last_state == LV_INDEV_STATE_PRESSED && has_valid_point) {
+      data->state = LV_INDEV_STATE_RELEASED;
+      data->point.x = last_x;
+      data->point.y = last_y;
+      last_state = LV_INDEV_STATE_RELEASED;
+    } else {
+      data->state = LV_INDEV_STATE_RELEASED;
+      data->point.x = has_valid_point ? last_x : 0;
+      data->point.y = has_valid_point ? last_y : 0;
+    }
   }
 
   bool state_changed = data->state != prev_state;
-  bool rate_allow = (now_us - s_last_touch_diag_us) >= 1000000;
-  if (state_changed || rate_allow) {
+  bool rate_allow =
+      data->state == LV_INDEV_STATE_PRESSED &&
+      ((now_us - s_last_touch_diag_us) >= 1000000);
+  bool log_release = state_changed && prev_state == LV_INDEV_STATE_PRESSED;
+  if (state_changed || rate_allow || log_release) {
     s_last_touch_diag_us = now_us;
     s_touch_event_seq++;
 
@@ -343,6 +355,9 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
              s_touch_event_seq, state_str, data->point.x, data->point.y, raw_x,
              raw_y);
   }
+
+  ars_touch_debug_feed(raw_x, raw_y, data->point.x, data->point.y,
+                       data->state == LV_INDEV_STATE_PRESSED);
 }
 
 static lv_indev_t *indev_init(esp_lcd_touch_handle_t tp) {
