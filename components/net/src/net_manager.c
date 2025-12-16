@@ -15,6 +15,7 @@
 #include "web_server.h"
 #include <string.h>
 #include <strings.h>
+#include <inttypes.h>
 
 #ifndef CONFIG_ARS_ENABLE_HTTP_CLIENT
 #define CONFIG_ARS_ENABLE_HTTP_CLIENT 0
@@ -750,17 +751,57 @@ esp_err_t net_http_get(const char *url, char *out_buffer, size_t buffer_len) {
     return ESP_ERR_NO_MEM;
   }
 
-  esp_err_t err = esp_http_client_perform(client);
-  if (err == ESP_OK) {
-    int read_len =
-        esp_http_client_read_response(client, out_buffer, buffer_len - 1);
-    if (read_len >= 0) {
-      out_buffer[read_len] = '\0';
-    } else {
+  esp_err_t err = esp_http_client_open(client, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return err;
+  }
+
+  const int64_t content_length = esp_http_client_fetch_headers(client);
+  size_t total_read = 0;
+  bool truncated = false;
+
+  while (true) {
+    if (total_read >= buffer_len - 1) {
+      truncated = true;
+      break;
+    }
+
+    int to_read = (int)(buffer_len - 1 - total_read);
+    int read_len = esp_http_client_read(client, out_buffer + total_read, to_read);
+    if (read_len < 0) {
+      ESP_LOGE(TAG, "HTTP read failed after %u bytes: %s", (unsigned)total_read,
+               esp_err_to_name(read_len));
       err = ESP_FAIL;
+      break;
+    }
+    if (read_len == 0) {
+      break; // EOF
+    }
+
+    total_read += (size_t)read_len;
+
+    if (content_length >= 0 && total_read >= (size_t)content_length) {
+      break; // Completed expected length
     }
   }
+
+  esp_http_client_close(client);
   esp_http_client_cleanup(client);
+
+  if (err == ESP_OK) {
+    out_buffer[total_read] = '\0';
+    if (truncated) {
+      ESP_LOGW(TAG,
+               "HTTP response truncated to %u bytes (buffer size %u, content length %" PRId64 ")",
+               (unsigned)total_read, (unsigned)buffer_len, content_length);
+      err = ESP_ERR_NO_MEM;
+    }
+  } else if (buffer_len > 0) {
+    out_buffer[0] = '\0';
+  }
+
   return err;
 }
 
