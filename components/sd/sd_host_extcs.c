@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
+#include "i2c_bus_shared.h"
 #include "io_extension.h"
 #include "sd.h"
 #include "sdkconfig.h" // Crucial for CONFIG_ARS defines
@@ -86,6 +87,11 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
 #define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
 #define SD_EXTCS_CMD0_SLOW_FREQ_KHZ 100
 #define SD_EXTCS_R1_BITS_MAX 48
+#define SD_EXTCS_CS_ASSERT_WAIT_US 300
+#define SD_EXTCS_CS_DEASSERT_WAIT_US 50
+#define SD_EXTCS_CS_READBACK_RETRIES 3
+#define SD_EXTCS_CS_READBACK_RETRY_US 600
+#define SD_EXTCS_POST_DEASSERT_DUMMY_BYTES 2
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -283,8 +289,9 @@ static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
 }
 
 // --- GPIO Helpers ---
-// Drive SD CS through the CH32V003 IO extender and log the requested level so
-// we can distinguish IO path failures from card absence during bring-up.
+// Drive SD CS through the CH32V003 IO extender with readback and bounded
+// settling delays so the card always sees a stable level before/after each SPI
+// transaction.
 static esp_err_t sd_extcs_set_cs_level(bool level_high) {
   if (!s_ioext_ready || s_ioext_handle == NULL) {
     ESP_LOGE(TAG, "CS %s failed: IO expander not ready", level_high ? "HIGH" :
@@ -292,28 +299,55 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  // IO4: 0 = Low (Assert), 1 = High (Deassert)
-  const int desired_level = level_high ? 1 : 0;
-  if (s_cs_level == desired_level) {
-    ESP_LOGD(TAG, "CS already %s (IOEXT4)", level_high ? "HIGH" : "LOW");
-    return ESP_OK; // Skip redundant I2C write
-  }
-
+  const int desired_level = level_high ? 1 : 0; // IO4: 0=assert, 1=deassert
+  esp_err_t err = ESP_FAIL;
   uint8_t latched = 0xFF;
   uint8_t sampled = 0xFF;
 
-  esp_err_t err = IO_EXTENSION_Output_With_Readback(IO_EXTENSION_IO_4,
-                                                    desired_level, &latched,
-                                                    &sampled);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CS->%s failed: %s", level_high ? "HIGH" : "LOW",
-             esp_err_to_name(err));
-  } else {
+  if (s_cs_level == desired_level) {
+    // Still provide settling window when redundant calls happen to keep timing
+    // expectations consistent.
+    if (desired_level == 0) {
+      ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
+    } else {
+      ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
+    }
+    return ESP_OK;
+  }
+
+  for (int attempt = 0; attempt < SD_EXTCS_CS_READBACK_RETRIES; ++attempt) {
+    if (!i2c_bus_shared_lock(pdMS_TO_TICKS(300))) {
+      ESP_LOGW(TAG, "CS->%s lock timeout (attempt %d)",
+               level_high ? "HIGH" : "LOW", attempt + 1);
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    err = IO_EXTENSION_Output_With_Readback(IO_EXTENSION_IO_4, desired_level,
+                                            &latched, &sampled);
+    i2c_bus_shared_unlock();
+
+    bool latched_ok = latched <= 1 && latched == desired_level;
+    bool sampled_ok = sampled <= 1 && sampled == desired_level;
+    if (err == ESP_OK && latched_ok && sampled_ok) {
+      break;
+    }
+
+    ESP_LOGW(TAG,
+             "CS->%s verify mismatch (latched=%u input=%u err=%s) attempt=%d",
+             level_high ? "HIGH" : "LOW", latched, sampled,
+             esp_err_to_name(err), attempt + 1);
+    ets_delay_us(SD_EXTCS_CS_READBACK_RETRY_US);
+  }
+
+  if (err == ESP_OK) {
     s_cs_level = desired_level;
     s_last_cs_latched = latched;
     s_last_cs_input = sampled;
-    ESP_LOGI(TAG,
-             "CS->%s via IOEXT4 (latched=%u input=%u result=%s)",
+    ESP_LOGI(TAG, "CS->%s via IOEXT4 (latched=%u input=%u)",
+             level_high ? "HIGH" : "LOW", latched, sampled);
+  } else {
+    ESP_LOGW(TAG, "CS->%s failed after retries (latched=%u input=%u err=%s)",
              level_high ? "HIGH" : "LOW", latched, sampled,
              esp_err_to_name(err));
   }
@@ -324,6 +358,21 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
 
   if (SD_EXTCS_CS_I2C_SETTLE_US > 0) {
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
+  }
+
+  if (desired_level == 0) {
+    ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
+  } else {
+    // Provide post-clocks and a small guard time for clean deassert timing.
+    if (s_cleanup_handle) {
+      uint8_t dummy = 0xFF;
+      for (size_t i = 0; i < SD_EXTCS_POST_DEASSERT_DUMMY_BYTES; ++i) {
+        spi_transaction_t t_cleanup = {
+            .length = 8, .tx_buffer = &dummy, .rx_buffer = NULL};
+        spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
+      }
+    }
+    ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
   }
 
   return err;
@@ -848,14 +897,11 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     return err;
   }
 
-  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
-
   spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
   err = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CMD%u TX failed: %s", cmd, esp_err_to_name(err));
     sd_extcs_deassert_cs();
-    sd_extcs_send_dummy_clocks(1);
     sd_extcs_unlock();
     return err;
   }
@@ -887,8 +933,11 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   }
 
   sd_extcs_deassert_cs();
-  sd_extcs_send_dummy_clocks(1);
-  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+
+  ESP_LOGI(TAG,
+           "CMD%u arg=0x%08" PRIX32 " r1=0x%02X len=%zu freq=%u kHz ret=%s",
+           cmd, arg, first_byte, response_len, s_active_freq_khz,
+           esp_err_to_name(err));
 
   sd_extcs_unlock();
 
@@ -914,25 +963,11 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
     return ESP_ERR_TIMEOUT;
   }
 
-  // Explicit setup time for manual CS
-  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US);
-
   // 2. Delegate to standard SDSPI implementation
   ret = s_original_do_transaction(slot, cmdinfo);
 
   // 3. Deassert CS
   sd_extcs_deassert_cs(); // Best effort deassert
-  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
-
-  // 4. Dummy Clocks (8 cycles)
-  if (s_cleanup_handle) {
-    // Using polling to be quick and synchronous
-    uint8_t dummy = 0xFF;
-    spi_transaction_t t_cleanup = {
-        .length = 8, .tx_buffer = &dummy, .rx_buffer = NULL};
-    spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
-  }
-  ets_delay_us(2);
 
 #if CONFIG_ARS_SD_EXTCS_TIMING_LOG
   const uint8_t opcode = cmdinfo ? cmdinfo->opcode : 0xFF;
@@ -951,6 +986,8 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
 
 static esp_err_t sd_extcs_low_speed_init(void) {
   gpio_set_pull_mode(CONFIG_ARS_SD_MISO, GPIO_PULLUP_ONLY);
+  gpio_set_pull_mode(CONFIG_ARS_SD_MOSI, GPIO_FLOATING);
+  gpio_set_pull_mode(CONFIG_ARS_SD_SCK, GPIO_FLOATING);
   s_warned_cs_low_stuck = false;
 
   uint32_t init_khz = SD_EXTCS_INIT_FREQ_KHZ;
@@ -1103,6 +1140,9 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
            init_freq_khz, host_target_khz);
 
   s_extcs_state = SD_EXTCS_STATE_UNINITIALIZED;
+
+  // Ensure shared I2C bus primitives are ready before IO extender toggling
+  i2c_bus_shared_init();
 
 #if CONFIG_ARS_SD_SDMMC_DEBUG_LOG
   esp_log_level_set("sdspi_host", ESP_LOG_DEBUG);

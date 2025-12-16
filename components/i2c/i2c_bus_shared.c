@@ -37,3 +37,20 @@ void i2c_bus_shared_init(void) {
       ESP_LOGI(TAG, "Shared I2C bus initialized successfully");
   }
 }
+
+bool i2c_bus_shared_lock(TickType_t timeout_ticks) {
+  if (g_i2c_bus_mutex == NULL) {
+    // Ensure mutex exists even if init has not been called explicitly yet
+    i2c_bus_shared_init();
+  }
+
+  if (g_i2c_bus_mutex == NULL)
+    return false;
+
+  return xSemaphoreTakeRecursive(g_i2c_bus_mutex, timeout_ticks) == pdTRUE;
+}
+
+void i2c_bus_shared_unlock(void) {
+  if (g_i2c_bus_mutex)
+    xSemaphoreGiveRecursive(g_i2c_bus_mutex);
+}
