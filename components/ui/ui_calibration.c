@@ -14,10 +14,13 @@ static lv_timer_t *s_touch_dbg_timer = NULL;
 static lv_obj_t *s_touch_dbg_label = NULL;
 
 static void touch_debug_timer_cb(lv_timer_t *timer) {
-  if (!timer || !timer->user_data) {
+  if (!timer) {
     return;
   }
-  lv_obj_t *label = (lv_obj_t *)timer->user_data;
+  lv_obj_t *label = (lv_obj_t *)lv_timer_get_user_data(timer);
+  if (!label) {
+    return;
+  }
   ars_touch_debug_info_t info = {0};
   if (ars_touch_debug_get(&info) != ESP_OK) {
     return;
