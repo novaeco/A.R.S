@@ -11,10 +11,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "sdkconfig.h"
+#include "esp_timer.h"
 
 #ifndef CONFIG_ARS_TOUCH_SWAP_XY
 #define CONFIG_ARS_TOUCH_SWAP_XY 0
@@ -42,16 +44,23 @@
 
 #include "gpio.h"
 #include "i2c.h"
+#include "i2c_bus_shared.h"
 #include "io_extension.h"
 #include "rgb_lcd_port.h"
 
 #include "gt911.h"
 
 static const char *TAG = "GT911";
+static TaskHandle_t s_gt911_irq_task = NULL;
+static volatile uint32_t s_gt911_irq_total = 0;
+static volatile uint32_t s_gt911_irq_storm = 0;
+static int64_t s_last_irq_us = 0;
+static int s_gt911_int_gpio = -1;
 
 /* GT911 registers */
 #define ESP_LCD_TOUCH_GT911_READ_KEY_REG (0x8093)
-#define ESP_LCD_TOUCH_GT911_READ_XY_REG (0x814E)
+#define ESP_LCD_TOUCH_GT911_STATUS_REG (0x814E)
+#define ESP_LCD_TOUCH_GT911_POINTS_REG (0x8150)
 #define ESP_LCD_TOUCH_GT911_CONFIG_REG (0x8047)
 #define ESP_LCD_TOUCH_GT911_PRODUCT_ID_REG (0x8140)
 #define ESP_LCD_TOUCH_GT911_ENTER_SLEEP (0x8040)
@@ -74,6 +83,8 @@ static esp_err_t esp_lcd_touch_gt911_get_button_state(esp_lcd_touch_handle_t tp,
                                                       uint8_t *state);
 #endif
 static esp_err_t esp_lcd_touch_gt911_del(esp_lcd_touch_handle_t tp);
+static void gt911_irq_task(void *arg);
+static void IRAM_ATTR gt911_gpio_isr_handler(void *arg);
 
 /* I2C read/write */
 static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
@@ -207,23 +218,49 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
   if (esp_lcd_touch_gt911->config.int_gpio_num != GPIO_NUM_NC) {
     const gpio_config_t int_gpio_config = {
         .mode = GPIO_MODE_INPUT,
-        .intr_type =
-            (esp_lcd_touch_gt911->config.levels.interrupt ? GPIO_INTR_POSEDGE
-                                                          : GPIO_INTR_NEGEDGE),
+        .intr_type = GPIO_INTR_NEGEDGE,
+        .pull_up_en = 1,
+        .pull_down_en = 0,
         .pin_bit_mask = BIT64(esp_lcd_touch_gt911->config.int_gpio_num)};
     ret = gpio_config(&int_gpio_config);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "GPIO config failed");
 
-    /* Register interrupt callback */
-    if (esp_lcd_touch_gt911->config.interrupt_callback) {
-      esp_lcd_touch_register_interrupt_callback(
-          esp_lcd_touch_gt911, esp_lcd_touch_gt911->config.interrupt_callback);
+    // Install ISR service if not already installed
+    ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+      ESP_LOGE(TAG, "Failed to install ISR service: %s", esp_err_to_name(ret));
+      goto err;
     }
+
+    // Register interrupt handler with gating
+    ret = gpio_isr_handler_add(esp_lcd_touch_gt911->config.int_gpio_num,
+                               gt911_gpio_isr_handler, esp_lcd_touch_gt911);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "ISR handler add failed");
   }
 
   /* Read status and config info */
   ret = touch_gt911_read_cfg(esp_lcd_touch_gt911);
   ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 init failed");
+
+  // Ensure shared I2C mutex is available
+  i2c_bus_shared_init();
+
+  // Create IRQ task to handle I2C reads outside ISR
+  if (esp_lcd_touch_gt911->config.int_gpio_num != GPIO_NUM_NC) {
+    static bool task_created = false;
+    if (!task_created) {
+      s_gt911_int_gpio = esp_lcd_touch_gt911->config.int_gpio_num;
+      BaseType_t task_ret = xTaskCreatePinnedToCore(
+          gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911, 5,
+          &s_gt911_irq_task, tskNO_AFFINITY);
+      if (task_ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create GT911 IRQ task");
+        ret = ESP_FAIL;
+        goto err;
+      }
+      task_created = true;
+    }
+  }
 
 err:
   if (ret != ESP_OK) {
@@ -286,105 +323,82 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   // ARS: Self-Healing removed (IO handle assumed persistent)
   // if (gt911_ensure_io_handle(tp) != ESP_OK) { return ESP_FAIL; }
 
-  err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_READ_XY_REG, buf, 1);
+  err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, buf, 1);
   if (err != ESP_OK) {
     s_consecutive_errors++;
-    ESP_LOGW(TAG, "I2C read error (stats: %d)", s_consecutive_errors);
+    ESP_LOGW(TAG, "I2C read status error (consecutive=%d)",
+             s_consecutive_errors);
 
-    // ARS: Reset Threshold
     if (s_consecutive_errors > 5) {
       ESP_LOGE(TAG, "Too many I2C errors (%d), resetting GT911...",
                s_consecutive_errors);
-      touch_gt911_reset(tp); // Pulse RST
-      // Re-init or re-send config could be added here if needed
+      touch_gt911_reset(tp);
       s_consecutive_errors = 0;
     }
     return err;
   }
 
-  // Success, reset error counter
   if (s_consecutive_errors > 0) {
     ESP_LOGI(TAG, "I2C recovered after %d errors", s_consecutive_errors);
     s_consecutive_errors = 0;
   }
 
-  /* Any touch data? */
-  if ((buf[0] & 0x80) == 0x00) {
-    // Data not ready, do not clear!
-    return ESP_OK;
-#if (ESP_LCD_TOUCH_MAX_BUTTONS > 0)
-  } else if ((buf[0] & 0x10) == 0x10) {
-    /* Read all keys */
-    uint8_t key_max = ((ESP_GT911_TOUCH_MAX_BUTTONS < ESP_LCD_TOUCH_MAX_BUTTONS)
-                           ? (ESP_GT911_TOUCH_MAX_BUTTONS)
-                           : (ESP_LCD_TOUCH_MAX_BUTTONS));
-    err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_READ_KEY_REG, &buf[0],
-                               key_max);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "I2C read keys error: %s", esp_err_to_name(err));
-      return err;
+  const bool data_ready = (buf[0] & 0x80) != 0;
+  touch_cnt = buf[0] & 0x0F;
+
+  // Always clear status when controller reports data ready, even if count=0
+  if (data_ready) {
+    clear = 0;
+    esp_err_t clr_ret =
+        touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, clear);
+    if (clr_ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to clear GT911 status: %s", esp_err_to_name(clr_ret));
     }
-
-    /* Clear all */
-    touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_READ_XY_REG, clear);
-    // Continue even if write failed to avoid locking
-
-    portENTER_CRITICAL(&tp->data.lock);
-
-    /* Buttons count */
-    tp->data.buttons = key_max;
-    for (i = 0; i < key_max; i++) {
-      tp->data.button[i].status = buf[0] ? 1 : 0;
-    }
-
-    portEXIT_CRITICAL(&tp->data.lock);
-#endif
-  } else if ((buf[0] & 0x80) == 0x80) {
-#if (ESP_LCD_TOUCH_MAX_BUTTONS > 0)
-    portENTER_CRITICAL(&tp->data.lock);
-    for (i = 0; i < ESP_LCD_TOUCH_MAX_BUTTONS; i++) {
-      tp->data.button[i].status = 0;
-    }
-    portEXIT_CRITICAL(&tp->data.lock);
-#endif
-    /* Count of touched points */
-    touch_cnt = buf[0] & 0x0f;
-    if (touch_cnt > 5 || touch_cnt == 0) {
-      touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_READ_XY_REG, clear);
-      return ESP_OK;
-    }
-
-    /* Read all points */
-    err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_READ_XY_REG + 1, &buf[1],
-                               touch_cnt * 8);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "I2C read points error: %s", esp_err_to_name(err));
-      return err;
-    }
-
-    /* Clear all */
-    err = touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_READ_XY_REG, clear);
-    // Proceed even if clear failed
-
-    portENTER_CRITICAL(&tp->data.lock);
-
-    /* Number of touched points */
-    touch_cnt = (touch_cnt > ESP_LCD_TOUCH_MAX_POINTS ? ESP_LCD_TOUCH_MAX_POINTS
-                                                      : touch_cnt);
-    tp->data.points = touch_cnt;
-
-    /* Fill all coordinates */
-    for (i = 0; i < touch_cnt; i++) {
-      tp->data.coords[i].x =
-          ((uint16_t)buf[(i * 8) + 3] << 8) + buf[(i * 8) + 2];
-      tp->data.coords[i].y =
-          (((uint16_t)buf[(i * 8) + 5] << 8) + buf[(i * 8) + 4]);
-      tp->data.coords[i].strength =
-          (((uint16_t)buf[(i * 8) + 7] << 8) + buf[(i * 8) + 6]);
-    }
-
-    portEXIT_CRITICAL(&tp->data.lock);
   }
+
+  if (!data_ready) {
+    return ESP_OK;
+  }
+
+  if (touch_cnt == 0) {
+    s_gt911_irq_storm++;
+    if (s_gt911_irq_storm == 1 || (s_gt911_irq_storm % 50) == 0) {
+      ESP_LOGW(TAG, "GT911 interrupt with no points (storm=%" PRIu32 ")",
+               s_gt911_irq_storm);
+    }
+    portENTER_CRITICAL(&tp->data.lock);
+    tp->data.points = 0;
+    portEXIT_CRITICAL(&tp->data.lock);
+    return ESP_OK;
+  }
+
+  if (touch_cnt > ESP_LCD_TOUCH_MAX_POINTS) {
+    touch_cnt = ESP_LCD_TOUCH_MAX_POINTS;
+  }
+
+  uint8_t point_buf[8 * ESP_LCD_TOUCH_MAX_POINTS] = {0};
+  size_t read_len = touch_cnt * 8;
+  if (read_len > sizeof(point_buf)) {
+    read_len = sizeof(point_buf);
+  }
+
+  err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_POINTS_REG, point_buf,
+                             read_len);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "I2C read points error: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  portENTER_CRITICAL(&tp->data.lock);
+  tp->data.points = touch_cnt;
+  for (i = 0; i < touch_cnt; i++) {
+    const uint8_t *p = &point_buf[i * 8];
+    // Typical layout: [id][xL][xH][yL][yH][wL][wH][reserved]
+    tp->data.coords[i].x = ((uint16_t)p[2] << 8) | p[1];
+    tp->data.coords[i].y = ((uint16_t)p[4] << 8) | p[3];
+    tp->data.coords[i].strength = ((uint16_t)p[6] << 8) | p[5];
+  }
+  portEXIT_CRITICAL(&tp->data.lock);
 
   return ESP_OK;
 }
@@ -673,6 +687,9 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
   esp_err_t err = ESP_FAIL;
 
   // TAKE MUTEX for the whole transaction
+  if (g_i2c_bus_mutex == NULL) {
+    i2c_bus_shared_init();
+  }
   if (xSemaphoreTake(g_i2c_bus_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
     return ESP_ERR_TIMEOUT;
   }
@@ -697,6 +714,9 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
   esp_err_t err = ESP_FAIL;
 
   // TAKE MUTEX for the whole transaction
+  if (g_i2c_bus_mutex == NULL) {
+    i2c_bus_shared_init();
+  }
   if (xSemaphoreTake(g_i2c_bus_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
     return ESP_ERR_TIMEOUT;
   }
@@ -711,4 +731,57 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
   xSemaphoreGive(g_i2c_bus_mutex);
   return err;
   // *INDENT-ON*
+}
+
+static void IRAM_ATTR gt911_gpio_isr_handler(void *arg) {
+  BaseType_t hp_task_woken = pdFALSE;
+  esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
+  if (!tp) {
+    return;
+  }
+
+  gpio_intr_disable(tp->config.int_gpio_num);
+  s_gt911_irq_total++;
+  if (!s_gt911_irq_task) {
+    gpio_intr_enable(tp->config.int_gpio_num);
+    return;
+  }
+
+  vTaskNotifyGiveFromISR(s_gt911_irq_task, &hp_task_woken);
+  if (hp_task_woken == pdTRUE) {
+    portYIELD_FROM_ISR();
+  }
+}
+
+static void gt911_irq_task(void *arg) {
+  esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
+  const int64_t debounce_us = 5000; // 5 ms anti-bounce
+  while (1) {
+    uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+    if (notified == 0) {
+      // Periodic poll can be added here if ever needed
+      continue;
+    }
+
+    int64_t now = esp_timer_get_time();
+    if ((now - s_last_irq_us) < debounce_us) {
+      if (s_gt911_int_gpio >= 0) {
+        gpio_intr_enable(s_gt911_int_gpio);
+      }
+      continue;
+    }
+    s_last_irq_us = now;
+
+    esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "GT911 read failed: %s", esp_err_to_name(err));
+    } else if (s_gt911_irq_storm > 0 && (s_gt911_irq_storm % 50) == 0) {
+      ESP_LOGW(TAG, "IRQ storm detected (count=%" PRIu32 ")",
+               s_gt911_irq_storm);
+    }
+
+    if (s_gt911_int_gpio >= 0) {
+      gpio_intr_enable(s_gt911_int_gpio);
+    }
+  }
 }
