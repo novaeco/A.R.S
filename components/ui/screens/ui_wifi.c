@@ -325,8 +325,9 @@ static void event_connect_handler(lv_event_t *e) {
     return;
   }
 
-  ESP_LOGI(TAG, "Connecting to SSID: %s", ssid);
-  esp_err_t err = net_connect(ssid, pass);
+  ESP_LOGI(TAG, "Provisioning SSID: %s", ssid);
+  // Persist credentials so provisioning survives reboot and matches UX hints.
+  esp_err_t err = net_manager_set_credentials(ssid, pass, true);
   if (err != ESP_OK) {
     char buf[96];
     snprintf(buf, sizeof(buf), "Connexion refus\u00e9e (%s)", esp_err_to_name(err));

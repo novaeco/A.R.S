@@ -344,6 +344,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
       data->state == LV_INDEV_STATE_PRESSED &&
       ((now_us - s_last_touch_diag_us) >= 1000000);
   bool log_release = state_changed && prev_state == LV_INDEV_STATE_PRESSED;
+#if CONFIG_TOUCH_DEBUG_LOG
   if (state_changed || rate_allow || log_release) {
     s_last_touch_diag_us = now_us;
     s_touch_event_seq++;
@@ -355,6 +356,20 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
              s_touch_event_seq, state_str, data->point.x, data->point.y, raw_x,
              raw_y);
   }
+#else
+  if (state_changed && data->state == LV_INDEV_STATE_PRESSED) {
+    s_last_touch_diag_us = now_us;
+    s_touch_event_seq++;
+    ESP_LOGI("TOUCH_EVT", "seq=%" PRIu32 " pressed x=%d y=%d raw_x=%d raw_y=%d",
+             s_touch_event_seq, data->point.x, data->point.y, raw_x, raw_y);
+  } else if (state_changed && data->state == LV_INDEV_STATE_RELEASED &&
+             has_valid_point) {
+    s_last_touch_diag_us = now_us;
+    s_touch_event_seq++;
+    ESP_LOGD("TOUCH_EVT", "seq=%" PRIu32 " released x=%d y=%d",
+             s_touch_event_seq, data->point.x, data->point.y);
+  }
+#endif
 
   ars_touch_debug_feed(raw_x, raw_y, data->point.x, data->point.y,
                        data->state == LV_INDEV_STATE_PRESSED);

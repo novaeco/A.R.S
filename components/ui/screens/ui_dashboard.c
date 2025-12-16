@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "lvgl.h" // Audit Fix: Palette access
 #include "ui.h"
+#include "net_manager.h"
 #include <time.h>
 
 static const char *TAG = "UI_DASH";
@@ -45,10 +46,13 @@ static lv_obj_t *clock_label = NULL;
 static lv_timer_t *clock_timer = NULL;
 static lv_obj_t *battery_label = NULL;
 static lv_timer_t *battery_timer = NULL;
+static lv_obj_t *wifi_label = NULL;
+static lv_timer_t *wifi_timer = NULL;
 
 // Forward declarations for timer callbacks
 static void clock_timer_cb(lv_timer_t *timer);
 static void battery_timer_cb(lv_timer_t *timer);
+static void wifi_timer_cb(lv_timer_t *timer);
 
 #include "../ui_screen_manager.h" // ARS: Include Manager
 
@@ -60,6 +64,10 @@ static void dashboard_stop_timers(void) {
   if (battery_timer) {
     lv_timer_del(battery_timer);
     battery_timer = NULL;
+  }
+  if (wifi_timer) {
+    lv_timer_del(wifi_timer);
+    wifi_timer = NULL;
   }
 }
 
@@ -78,6 +86,11 @@ static void dashboard_start_timers(void) {
     battery_timer_cb(battery_timer);
   } else {
     battery_timer = NULL;
+  }
+
+  if (wifi_label && lv_obj_is_valid(wifi_label)) {
+    wifi_timer = lv_timer_create(wifi_timer_cb, 2000, NULL);
+    wifi_timer_cb(wifi_timer);
   }
 }
 
@@ -156,6 +169,31 @@ static void battery_timer_cb(lv_timer_t *timer) {
   }
 }
 
+static void wifi_timer_cb(lv_timer_t *timer) {
+  (void)timer;
+  if (!wifi_label || !lv_obj_is_valid(wifi_label)) {
+    return;
+  }
+
+  net_status_t status = net_get_status();
+  wifi_prov_state_t prov = net_manager_get_prov_state();
+  const char *icon = status.is_connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE;
+
+  if (status.is_connected && status.got_ip) {
+    lv_label_set_text_fmt(wifi_label, "%s %s", icon, status.ip_addr);
+    lv_obj_set_style_text_color(wifi_label, lv_palette_main(LV_PALETTE_GREEN), 0);
+  } else if (prov == WIFI_PROV_STATE_NOT_PROVISIONED) {
+    lv_label_set_text(wifi_label, LV_SYMBOL_CLOSE " Wi-Fi?");
+    lv_obj_set_style_text_color(wifi_label, lv_palette_main(LV_PALETTE_GREY), 0);
+  } else if (prov == WIFI_PROV_STATE_CONNECTING) {
+    lv_label_set_text(wifi_label, LV_SYMBOL_REFRESH " Connexion...");
+    lv_obj_set_style_text_color(wifi_label, lv_palette_main(LV_PALETTE_BLUE), 0);
+  } else {
+    lv_label_set_text(wifi_label, LV_SYMBOL_CLOSE " Non connecte");
+    lv_obj_set_style_text_color(wifi_label, lv_palette_main(LV_PALETTE_RED), 0);
+  }
+}
+
 // Main Creation
   lv_obj_t *ui_create_dashboard(void) {
     // 1. Create Screen with Theme Background
@@ -171,24 +209,29 @@ static void battery_timer_cb(lv_timer_t *timer) {
     lv_obj_set_style_pad_right(header, UI_SPACE_XL, 0);
 
     // Status cluster (clock + battery) aligned to the right
-    lv_obj_t *status_row = lv_obj_create(header);
-    lv_obj_set_style_bg_opa(status_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(status_row, 0, 0);
-    lv_obj_set_style_pad_all(status_row, 0, 0);
-    lv_obj_set_size(status_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(status_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_gap(status_row, UI_SPACE_SM, 0);
-    lv_obj_align(status_row, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_t *status_row = lv_obj_create(header);
+  lv_obj_set_style_bg_opa(status_row, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(status_row, 0, 0);
+  lv_obj_set_style_pad_all(status_row, 0, 0);
+  lv_obj_set_size(status_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(status_row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_gap(status_row, UI_SPACE_SM, 0);
+  lv_obj_align(status_row, LV_ALIGN_RIGHT_MID, 0, 0);
 
-    clock_label = lv_label_create(status_row);
-    lv_label_set_text(clock_label, "00:00");
-    lv_obj_add_style(clock_label, &ui_style_title, 0);
-    lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
+  clock_label = lv_label_create(status_row);
+  lv_label_set_text(clock_label, "00:00");
+  lv_obj_add_style(clock_label, &ui_style_title, 0);
+  lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
 
-    battery_label = lv_label_create(status_row);
-    lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
-    lv_obj_add_style(battery_label, &ui_style_text_body, 0);
-    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
+  wifi_label = lv_label_create(status_row);
+  lv_label_set_text(wifi_label, LV_SYMBOL_CLOSE " Wi-Fi");
+  lv_obj_add_style(wifi_label, &ui_style_text_body, 0);
+  lv_obj_set_style_text_color(wifi_label, lv_color_white(), 0);
+
+  battery_label = lv_label_create(status_row);
+  lv_label_set_text(battery_label, LV_SYMBOL_BATTERY_EMPTY " --%");
+  lv_obj_add_style(battery_label, &ui_style_text_body, 0);
+  lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
 
     // 3. Grid container using flex with responsive sizing
     lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, 0, 0);
