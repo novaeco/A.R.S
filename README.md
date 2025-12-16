@@ -29,6 +29,22 @@ idf.py build
 idf.py size
 ```
 
+### Build/flash/monitor standard
+- Nettoyage complet + recompilation pour ESP-IDF 6.1 :
+  ```bash
+  idf.py fullclean
+  idf.py build
+  ```
+- Flash + monitor sur Windows (adapter `COM3`) en conservant le décodage d’adresse :
+  ```bash
+  idf.py -p COM3 flash monitor
+  ```
+- Si le décodage d’adresses (ex: `0x40000000` pendant CMD41) bruit le log, désactiver côté monitor :
+  ```bash
+  idf.py -p COM3 flash monitor --disable-address-decoding
+  ```
+  (alternativement `idf.py -p COM3 monitor --disable-address-decoding` pour une session monitor seule).
+
 ## Sécurité
 - HTTP n'est pas chiffré : placer derrière un proxy TLS (voir `CONFIG_ARS_WEB_REQUIRE_TLS_PROXY`).
 - Jeton web généré au premier boot (NVS namespace `web`, clé `auth_token`), transmis via `Authorization: Bearer <token>`.

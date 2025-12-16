@@ -16,11 +16,5 @@ message(STATUS " IDF_PATH: $ENV{IDF_PATH}")
 message(STATUS " Project Source: ${CMAKE_SOURCE_DIR}")
 message(STATUS "---------------------------------------------------------")
 
-message(STATUS "---------------------------------------------------------")
-message(STATUS " Build Diagnostics for Reptiles Assistant")
-message(STATUS " IDF_PATH: $ENV{IDF_PATH}")
-message(STATUS " Project Source: ${CMAKE_SOURCE_DIR}")
-message(STATUS "---------------------------------------------------------")
-
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(reptiles_assistant VERSION 1.0.0)
