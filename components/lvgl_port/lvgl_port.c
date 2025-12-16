@@ -266,18 +266,23 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
 
   uint8_t touchpad_cnt = 0;
   esp_lcd_touch_point_data_t touch_points[1] = {0};
+  static int16_t last_x = -1;
+  static int16_t last_y = -1;
+  static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
 
   // Get coords from last read (buffered in driver data)
   bool pressed = esp_lcd_touch_get_data(tp, touch_points, &touchpad_cnt, 1);
 
+  int16_t raw_x = -1;
+  int16_t raw_y = -1;
   // ARS: Apply Calibration
+  lv_indev_state_t prev_state = last_state;
+
   if (pressed && touchpad_cnt > 0) {
+    raw_x = touch_points[0].x;
+    raw_y = touch_points[0].y;
     ars_touch_apply_calibration(touch_points, touchpad_cnt);
   }
-
-  static int16_t last_x = -1;
-  static int16_t last_y = -1;
-  static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
 
   if (pressed && touchpad_cnt > 0) {
     int16_t x = touch_points[0].x;
@@ -298,6 +303,21 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
       }
     }
 
+    // Clamp to display bounds to avoid LVGL out-of-range
+    lv_display_t *disp = lv_display_get_default();
+    if (disp) {
+      lv_coord_t max_x = lv_display_get_horizontal_resolution(disp) - 1;
+      lv_coord_t max_y = lv_display_get_vertical_resolution(disp) - 1;
+      if (x < 0)
+        x = 0;
+      if (y < 0)
+        y = 0;
+      if (x > max_x)
+        x = max_x;
+      if (y > max_y)
+        y = max_y;
+    }
+
     data->point.x = x;
     data->point.y = y;
     data->state = LV_INDEV_STATE_PRESSED;
@@ -306,12 +326,25 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     last_y = y;
     last_state = LV_INDEV_STATE_PRESSED;
 
-    // Log reduction (Antigravity Fix)
-#if CONFIG_TOUCH_DEBUG_LOG || 0
-    // ... (removed to save space/complexity, can re-add if needed)
-#endif
+    // Diagnostic logging on transitions, rate-limited to 5 Hz
+    static int64_t last_diag_us = 0;
+    int64_t now_us = esp_timer_get_time();
+    if (prev_state != LV_INDEV_STATE_PRESSED ||
+        (now_us - last_diag_us) >= 200000) {
+      last_diag_us = now_us;
+      ESP_LOGI("TOUCH_DIAG", "pressed raw=(%d,%d) mapped=(%d,%d)", raw_x,
+               raw_y, x, y);
+    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
+    if (prev_state != LV_INDEV_STATE_RELEASED) {
+      static int64_t last_diag_us = 0;
+      int64_t now_us = esp_timer_get_time();
+      if ((now_us - last_diag_us) >= 200000) {
+        last_diag_us = now_us;
+        ESP_LOGI("TOUCH_DIAG", "released last=(%d,%d)", last_x, last_y);
+      }
+    }
     last_state = LV_INDEV_STATE_RELEASED;
   }
 }
