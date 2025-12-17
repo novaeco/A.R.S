@@ -86,11 +86,30 @@ static inline void gt911_enable_irq_guarded(void) {
   }
 }
 
+static uint16_t s_raw_max_x_seen = CONFIG_ARS_TOUCH_X_MAX;
+static uint16_t s_raw_max_y_seen = CONFIG_ARS_TOUCH_Y_MAX;
+
 static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
                                                int offset, int scale,
-                                               bool *clamped) {
+                                               bool *clamped,
+                                               bool is_x_axis) {
   int32_t val = (int32_t)raw + offset;
   val = (val * scale + 500) / 1000; // scale is milli-units
+
+  // When raw data is dramatically larger than panel resolution, perform a
+  // dynamic normalization using the largest raw value observed for the axis.
+  if (val >= (int32_t)max_value) {
+    uint16_t *raw_max_seen = is_x_axis ? &s_raw_max_x_seen : &s_raw_max_y_seen;
+    if (raw > *raw_max_seen) {
+      *raw_max_seen = raw;
+    }
+
+    if (*raw_max_seen == 0) {
+      *raw_max_seen = max_value;
+    }
+
+    val = ((int32_t)raw * (int32_t)max_value) / (int32_t)(*raw_max_seen);
+  }
 
   if (val < 0) {
     val = 0;
@@ -538,10 +557,10 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     bool clamped = false;
     uint16_t cal_x = gt911_apply_calibration(
         raw_x, tp->config.x_max, CONFIG_ARS_TOUCH_OFFSET_X,
-        CONFIG_ARS_TOUCH_SCALE_X, &clamped);
+        CONFIG_ARS_TOUCH_SCALE_X, &clamped, true);
     uint16_t cal_y = gt911_apply_calibration(
         raw_y, tp->config.y_max, CONFIG_ARS_TOUCH_OFFSET_Y,
-        CONFIG_ARS_TOUCH_SCALE_Y, &clamped);
+        CONFIG_ARS_TOUCH_SCALE_Y, &clamped, false);
 
     if (clamped) {
       int64_t now = esp_timer_get_time();
