@@ -61,8 +61,8 @@ typedef struct {
   uint32_t empty_irqs;
   uint32_t i2c_errors;
   bool polling_active;
-  int16_t last_raw_x;
-  int16_t last_raw_y;
+  uint16_t last_raw_x;
+  uint16_t last_raw_y;
 } gt911_stats_t;
 
 /**

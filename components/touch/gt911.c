@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -60,9 +61,10 @@ static volatile uint32_t s_gt911_i2c_errors = 0;
 static int64_t s_last_irq_us = 0;
 static int64_t s_spurious_block_until_us = 0;
 static int64_t s_last_empty_log_us = 0;
+static int64_t s_last_clamp_log_us = 0;
 static int s_gt911_int_gpio = -1;
-static int16_t s_gt911_last_raw_x = -1;
-static int16_t s_gt911_last_raw_y = -1;
+static uint16_t s_gt911_last_raw_x = 0;
+static uint16_t s_gt911_last_raw_y = 0;
 static uint32_t s_gt911_consecutive_errors = 0;
 static int64_t s_empty_window_start_us = 0;
 static uint32_t s_empty_window_count = 0;
@@ -82,6 +84,28 @@ static inline void gt911_enable_irq_guarded(void) {
     ets_delay_us(GT911_IRQ_REENABLE_DELAY_US);
     gpio_intr_enable(s_gt911_int_gpio);
   }
+}
+
+static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
+                                               int offset, int scale,
+                                               bool *clamped) {
+  int32_t val = (int32_t)raw + offset;
+  val = (val * scale + 500) / 1000; // scale is milli-units
+
+  if (val < 0) {
+    val = 0;
+    if (clamped) {
+      *clamped = true;
+    }
+  }
+  if (val >= (int32_t)max_value) {
+    val = (int32_t)max_value - 1;
+    if (clamped) {
+      *clamped = true;
+    }
+  }
+
+  return (uint16_t)val;
 }
 
 /* GT911 registers */
@@ -403,8 +427,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   }
 
   // Define static filter variables here so we can reset them on release
-  static int16_t filt_x = -1;
-  static int16_t filt_y = -1;
+  static int32_t filt_x = -1;
+  static int32_t filt_y = -1;
 
   if (touch_cnt == 0) {
     // Clear status for empty touch (release event)
@@ -492,35 +516,58 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   }
 
   // FIX: Track raw coordinates from first point BEFORE filtering
-  int16_t first_raw_x = -1;
-  int16_t first_raw_y = -1;
+  uint16_t first_raw_x = 0;
+  uint16_t first_raw_y = 0;
+  uint16_t first_cal_x = 0;
+  uint16_t first_cal_y = 0;
 
   portENTER_CRITICAL(&tp->data.lock);
   tp->data.points = touch_cnt;
   for (i = 0; i < touch_cnt; i++) {
     const uint8_t *p = &point_buf[i * 8];
-    int16_t raw_x = ((uint16_t)p[2] << 8) | p[1];
-    int16_t raw_y = ((uint16_t)p[4] << 8) | p[3];
+    uint16_t raw_x = ((uint16_t)p[2] << 8) | p[1];
+    uint16_t raw_y = ((uint16_t)p[4] << 8) | p[3];
+
+    bool clamped = false;
+    uint16_t cal_x = gt911_apply_calibration(
+        raw_x, tp->config.x_max, CONFIG_ARS_TOUCH_OFFSET_X,
+        CONFIG_ARS_TOUCH_SCALE_X, &clamped);
+    uint16_t cal_y = gt911_apply_calibration(
+        raw_y, tp->config.y_max, CONFIG_ARS_TOUCH_OFFSET_Y,
+        CONFIG_ARS_TOUCH_SCALE_Y, &clamped);
+
+    if (clamped) {
+      int64_t now = esp_timer_get_time();
+      if ((now - s_last_clamp_log_us) > 500000) {
+        s_last_clamp_log_us = now;
+        ESP_LOGW(TAG,
+                 "Clamped GT911 point raw=(%u,%u) calibrated=(%u,%u) max=(%u,%u)",
+                 raw_x, raw_y, cal_x, cal_y, tp->config.x_max,
+                 tp->config.y_max);
+      }
+    }
 
     // FIX: Store true raw values for first point before any filtering
     if (i == 0) {
       first_raw_x = raw_x;
       first_raw_y = raw_y;
+      first_cal_x = cal_x;
+      first_cal_y = cal_y;
       // Log removed from critical section to prevent panic
     }
 
     // Simple low-pass filter to suppress jitter before LVGL gets the data.
     // filt_x and filt_y are now defined above to share scope with release block
     if (filt_x < 0 || filt_y < 0) {
-      filt_x = raw_x;
-      filt_y = raw_y;
+      filt_x = cal_x;
+      filt_y = cal_y;
     } else {
-      filt_x = (filt_x + raw_x) / 2;
-      filt_y = (filt_y + raw_y) / 2;
+      filt_x = (filt_x + cal_x) / 2;
+      filt_y = (filt_y + cal_y) / 2;
     }
 
-    tp->data.coords[i].x = filt_x;
-    tp->data.coords[i].y = filt_y;
+    tp->data.coords[i].x = (uint16_t)filt_x;
+    tp->data.coords[i].y = (uint16_t)filt_y;
     tp->data.coords[i].strength = ((uint16_t)p[6] << 8) | p[5];
   }
   if (touch_cnt > 0) {
@@ -536,8 +583,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
 
   // Safe logging outside critical section
   if (touch_cnt > 0) {
-    ESP_LOGI(TAG, "Touch Detected: X=%d Y=%d (cnt=%d)", first_raw_x,
-             first_raw_y, touch_cnt);
+    ESP_LOGI(TAG, "Touch Detected: raw=(%u,%u) calibrated=(%u,%u) cnt=%d",
+             first_raw_x, first_raw_y, first_cal_x, first_cal_y, touch_cnt);
   }
 
   // FIX: Clear status AFTER reading point data to prevent data loss
