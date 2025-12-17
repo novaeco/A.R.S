@@ -47,6 +47,9 @@ esp_err_t app_board_init(void) {
     ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
     // We attempt to proceed, as IO Expander might still work if touch is just
     // unresponsive
+  } else {
+    // ARS: Dump GT911 config for debugging touch issues
+    gt911_dump_config();
   }
 
   // 2. CRITICAL: Enable LCD Power (VCOM / LCD_VDD) via IO Expander (IO_6)
