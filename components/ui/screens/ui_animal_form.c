@@ -1,5 +1,6 @@
 #include "ui_animal_form.h"
 #include "../ui_helpers.h"
+#include "../ui_navigation.h"
 #include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "core_service.h"
@@ -87,9 +88,9 @@ static void back_event_cb(lv_event_t *e) {
   if (is_edit_mode) {
     // Ideally go to details, but we didn't include details header here
     // directly... Let's go to list, safe default.
-    ui_create_animal_list_screen();
+    ui_nav_navigate(UI_SCREEN_ANIMALS, true);
   } else {
-    ui_create_animal_list_screen();
+    ui_nav_navigate(UI_SCREEN_ANIMALS, true);
   }
 }
 
@@ -102,7 +103,7 @@ static void delete_ok_cb(lv_event_t *e) {
   lv_obj_t *mbox = (lv_obj_t *)lv_event_get_user_data(e);
   core_delete_animal(current_animal_id);
   lv_obj_del(mbox);
-  ui_create_animal_list_screen();
+  ui_nav_navigate(UI_SCREEN_ANIMALS, true);
 }
 
 static void delete_btn_cb(lv_event_t *e) {
@@ -174,7 +175,7 @@ static void save_btn_cb(lv_event_t *e) {
   }
 }
 
-void ui_create_animal_form_screen(const char *edit_id) {
+lv_obj_t *ui_create_animal_form_screen(const char *edit_id) {
   if (edit_id) {
     is_edit_mode = true;
     strlcpy(current_animal_id, edit_id, sizeof(current_animal_id));
@@ -286,5 +287,5 @@ void ui_create_animal_form_screen(const char *edit_id) {
   ui_helper_setup_keyboard(kb);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
 
-  lv_screen_load(scr);
+  return scr;
 }
