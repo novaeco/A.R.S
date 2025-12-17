@@ -3,6 +3,8 @@
 #include "lvgl.h"
 #include "ui.h"
 #include "ui_animal_form.h"
+#include "../ui_screen_manager.h"
+#include "../ui_theme.h"
 #include "ui_animals.h"
 #include "ui_reproduction.h"
 #if defined(LV_USE_QRCODE) && LV_USE_QRCODE
@@ -422,7 +424,8 @@ void ui_create_animal_details_screen(const char *animal_id) {
   }
 
   scr_details = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr_details, lv_color_hex(0xF0F0F0), 0);
+  ui_screen_claim_with_theme(scr_details, "animal_details");
+  lv_obj_set_style_bg_color(scr_details, UI_COLOR_PAGE_BG, 0);
 
   // Header
   lv_obj_t *header = lv_obj_create(scr_details);

@@ -116,7 +116,7 @@ lv_obj_t *ui_create_settings_screen(void) {
   const lv_coord_t header_height = 60;
 
   lv_obj_t *scr = lv_obj_create(NULL);
-  ui_theme_apply(scr);
+  ui_screen_claim_with_theme(scr, "settings");
 
   // Header Helper
   ui_helper_create_header(scr, "Parametres", back_event_cb, "Retour");

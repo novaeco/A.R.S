@@ -436,6 +436,13 @@ void lvgl_port_unlock(void) {
   xSemaphoreGiveRecursive(lvgl_mux);
 }
 
+bool lvgl_port_in_task_context(void) {
+  return lvgl_task_handle &&
+         (xTaskGetCurrentTaskHandle() == lvgl_task_handle);
+}
+
+TaskHandle_t lvgl_port_get_task_handle(void) { return lvgl_task_handle; }
+
 // Dummy for compilation compatibility if needed by external calls,
 // though AntigravitFix simplifies the flush logic significantly.
 

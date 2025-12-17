@@ -189,7 +189,7 @@ void ui_create_animal_form_screen(const char *edit_id) {
   const lv_coord_t header_height = 60;
 
   lv_obj_t *scr = lv_obj_create(NULL);
-  ui_theme_apply(scr);
+  ui_screen_claim_with_theme(scr, "animal_form");
 
   // Header Helper
   const char *title_txt = is_edit_mode ? "Modifier Animal" : "Nouvel Animal";

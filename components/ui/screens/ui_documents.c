@@ -115,7 +115,7 @@ lv_obj_t *ui_create_documents_screen(void) {
   const lv_coord_t header_height = 60;
 
   lv_obj_t *scr = lv_obj_create(NULL);
-  ui_theme_apply(scr);
+  ui_screen_claim_with_theme(scr, "documents");
 
   // Header Helper
   ui_helper_create_header(scr, "Documents (PDF)", back_event_cb, "Retour");

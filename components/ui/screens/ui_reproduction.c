@@ -3,6 +3,8 @@
 #include "ui.h"
 #include "core_service.h"
 #include "lvgl.h"
+#include "../ui_screen_manager.h"
+#include "../ui_theme.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,8 +94,9 @@ void ui_create_reproduction_screen(const char *animal_id) {
     animal_t animal;
     if (core_get_animal(animal_id, &animal) != ESP_OK) return;
 
-    scr_repro = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr_repro, lv_color_hex(0xF0F0F0), 0);
+  scr_repro = lv_obj_create(NULL);
+  ui_screen_claim_with_theme(scr_repro, "reproduction");
+  lv_obj_set_style_bg_color(scr_repro, UI_COLOR_PAGE_BG, 0);
 
     // Header
     lv_obj_t * header = lv_obj_create(scr_repro);

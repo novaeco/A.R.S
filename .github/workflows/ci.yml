@@ -1,12 +1,24 @@
+name: CI
 
+on:
   push:
     branches:
       - main
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint components (CMake/Kconfig)
+        run: python tools/lint_components.py
+
   build:
     runs-on: ubuntu-latest
+    needs: lint
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,6 +30,7 @@ jobs:
           target: esp32s3
           path: .
           command: |
+            idf.py fullclean
             idf.py set-target esp32s3
             idf.py build
             idf.py size

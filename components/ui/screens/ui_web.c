@@ -57,7 +57,7 @@ lv_obj_t *ui_create_web_screen(void) {
 
   // 1. Screen
   lv_obj_t *scr = lv_obj_create(NULL);
-  ui_theme_apply(scr); // Use theme apply for background if possible, or manual
+  ui_screen_claim_with_theme(scr, "web");
   // lv_obj_set_style_bg_color(scr, lv_color_hex(0xF0F0F0), 0); // Theme
   // standard
 

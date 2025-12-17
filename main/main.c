@@ -15,6 +15,7 @@
 // #include "ui_calibration.h"
 #include "sd.h"
 #include "ui_wizard.h"
+#include <stdbool.h>
 #include <esp_err.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -24,6 +25,10 @@ static const char *TAG = "main";
 
 void app_main(void) {
   ESP_LOGI(TAG, "Starting Reptiles Assistant");
+
+  bool display_ok = false;
+  bool touch_ok = false;
+  bool lvgl_ok = false;
 
   // 0. System Initialization (Critical: NVS & Network before anything else)
   // Initialize NVS
@@ -56,10 +61,14 @@ void app_main(void) {
     ESP_LOGE(TAG, "Failed to init Board");
     // If display fails, we might maintain standard execution for debug
   } else {
+    display_ok = app_board_get_panel_handle() != NULL;
+    touch_ok = app_board_get_touch_handle() != NULL;
     // Init LGL Port (Moved from board.c)
     if (lvgl_port_init(app_board_get_panel_handle(),
                        app_board_get_touch_handle()) != ESP_OK) {
       ESP_LOGE(TAG, "Failed to init LVGL Port");
+    } else {
+      lvgl_ok = true;
     }
   }
 
@@ -83,6 +92,20 @@ void app_main(void) {
   // net_init() is safe to call, it will auto-connect if credentials exist in
   // NVS from a previous setup or manual config.
   net_init();
+
+  net_status_t net_status = net_get_status();
+  bool wifi_provisioned = net_manager_is_provisioned();
+  const char *wifi_state = wifi_provisioned
+                               ? (net_status.is_connected ? "provisioned_connected"
+                                                          : "provisioned_not_connected")
+                               : "not_provisioned";
+
+  ESP_LOGI(TAG,
+           "BOOT-SUMMARY display=%s touch=%s lvgl=%s sd=%s wifi=%s",
+           display_ok ? "ok" : "fail",
+           touch_ok ? "ok" : "fail",
+           lvgl_ok ? "ok" : "fail",
+           sd_state_str(sd_get_state()), wifi_state);
 
   // --- Verification: Log Touch Coordinates for 10s ---
   // app_board_run_diagnostics(); // Removed to prevent blocking/interference

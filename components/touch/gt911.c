@@ -737,8 +737,13 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   const esp_lcd_panel_io_i2c_config_t tp_io_config =
       ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
-  // Initialize Shared I2C Bus First
-  i2c_master_bus_handle_t bus_handle = NULL;
+  // Initialize Shared I2C Bus First (single owner)
+  i2c_bus_shared_init();
+  i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_handle();
+  if (!bus_handle) {
+    ESP_LOGE(TAG, "I2C Bus Init Failed (shared bus not ready)");
+    return NULL;
+  }
   esp_err_t ret = DEV_I2C_Init_Bus(&bus_handle);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "I2C Bus Init Failed");

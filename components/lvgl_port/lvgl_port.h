@@ -3,6 +3,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_lcd_types.h"
 #include "lvgl.h"
 #include "touch.h"
@@ -144,6 +146,10 @@ bool lvgl_port_lock(int timeout_ms);
  *
  */
 void lvgl_port_unlock(void);
+
+/** Lightweight context probe to ensure UI code runs inside the LVGL task. */
+bool lvgl_port_in_task_context(void);
+TaskHandle_t lvgl_port_get_task_handle(void);
 
 /**
  * @brief Notifies the LVGL task when the transmission of the RGB frame buffer

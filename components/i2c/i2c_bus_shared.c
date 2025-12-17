@@ -9,6 +9,7 @@ static const char *TAG = "i2c_bus_shared";
 
 // Define the global mutex
 SemaphoreHandle_t g_i2c_bus_mutex = NULL;
+static i2c_master_bus_handle_t s_shared_bus = NULL;
 
 void i2c_bus_shared_init(void) {
   static bool initialized = false;
@@ -30,7 +31,8 @@ void i2c_bus_shared_init(void) {
   // and avoids "Driver already installed" errors if mixed.
   i2c_master_bus_handle_t handle = NULL;
   esp_err_t ret = DEV_I2C_Init_Bus(&handle);
-  
+  s_shared_bus = handle;
+
   if (ret != ESP_OK) {
       ESP_LOGE(TAG, "Failed to initialize shared I2C bus: %s", esp_err_to_name(ret));
       // We don't abort here, but functionality will be degraded.
@@ -55,3 +57,7 @@ void i2c_bus_shared_unlock(void) {
   if (g_i2c_bus_mutex)
     xSemaphoreGiveRecursive(g_i2c_bus_mutex);
 }
+
+i2c_master_bus_handle_t i2c_bus_shared_get_handle(void) { return s_shared_bus; }
+
+bool i2c_bus_shared_is_ready(void) { return s_shared_bus != NULL; }

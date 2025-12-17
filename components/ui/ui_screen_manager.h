@@ -25,4 +25,7 @@ void ui_show_error(const char *msg);
 // Generic toast (info/success/error) with auto-dismiss
 void ui_show_toast(const char *msg, ui_toast_type_t type);
 
+// Guarded screen claim to enforce LVGL context and theme application
+void ui_screen_claim_with_theme(lv_obj_t *screen, const char *name);
+
 #endif
