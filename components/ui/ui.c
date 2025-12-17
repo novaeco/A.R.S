@@ -56,9 +56,8 @@ void ui_init(void) {
   ui_screen_manager_init();
   ui_nav_init();
 
-  // ARS DEBUG: Force Dashboard to validate UI (Bypassing Calibration)
-  if (true || ui_is_setup_done()) {
-    ESP_LOGI(TAG, "Setup already completed (or forced) -> loading dashboard");
+  if (ui_is_setup_done()) {
+    ESP_LOGI(TAG, "Setup already completed -> loading dashboard");
     ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
   } else {
     ESP_LOGI(TAG, "Setup pending -> starting wizard flow");
