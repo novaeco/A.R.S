@@ -1,6 +1,7 @@
 #include "ui_web.h"
 #include "../ui_helpers.h"
 #include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "lvgl.h"
 #include "net_manager.h"
