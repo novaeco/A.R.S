@@ -78,7 +78,7 @@ static void update_orientation_label(void) {
 
   lv_label_set_text_fmt(s_orientation_label,
                         "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
-                        "\nEchelle: %.4f / %.4f\nOffset: %d / %d",
+                        "\nEchelle: %.4f / %.4f\nOffset: %" PRIi32 " / %" PRIi32,
                         s_current_cfg.swap_xy ? "ON" : "OFF",
                         s_current_cfg.mirror_x ? "ON" : "OFF",
                         s_current_cfg.mirror_y ? "ON" : "OFF",
