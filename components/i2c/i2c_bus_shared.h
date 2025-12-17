@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_err.h"
+#include "i2c.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -31,6 +32,16 @@ bool i2c_bus_shared_lock(TickType_t timeout_ticks);
  * @brief Release the shared I2C bus mutex.
  */
 void i2c_bus_shared_unlock(void);
+
+/**
+ * @brief Get the shared I2C master bus handle once initialized.
+ */
+i2c_master_bus_handle_t i2c_bus_shared_get_handle(void);
+
+/**
+ * @brief Quick readiness probe for components that require a valid bus handle.
+ */
+bool i2c_bus_shared_is_ready(void);
 
 #ifdef __cplusplus
 }

@@ -1,10 +1,12 @@
 #include "ui_screen_manager.h"
 #include "esp_log.h"
 #include "lvgl.h"
+#include "lvgl_port.h"
 #include "ui_theme.h"
 
 static lv_obj_t *loading_overlay = NULL;
 static lv_obj_t *toast_box = NULL;
+static const char *TAG = "ui_screen_mgr";
 
 void ui_screen_manager_init(void) {
   // nothing specific unless we pre-create overlays
@@ -45,6 +47,20 @@ static void toast_anim_cb(void *var, int32_t v) {
 static void toast_delete_cb(lv_anim_t *a) {
   lv_obj_del((lv_obj_t *)a->var);
   toast_box = NULL;
+}
+
+void ui_screen_claim_with_theme(lv_obj_t *screen, const char *name) {
+  if (!screen)
+    return;
+
+  const char *label = name ? name : "<screen>";
+  if (!lvgl_port_in_task_context()) {
+    ESP_LOGE(TAG,
+             "Screen %s created outside LVGL task context; use LVGL dispatcher",
+             label);
+  }
+
+  ui_theme_apply(screen);
 }
 
 static lv_color_t ui_toast_color(ui_toast_type_t type) {

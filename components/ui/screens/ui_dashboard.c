@@ -196,10 +196,10 @@ static void wifi_timer_cb(lv_timer_t *timer) {
 
 // Main Creation
   lv_obj_t *ui_create_dashboard(void) {
-    // 1. Create Screen with Theme Background
-    lv_obj_t *scr = lv_obj_create(NULL);
-    lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
-    ui_theme_apply(scr);
+  // 1. Create Screen with Theme Background
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_add_event_cb(scr, dashboard_delete_event_cb, LV_EVENT_DELETE, NULL);
+  ui_screen_claim_with_theme(scr, "dashboard");
 
     // 2. Header (shared helper)
     lv_obj_t *header =

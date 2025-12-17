@@ -29,6 +29,7 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
 #include <rom/ets_sys.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "i2c_bus_shared.h"
 
 static const char *TAG = "io_ext";
 static bool s_ioext_initialized = false;
@@ -85,12 +86,22 @@ esp_err_t IO_EXTENSION_Init() {
     return ESP_OK;
   }
 
+  i2c_bus_shared_init();
+  if (!i2c_bus_shared_is_ready()) {
+    ESP_LOGE(TAG, "IOEXT init aborted: shared I2C bus not ready");
+    return ESP_ERR_INVALID_STATE;
+  }
+
   // Set the I2C slave address for the IO_EXTENSION device
-  DEV_I2C_Set_Slave_Addr(&IO_EXTENSION.addr, IO_EXTENSION_ADDR);
+  esp_err_t ret = DEV_I2C_Set_Slave_Addr(&IO_EXTENSION.addr, IO_EXTENSION_ADDR);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "IOEXT Set_Slave_Addr failed: %s", esp_err_to_name(ret));
+    return ret;
+  }
 
   // PROBE: Try to write Mode register to check if device ACK
   uint8_t data[2] = {IO_EXTENSION_Mode, 0xff}; // Set all to output
-  esp_err_t ret = ESP_OK;
+  ret = ESP_OK;
   if (!ioext_lock()) {
     ESP_LOGE(TAG, "IOEXT PROBE FAIL: mutex unavailable");
     return ESP_ERR_TIMEOUT;

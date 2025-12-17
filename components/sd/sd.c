@@ -42,6 +42,14 @@ esp_err_t sd_card_init() {
   } else {
     sd_set_state(SD_STATE_MOUNT_FAIL);
   }
+  sd_extcs_sequence_stats_t seq = {0};
+  if (sd_extcs_get_sequence_stats(&seq) == ESP_OK) {
+    ESP_LOGI(TAG,
+             "SD pipeline: pre_clks=%uB cmd0=%d cmd8=%d acmd41=%d cmd58=%d init=%u kHz target=%u kHz final=%s",
+             seq.pre_clks_bytes, seq.cmd0_seen, seq.cmd8_seen, seq.acmd41_seen,
+             seq.cmd58_seen, seq.init_freq_khz, seq.target_freq_khz,
+             sd_extcs_state_str(seq.final_state));
+  }
   ESP_LOGI(TAG, "SD init result: state=%s extcs=%s ret=%s",
            sd_state_str(s_state), sd_extcs_state_str(ext_state),
            esp_err_to_name(ret));

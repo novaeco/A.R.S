@@ -1,6 +1,7 @@
 #include "screens/ui_alerts.h"
 #include "../ui_helpers.h"
 #include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "../ui_navigation.h"
 #include "core_service_alerts.h"
@@ -24,6 +25,7 @@ lv_obj_t *ui_create_alerts_screen(void) {
 
   // 1. Screen
   lv_obj_t *scr = lv_obj_create(NULL);
+  ui_screen_claim_with_theme(scr, "alerts");
   lv_obj_set_style_bg_color(scr, UI_COLOR_PAGE_BG, 0);
 
   // 2. Header (shared style, alert color)

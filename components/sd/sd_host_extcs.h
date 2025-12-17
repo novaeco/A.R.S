@@ -4,7 +4,9 @@
 #include "driver/sdspi_host.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 
 #ifdef __cplusplus
@@ -20,6 +22,17 @@ typedef enum {
   SD_EXTCS_STATE_ABSENT,
   SD_EXTCS_STATE_INIT_FAIL,
 } sd_extcs_state_t;
+
+typedef struct {
+  uint32_t pre_clks_bytes;
+  uint32_t init_freq_khz;
+  uint32_t target_freq_khz;
+  bool cmd0_seen;
+  bool cmd8_seen;
+  bool acmd41_seen;
+  bool cmd58_seen;
+  sd_extcs_state_t final_state;
+} sd_extcs_sequence_stats_t;
 
 /**
  * @brief Initialize and mount the SD card using the external CS wrapper.
@@ -51,6 +64,11 @@ esp_err_t sd_extcs_register_io_extender(i2c_master_dev_handle_t handle);
  */
 sd_extcs_state_t sd_extcs_get_state(void);
 const char *sd_extcs_state_str(sd_extcs_state_t state);
+
+/**
+ * @brief Get a snapshot of the last init/mount sequence for diagnostics.
+ */
+esp_err_t sd_extcs_get_sequence_stats(sd_extcs_sequence_stats_t *out_stats);
 
 #ifdef __cplusplus
 }
