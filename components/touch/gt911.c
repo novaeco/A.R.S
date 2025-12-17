@@ -521,6 +521,13 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   uint16_t first_cal_x = 0;
   uint16_t first_cal_y = 0;
 
+  bool should_log_clamp = false;
+  uint16_t clamp_raw_x = 0;
+  uint16_t clamp_raw_y = 0;
+  uint16_t clamp_cal_x = 0;
+  uint16_t clamp_cal_y = 0;
+  int64_t clamp_log_time_us = 0;
+
   portENTER_CRITICAL(&tp->data.lock);
   tp->data.points = touch_cnt;
   for (i = 0; i < touch_cnt; i++) {
@@ -539,11 +546,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     if (clamped) {
       int64_t now = esp_timer_get_time();
       if ((now - s_last_clamp_log_us) > 500000) {
-        s_last_clamp_log_us = now;
-        ESP_LOGW(TAG,
-                 "Clamped GT911 point raw=(%u,%u) calibrated=(%u,%u) max=(%u,%u)",
-                 raw_x, raw_y, cal_x, cal_y, tp->config.x_max,
-                 tp->config.y_max);
+        should_log_clamp = true;
+        clamp_raw_x = raw_x;
+        clamp_raw_y = raw_y;
+        clamp_cal_x = cal_x;
+        clamp_cal_y = cal_y;
+        clamp_log_time_us = now;
       }
     }
 
@@ -580,6 +588,14 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_spurious_block_until_us = 0;
   }
   portEXIT_CRITICAL(&tp->data.lock);
+
+  if (should_log_clamp) {
+    s_last_clamp_log_us = clamp_log_time_us;
+    ESP_LOGW(TAG,
+             "Clamped GT911 point raw=(%u,%u) calibrated=(%u,%u) max=(%u,%u)",
+             clamp_raw_x, clamp_raw_y, clamp_cal_x, clamp_cal_y,
+             tp->config.x_max, tp->config.y_max);
+  }
 
   // Safe logging outside critical section
   if (touch_cnt > 0) {
