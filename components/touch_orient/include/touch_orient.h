@@ -14,7 +14,7 @@ extern "C" {
    ((uint32_t)(uint8_t)(c) << 8) | ((uint32_t)(uint8_t)(d) << 0))
 
 #define TOUCH_ORIENT_MAGIC 0x544F4348u // 'T', 'O', 'C', 'H'
-#define TOUCH_ORIENT_VERSION 1
+#define TOUCH_ORIENT_VERSION 2
 
 typedef struct {
   uint32_t magic;
@@ -22,6 +22,10 @@ typedef struct {
   bool swap_xy;
   bool mirror_x;
   bool mirror_y;
+  float scale_x;
+  float scale_y;
+  int32_t offset_x;
+  int32_t offset_y;
   uint32_t crc32;
 } touch_orient_config_t;
 

@@ -10,16 +10,33 @@
 #include "ui_theme.h"
 #include "ui_wizard.h"
 #include <inttypes.h>
+#include <limits.h>
+#include <math.h>
+#include <stdarg.h>
 
 static const char *TAG = "ui_calibration";
 
 static lv_timer_t *s_touch_dbg_timer = NULL;
 static lv_obj_t *s_touch_dbg_label = NULL;
 static lv_obj_t *s_orientation_label = NULL;
+static lv_obj_t *s_cal_progress_label = NULL;
 static lv_obj_t *s_switch_swap = NULL;
 static lv_obj_t *s_switch_mir_x = NULL;
 static lv_obj_t *s_switch_mir_y = NULL;
+static lv_obj_t *s_capture_layer = NULL;
 static touch_orient_config_t s_current_cfg = {0};
+
+#define CAL_POINT_COUNT 5
+typedef struct {
+  lv_point_t target;
+  lv_point_t measured;
+  bool captured;
+  lv_obj_t *marker;
+} cal_point_t;
+
+static cal_point_t s_cal_points[CAL_POINT_COUNT];
+static uint8_t s_active_cal_point = 0;
+static bool s_is_collecting = false;
 
 typedef enum {
   CAL_FLAG_SWAP = 0,
@@ -34,29 +51,25 @@ static void stop_touch_debug_timer(void) {
   }
 }
 
-static void apply_identity_calibration(void) {
+static void apply_config_to_driver(bool reset_scale) {
   esp_lcd_touch_handle_t tp = app_board_get_touch_handle();
   if (!tp) {
     ESP_LOGW(TAG, "Touch handle not available; cannot apply calibration");
     return;
   }
 
-  // Apply orientation flags first
-  esp_err_t err = touch_orient_apply(tp, &s_current_cfg);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to apply orientation: %s", esp_err_to_name(err));
+  touch_orient_config_t cfg = s_current_cfg;
+  if (reset_scale) {
+    cfg.scale_x = 1.0f;
+    cfg.scale_y = 1.0f;
+    cfg.offset_x = 0;
+    cfg.offset_y = 0;
   }
 
-  // Ensure no stale scale/offset remain; we use identity by default.
-  ars_touch_calibration_t identity = {
-      .scale_x = 1.0f,
-      .scale_y = 1.0f,
-      .offset_x = 0,
-      .offset_y = 0,
-  };
-  ars_touch_set_calibration(tp, &identity);
-  ESP_LOGI(TAG, "Calibration applied (swap=%d mir_x=%d mir_y=%d)",
-           s_current_cfg.swap_xy, s_current_cfg.mirror_x, s_current_cfg.mirror_y);
+  esp_err_t err = touch_orient_apply(tp, &cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to apply touch config: %s", esp_err_to_name(err));
+  }
 }
 
 static void update_orientation_label(void) {
@@ -64,10 +77,14 @@ static void update_orientation_label(void) {
     return;
 
   lv_label_set_text_fmt(s_orientation_label,
-                        "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s",
+                        "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
+                        "\nEchelle: %.4f / %.4f\nOffset: %d / %d",
                         s_current_cfg.swap_xy ? "ON" : "OFF",
                         s_current_cfg.mirror_x ? "ON" : "OFF",
-                        s_current_cfg.mirror_y ? "ON" : "OFF");
+                        s_current_cfg.mirror_y ? "ON" : "OFF",
+                        (double)s_current_cfg.scale_x,
+                        (double)s_current_cfg.scale_y, s_current_cfg.offset_x,
+                        s_current_cfg.offset_y);
 }
 
 static void sync_switch_states(void) {
@@ -93,6 +110,172 @@ static void sync_switch_states(void) {
     }
   }
   update_orientation_label();
+}
+
+static void set_progress_text(const char *text_fmt, ...) {
+  if (!s_cal_progress_label)
+    return;
+  va_list args;
+  va_start(args, text_fmt);
+  lv_label_set_text_vfmt(s_cal_progress_label, text_fmt, args);
+  va_end(args);
+}
+
+static void highlight_active_marker(void) {
+  for (int i = 0; i < CAL_POINT_COUNT; ++i) {
+    if (!s_cal_points[i].marker)
+      continue;
+    lv_color_t color = (i == s_active_cal_point) ? UI_COLOR_ACCENT
+                                                 : UI_COLOR_SECONDARY;
+    lv_obj_set_style_bg_color(s_cal_points[i].marker, color, 0);
+    lv_obj_set_style_border_color(s_cal_points[i].marker, lv_color_white(), 0);
+  }
+}
+
+static void stop_capture_layer(void) {
+  s_is_collecting = false;
+  if (s_capture_layer) {
+    lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void reset_cal_points(lv_obj_t *overlay) {
+  lv_display_t *disp = lv_obj_get_display(overlay);
+  lv_coord_t w = lv_display_get_horizontal_resolution(disp);
+  lv_coord_t h = lv_display_get_vertical_resolution(disp);
+  const lv_coord_t margin = 60;
+
+  const lv_point_t targets[CAL_POINT_COUNT] = {
+      {.x = margin, .y = margin},
+      {.x = w - margin, .y = margin},
+      {.x = w - margin, .y = h - margin},
+      {.x = margin, .y = h - margin},
+      {.x = w / 2, .y = h / 2},
+  };
+
+  for (int i = 0; i < CAL_POINT_COUNT; ++i) {
+    s_cal_points[i].target = targets[i];
+    s_cal_points[i].measured.x = 0;
+    s_cal_points[i].measured.y = 0;
+    s_cal_points[i].captured = false;
+    if (s_cal_points[i].marker) {
+      lv_obj_del(s_cal_points[i].marker);
+      s_cal_points[i].marker = NULL;
+    }
+    lv_obj_t *marker = lv_obj_create(overlay);
+    lv_obj_set_size(marker, 26, 26);
+    lv_obj_set_style_radius(marker, 6, 0);
+    lv_obj_set_style_border_color(marker, lv_color_white(), 0);
+    lv_obj_set_style_border_width(marker, 2, 0);
+    lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(marker, targets[i].x - 13, targets[i].y - 13);
+    s_cal_points[i].marker = marker;
+  }
+  s_active_cal_point = 0;
+  s_is_collecting = false;
+  highlight_active_marker();
+}
+
+static bool compute_calibration_from_samples(ars_touch_calibration_t *out) {
+  if (!out)
+    return false;
+
+  int captured = 0;
+  int32_t min_meas_x = INT32_MAX, min_meas_y = INT32_MAX;
+  int32_t max_meas_x = INT32_MIN, max_meas_y = INT32_MIN;
+  int32_t min_tgt_x = INT32_MAX, min_tgt_y = INT32_MAX;
+  int32_t max_tgt_x = INT32_MIN, max_tgt_y = INT32_MIN;
+
+  for (int i = 0; i < CAL_POINT_COUNT; ++i) {
+    if (!s_cal_points[i].captured)
+      continue;
+    captured++;
+    const lv_point_t m = s_cal_points[i].measured;
+    const lv_point_t t = s_cal_points[i].target;
+    if (m.x < min_meas_x)
+      min_meas_x = m.x;
+    if (m.y < min_meas_y)
+      min_meas_y = m.y;
+    if (m.x > max_meas_x)
+      max_meas_x = m.x;
+    if (m.y > max_meas_y)
+      max_meas_y = m.y;
+
+    if (t.x < min_tgt_x)
+      min_tgt_x = t.x;
+    if (t.y < min_tgt_y)
+      min_tgt_y = t.y;
+    if (t.x > max_tgt_x)
+      max_tgt_x = t.x;
+    if (t.y > max_tgt_y)
+      max_tgt_y = t.y;
+  }
+
+  if (captured < 3)
+    return false;
+
+  const float raw_dx = (float)(max_meas_x - min_meas_x);
+  const float raw_dy = (float)(max_meas_y - min_meas_y);
+  if (raw_dx < 10.0f || raw_dy < 10.0f)
+    return false;
+
+  const float target_dx = (float)(max_tgt_x - min_tgt_x);
+  const float target_dy = (float)(max_tgt_y - min_tgt_y);
+
+  out->scale_x = target_dx / raw_dx;
+  out->scale_y = target_dy / raw_dy;
+  out->offset_x = (int32_t)lrintf(min_tgt_x - ((float)min_meas_x * out->scale_x));
+  out->offset_y = (int32_t)lrintf(min_tgt_y - ((float)min_meas_y * out->scale_y));
+  return true;
+}
+
+static void finalize_calibration(void) {
+  ars_touch_calibration_t cal = {0};
+  if (!compute_calibration_from_samples(&cal)) {
+    ui_show_error("Points insuffisants pour calibrer.");
+    return;
+  }
+
+  s_current_cfg.scale_x = cal.scale_x;
+  s_current_cfg.scale_y = cal.scale_y;
+  s_current_cfg.offset_x = cal.offset_x;
+  s_current_cfg.offset_y = cal.offset_y;
+  stop_capture_layer();
+
+  apply_config_to_driver(false);
+  update_orientation_label();
+  set_progress_text("Calibration calcul\u00e9e: gain %.3f/%.3f, offset %d/%d",
+                    (double)cal.scale_x, (double)cal.scale_y, cal.offset_x,
+                    cal.offset_y);
+  ui_show_toast("Calibration tactile mise \u00e0 jour", UI_TOAST_SUCCESS);
+}
+
+static void calibration_touch_cb(lv_event_t *e) {
+  if (!e || lv_event_get_code(e) != LV_EVENT_PRESSED)
+    return;
+  if (!s_is_collecting || s_active_cal_point >= CAL_POINT_COUNT)
+    return;
+
+  lv_indev_t *indev = lv_indev_get_act();
+  if (!indev)
+    return;
+
+  lv_point_t pt;
+  lv_indev_get_point(indev, &pt);
+
+  s_cal_points[s_active_cal_point].measured = pt;
+  s_cal_points[s_active_cal_point].captured = true;
+
+  s_active_cal_point++;
+  if (s_active_cal_point >= CAL_POINT_COUNT) {
+    set_progress_text("Calcul en cours...");
+    finalize_calibration();
+  } else {
+    highlight_active_marker();
+    set_progress_text("Taper sur la croix %d/%d", s_active_cal_point + 1,
+                      CAL_POINT_COUNT);
+  }
 }
 
 static void touch_debug_timer_cb(lv_timer_t *timer) {
@@ -137,7 +320,7 @@ static void on_toggle_event(lv_event_t *e) {
     break;
   }
 
-  apply_identity_calibration();
+  apply_config_to_driver(false);
   sync_switch_states();
 }
 
@@ -146,9 +329,32 @@ static void reset_defaults_cb(lv_event_t *e) {
     return;
 
   touch_orient_get_defaults(&s_current_cfg);
-  apply_identity_calibration();
+  stop_capture_layer();
+  apply_config_to_driver(false);
   sync_switch_states();
+  set_progress_text("Calibration par d\u00e9faut appliqu\u00e9e");
   ui_show_toast("Calibration par d\u00e9faut appliqu\u00e9e", UI_TOAST_INFO);
+}
+
+static void start_capture_cb(lv_event_t *e) {
+  if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
+    return;
+
+  if (!s_capture_layer) {
+    ui_show_error("Calque de capture absent");
+    return;
+  }
+
+  // Force identity scale during acquisition to avoid compenser deux fois
+  apply_config_to_driver(true);
+  reset_cal_points(s_capture_layer);
+  lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
+  s_is_collecting = true;
+  s_active_cal_point = 0;
+  highlight_active_marker();
+  set_progress_text("Taper sur la croix 1/%d", CAL_POINT_COUNT);
+  ui_show_toast("Touchez chaque croix pour calibrer", UI_TOAST_INFO);
 }
 
 static void save_and_finish_cb(lv_event_t *e) {
@@ -289,27 +495,42 @@ static void build_screen(void) {
   lv_obj_set_style_pad_all(s_touch_dbg_label, UI_SPACE_SM, 0);
   lv_label_set_text(s_touch_dbg_label, "touch dbg");
 
+  s_cal_progress_label = lv_label_create(body);
+  lv_obj_add_style(s_cal_progress_label, &ui_style_text_body, 0);
+  lv_obj_set_style_text_align(s_cal_progress_label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(s_cal_progress_label, LV_PCT(90));
+  set_progress_text(
+      "Appuyez sur \"Calibrer\" puis touchez les 5 croix pour ajuster le GT911.");
+
   lv_obj_t *actions = lv_obj_create(body);
   lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(actions, 0, 0);
   lv_obj_set_style_pad_gap(actions, UI_SPACE_MD, 0);
-  lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_width(actions, LV_PCT(100));
+
+  lv_obj_t *btn_calibrate = lv_button_create(actions);
+  lv_obj_add_style(btn_calibrate, &ui_style_btn_primary, 0);
+  lv_obj_set_style_min_width(btn_calibrate, 180, 0);
+  lv_obj_set_style_min_height(btn_calibrate, 52, 0);
+  lv_obj_add_event_cb(btn_calibrate, start_capture_cb, LV_EVENT_CLICKED, NULL);
+  lv_label_set_text(lv_label_create(btn_calibrate), "Calibrer (5 points)");
 
   lv_obj_t *btn_reset = lv_button_create(actions);
   lv_obj_add_style(btn_reset, &ui_style_btn_secondary, 0);
   lv_obj_set_style_min_width(btn_reset, 180, 0);
   lv_obj_set_style_min_height(btn_reset, 52, 0);
   lv_obj_add_event_cb(btn_reset, reset_defaults_cb, LV_EVENT_CLICKED, NULL);
-  lv_label_set_text(lv_label_create(btn_reset), "Restaurer d\u00e9fauts");
+  lv_label_set_text(lv_label_create(btn_reset), "Par d\u00e9faut");
 
   lv_obj_t *btn_validate = lv_button_create(actions);
   lv_obj_add_style(btn_validate, &ui_style_btn_primary, 0);
   lv_obj_set_style_min_width(btn_validate, 180, 0);
   lv_obj_set_style_min_height(btn_validate, 52, 0);
   lv_obj_add_event_cb(btn_validate, save_and_finish_cb, LV_EVENT_CLICKED, NULL);
-  lv_label_set_text(lv_label_create(btn_validate), "Valider");
+  lv_label_set_text(lv_label_create(btn_validate), "Enregistrer");
 
   // Visual markers to verify orientation (non-interactive)
   lv_obj_t *overlay = lv_obj_create(scr);
@@ -318,20 +539,10 @@ static void build_screen(void) {
   lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
   lv_obj_set_style_bg_opa(overlay, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(overlay, 0, 0);
-
-  const lv_align_t aligns[] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_RIGHT,
-                               LV_ALIGN_BOTTOM_LEFT, LV_ALIGN_BOTTOM_RIGHT,
-                               LV_ALIGN_CENTER};
-  for (int i = 0; i < 5; ++i) {
-    lv_obj_t *marker = lv_obj_create(overlay);
-    lv_obj_set_size(marker, 26, 26);
-    lv_obj_set_style_bg_color(marker, UI_COLOR_ACCENT, 0);
-    lv_obj_set_style_radius(marker, 6, 0);
-    lv_obj_set_style_border_color(marker, lv_color_white(), 0);
-    lv_obj_set_style_border_width(marker, 2, 0);
-    lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(marker, aligns[i], (i == 4) ? 0 : 8, (i == 4) ? 0 : 8);
-  }
+  lv_obj_add_event_cb(overlay, calibration_touch_cb, LV_EVENT_PRESSED, NULL);
+  s_capture_layer = overlay;
+  lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+  reset_cal_points(overlay);
 
   if (s_touch_dbg_timer) {
     lv_timer_del(s_touch_dbg_timer);
@@ -347,7 +558,7 @@ void ui_calibration_apply(const touch_orient_config_t *cfg) {
   } else {
     touch_orient_get_defaults(&s_current_cfg);
   }
-  apply_identity_calibration();
+  apply_config_to_driver(false);
   sync_switch_states();
 }
 
@@ -371,6 +582,6 @@ void ui_calibration_start(void) {
   if (touch_orient_load(&s_current_cfg) != ESP_OK) {
     touch_orient_get_defaults(&s_current_cfg);
   }
-  apply_identity_calibration();
+  apply_config_to_driver(false);
   build_screen();
 }
