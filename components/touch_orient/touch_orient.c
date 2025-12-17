@@ -4,6 +4,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
+#include "touch.h"
 
 static const char *TAG = "touch_orient";
 #define NVS_NAMESPACE "touch"
@@ -36,6 +37,10 @@ void touch_orient_get_defaults(touch_orient_config_t *cfg) {
 #else
   cfg->mirror_y = false;
 #endif
+  cfg->scale_x = 1.0f;
+  cfg->scale_y = 1.0f;
+  cfg->offset_x = 0;
+  cfg->offset_y = 0;
   cfg->crc32 = calculate_crc(cfg);
 }
 
@@ -80,7 +85,8 @@ esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
   }
 
   size_t len = sizeof(touch_orient_config_t);
-  err = nvs_get_blob(handle, NVS_KEY, cfg, &len);
+  touch_orient_config_t stored = {0};
+  err = nvs_get_blob(handle, NVS_KEY, &stored, &len);
   nvs_close(handle);
 
   if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -96,21 +102,43 @@ esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
     return err;
   }
 
-  if (len != sizeof(touch_orient_config_t)) {
-    ESP_LOGE(TAG, "Config size mismatch");
-    return ESP_ERR_INVALID_SIZE;
-  }
-
-  if (cfg->magic != TOUCH_ORIENT_MAGIC) {
+  if (stored.magic != TOUCH_ORIENT_MAGIC) {
     ESP_LOGE(TAG, "Invalid magic");
     return ESP_ERR_INVALID_STATE;
   }
 
-  if (calculate_crc(cfg) != cfg->crc32) {
-    ESP_LOGE(TAG, "CRC mismatch");
-    return ESP_ERR_INVALID_CRC;
+  // Upgrade path for legacy configs (version 1 had only orientation flags)
+  if (len < sizeof(touch_orient_config_t) || stored.version < TOUCH_ORIENT_VERSION) {
+    ESP_LOGW(TAG, "Upgrading touch config (len=%u, ver=%u)", (unsigned)len,
+             (unsigned)stored.version);
+
+    bool legacy_crc_ok = false;
+    if (len >= sizeof(uint32_t) * 2 + sizeof(bool) * 3) {
+      size_t crc_len = (len >= sizeof(uint32_t)) ? (len - sizeof(uint32_t)) : 0;
+      uint32_t crc = esp_crc32_le(0, (const uint8_t *)&stored, crc_len);
+      legacy_crc_ok = (crc == stored.crc32);
+    }
+
+    if (!legacy_crc_ok) {
+      ESP_LOGW(TAG, "Legacy CRC mismatch; resetting to defaults");
+      touch_orient_get_defaults(&stored);
+    }
+    // Inject defaults for new fields
+    stored.scale_x = 1.0f;
+    stored.scale_y = 1.0f;
+    stored.offset_x = 0;
+    stored.offset_y = 0;
+    stored.version = TOUCH_ORIENT_VERSION;
+    stored.crc32 = calculate_crc(&stored);
+    touch_orient_save(&stored);
+  } else {
+    if (calculate_crc(&stored) != stored.crc32) {
+      ESP_LOGE(TAG, "CRC mismatch");
+      return ESP_ERR_INVALID_CRC;
+    }
   }
 
+  *cfg = stored;
   return ESP_OK;
 }
 
@@ -155,7 +183,22 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
   esp_lcd_touch_set_mirror_x(tp, cfg->mirror_x);
   esp_lcd_touch_set_mirror_y(tp, cfg->mirror_y);
 
-  ESP_LOGI(TAG, "Applied config: Swap=%d, MirX=%d, MirY=%d", cfg->swap_xy,
-           cfg->mirror_x, cfg->mirror_y);
+  ars_touch_calibration_t cal = {
+      .scale_x = (cfg->scale_x < 0.001f || cfg->scale_x > 100.0f)
+                     ? 1.0f
+                     : cfg->scale_x,
+      .scale_y = (cfg->scale_y < 0.001f || cfg->scale_y > 100.0f)
+                     ? 1.0f
+                     : cfg->scale_y,
+      .offset_x = cfg->offset_x,
+      .offset_y = cfg->offset_y,
+  };
+  ars_touch_set_calibration(tp, &cal);
+
+  ESP_LOGI(TAG,
+           "Applied config: Swap=%d, MirX=%d, MirY=%d scale=(%.4f, %.4f) "
+           "offset=(%d,%d)",
+           cfg->swap_xy, cfg->mirror_x, cfg->mirror_y, (double)cal.scale_x,
+           (double)cal.scale_y, cal.offset_x, cal.offset_y);
   return ESP_OK;
 }
