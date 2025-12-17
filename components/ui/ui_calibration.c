@@ -437,9 +437,9 @@ static void build_screen(void) {
 
   lv_obj_t *desc = lv_label_create(body);
   lv_label_set_text(desc,
-                    "V\u00e9rifiez que le doigt suit bien les croix rouges."
-                    " Activez Swap/Miroir si le pointeur est invers\u00e9,"
-                    " puis validez pour poursuivre.");
+                    "V\u00e9rifiez que votre doigt suit correctement les croix rouges."
+                    " Activez Swap/Miroir si le pointeur se d\u00e9place \u00e0 l'envers,"
+                    " puis validez pour continuer.");
   lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(desc, LV_PCT(90));
   lv_obj_add_style(desc, &ui_style_text_body, 0);
@@ -500,7 +500,8 @@ static void build_screen(void) {
   lv_obj_set_style_text_align(s_cal_progress_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_cal_progress_label, LV_PCT(90));
   set_progress_text(
-      "Appuyez sur \"Calibrer\" puis touchez les 5 croix pour ajuster le GT911.");
+      "Appuyez sur \"Calibrer\" puis touchez successivement les 5 croix rouges"
+      " pour ajuster le GT911.");
 
   lv_obj_t *actions = lv_obj_create(body);
   lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
