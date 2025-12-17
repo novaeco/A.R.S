@@ -1,8 +1,8 @@
 #pragma once
+#include "driver/i2c_master.h"
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "esp_err.h"
-#include "i2c.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
