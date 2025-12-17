@@ -325,7 +325,7 @@ static void build_screen(void) {
   for (int i = 0; i < 5; ++i) {
     lv_obj_t *marker = lv_obj_create(overlay);
     lv_obj_set_size(marker, 26, 26);
-    lv_obj_set_style_bg_color(marker, LV_COLOR_MAKE(0xF5, 0x4B, 0x64), 0);
+    lv_obj_set_style_bg_color(marker, UI_COLOR_ACCENT, 0);
     lv_obj_set_style_radius(marker, 6, 0);
     lv_obj_set_style_border_color(marker, lv_color_white(), 0);
     lv_obj_set_style_border_width(marker, 2, 0);

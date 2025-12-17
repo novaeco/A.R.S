@@ -19,6 +19,8 @@
 #define UI_COLOR_PAGE_BG UI_COLOR_BACKGROUND
 // Card/Panel: White
 #define UI_COLOR_CARD lv_color_hex(0xFFFFFF)
+// Surface (alias for elevated containers)
+#define UI_COLOR_SURFACE UI_COLOR_CARD
 // Text: Dark Charcoal
 #define UI_COLOR_TEXT_MAIN lv_color_hex(0x2C3E50)
 // Text: Muted Grey
@@ -29,6 +31,8 @@
 #define UI_COLOR_DANGER lv_color_hex(0xC0392B)
 // Success: Moss Green
 #define UI_COLOR_SUCCESS lv_color_hex(0x4CAF50)
+// Accent Marker: Vivid Coral for calibration markers
+#define UI_COLOR_ACCENT lv_color_hex(0xF54B64)
 // Border/Outline: Deep Slate
 #define UI_COLOR_OUTLINE lv_color_hex(0x1F2A35)
 
