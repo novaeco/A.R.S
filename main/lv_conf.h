@@ -34,6 +34,10 @@
    HAL SETTINGS
  *====================*/
 
+/*Enable user_data field in all lvgl object types to allow callbacks to carry
+ * contextual data (used by navigation handlers).*/
+#define LV_USE_USER_DATA 1
+
 /*Defines the default tick source. 0: None, 1: Custom, 2: SysTick, 3: Arduino*/
 #define LV_TICK_CUSTOM 1
 #if LV_TICK_CUSTOM
