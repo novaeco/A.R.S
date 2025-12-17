@@ -30,10 +30,12 @@
 
 // Local calibration storage
 static ars_touch_calibration_t s_calibration = {
-    .scale_x = (float)CONFIG_ARS_TOUCH_SCALE_X / 1000.0f,
-    .scale_y = (float)CONFIG_ARS_TOUCH_SCALE_Y / 1000.0f,
-    .offset_x = CONFIG_ARS_TOUCH_OFFSET_X,
-    .offset_y = CONFIG_ARS_TOUCH_OFFSET_Y,
+    // GT911 already applies the Kconfig scale/offset (see gt911_apply_calibration),
+    // so keep the runtime layer as an identity transform to avoid double-scaling.
+    .scale_x = 1.0f,
+    .scale_y = 1.0f,
+    .offset_x = 0,
+    .offset_y = 0,
 };
 static ars_touch_debug_info_t s_touch_debug_info = {0};
 static portMUX_TYPE s_touch_debug_mux = portMUX_INITIALIZER_UNLOCKED;
