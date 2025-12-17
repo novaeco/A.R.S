@@ -15,8 +15,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "sdkconfig.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 
 #ifndef CONFIG_ARS_TOUCH_SWAP_XY
 #define CONFIG_ARS_TOUCH_SWAP_XY 0
@@ -92,6 +92,19 @@ static inline void gt911_enable_irq_guarded(void) {
 #define ESP_LCD_TOUCH_GT911_PRODUCT_ID_REG (0x8140)
 #define ESP_LCD_TOUCH_GT911_ENTER_SLEEP (0x8040)
 
+/* GT911 Config registers for resolution */
+#define GT911_REG_X_OUTPUT_MAX_L (0x8048)
+#define GT911_REG_X_OUTPUT_MAX_H (0x8049)
+#define GT911_REG_Y_OUTPUT_MAX_L (0x804A)
+#define GT911_REG_Y_OUTPUT_MAX_H (0x804B)
+#define GT911_REG_CONFIG_FRESH (0x8100)
+#define GT911_REG_CONFIG_CHKSUM (0x80FF)
+
+/* Fix constants */
+#define GT911_POST_IRQ_DELAY_MS 3 // Delay after IRQ before reading
+#define GT911_EMPTY_RETRY_COUNT 3 // Retries when touch_cnt=0 but IRQ fired
+#define GT911_RETRY_DELAY_MS 2    // Delay between retries
+
 /* GT911 support key num */
 #define ESP_GT911_TOUCH_MAX_BUTTONS (4)
 
@@ -118,6 +131,9 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
                                       uint8_t *data, uint8_t len);
 static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
                                        uint8_t data);
+
+/* GT911 resolution programming */
+static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp);
 
 /* GT911 reset */
 static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp);
@@ -345,6 +361,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
 
   assert(tp != NULL);
 
+  // FIX: Read status and immediately process - no retry loop for valid touches
+  // The GT911 clears data very quickly, so we must read coordinates immediately
   err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, &status, 1);
   if (err != ESP_OK) {
     s_gt911_consecutive_errors++;
@@ -370,23 +388,56 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   const bool data_ready = (status & 0x80) != 0;
   touch_cnt = status & 0x0F;
 
+  // DIAGNOSTIC: Log status read (rate limited)
+  static int64_t last_status_diag_us = 0;
+  int64_t now_us = esp_timer_get_time();
+  if ((now_us - last_status_diag_us) > 500000) { // Every 500ms max
+    last_status_diag_us = now_us;
+    ESP_LOGD(TAG, "DIAG: status=0x%02X data_ready=%d touch_cnt=%d", status,
+             data_ready, touch_cnt);
+  }
+
+  // If not data_ready, nothing to process
   if (!data_ready) {
     return ESP_OK;
   }
 
-  // Acknowledge interrupt regardless of point count to release INT
-  esp_err_t clr_ret =
-      touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, 0x00);
-  if (clr_ret != ESP_OK) {
-    s_gt911_i2c_errors++;
-    ESP_LOGW(TAG, "Failed to clear GT911 status: %s",
-             esp_err_to_name(clr_ret));
-  }
+  // Define static filter variables here so we can reset them on release
+  static int16_t filt_x = -1;
+  static int16_t filt_y = -1;
 
   if (touch_cnt == 0) {
+    // Clear status for empty touch (release event)
+    esp_err_t clr_ret =
+        touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, 0x00);
+    if (clr_ret != ESP_OK) {
+      s_gt911_i2c_errors++;
+      ESP_LOGW(TAG, "Failed to clear GT911 status: %s",
+               esp_err_to_name(clr_ret));
+    }
+
+    // FIX 2: Reset filter on release to prevent "dragging" from old coordinates
+    filt_x = -1;
+    filt_y = -1;
+
     s_gt911_irq_empty++;
     s_gt911_irq_storm++;
     int64_t now = esp_timer_get_time();
+
+    // FIX 1: Downgrade log for normal release (0x80)
+    static int64_t last_status_log_us = 0;
+    if ((now - last_status_log_us) > 1000000) { // Log once per second max
+      last_status_log_us = now;
+      if (status == 0x80) {
+        ESP_LOGI(TAG, "Touch Released (Normal) - Status: 0x80");
+      } else {
+        ESP_LOGW(
+            TAG,
+            "GT911 empty after retries: status=0x%02X (data_ready=%d, cnt=%d)",
+            status, (status & 0x80) != 0, status & 0x0F);
+      }
+    }
+
     if (s_spurious_block_until_us < now) {
       s_spurious_block_until_us = now + 20000; // 20 ms cooldown
     }
@@ -399,7 +450,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     if (s_empty_window_count >= GT911_EMPTY_BURST_LIMIT && !s_poll_mode) {
       s_poll_mode = true;
       s_poll_mode_until_us = now + GT911_POLL_DURATION_US;
-      ESP_LOGW(TAG, "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
+      ESP_LOGW(TAG,
+               "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
                s_empty_window_count);
     }
 
@@ -439,6 +491,10 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     return err;
   }
 
+  // FIX: Track raw coordinates from first point BEFORE filtering
+  int16_t first_raw_x = -1;
+  int16_t first_raw_y = -1;
+
   portENTER_CRITICAL(&tp->data.lock);
   tp->data.points = touch_cnt;
   for (i = 0; i < touch_cnt; i++) {
@@ -446,9 +502,15 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     int16_t raw_x = ((uint16_t)p[2] << 8) | p[1];
     int16_t raw_y = ((uint16_t)p[4] << 8) | p[3];
 
+    // FIX: Store true raw values for first point before any filtering
+    if (i == 0) {
+      first_raw_x = raw_x;
+      first_raw_y = raw_y;
+      // Log removed from critical section to prevent panic
+    }
+
     // Simple low-pass filter to suppress jitter before LVGL gets the data.
-    static int16_t filt_x = -1;
-    static int16_t filt_y = -1;
+    // filt_x and filt_y are now defined above to share scope with release block
     if (filt_x < 0 || filt_y < 0) {
       filt_x = raw_x;
       filt_y = raw_y;
@@ -462,14 +524,29 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     tp->data.coords[i].strength = ((uint16_t)p[6] << 8) | p[5];
   }
   if (touch_cnt > 0) {
-    s_gt911_last_raw_x = tp->data.coords[0].x;
-    s_gt911_last_raw_y = tp->data.coords[0].y;
+    // FIX: Store ACTUAL raw values from I2C, not filtered values
+    s_gt911_last_raw_x = first_raw_x;
+    s_gt911_last_raw_y = first_raw_y;
     s_empty_window_count = 0;
     s_empty_window_start_us = 0;
     s_gt911_irq_storm = 0;
     s_spurious_block_until_us = 0;
   }
   portEXIT_CRITICAL(&tp->data.lock);
+
+  // Safe logging outside critical section
+  if (touch_cnt > 0) {
+    ESP_LOGI(TAG, "Touch Detected: X=%d Y=%d (cnt=%d)", first_raw_x,
+             first_raw_y, touch_cnt);
+  }
+
+  // FIX: Clear status AFTER reading point data to prevent data loss
+  esp_err_t clr_ret =
+      touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, 0x00);
+  if (clr_ret != ESP_OK) {
+    s_gt911_i2c_errors++;
+    ESP_LOGW(TAG, "Failed to clear GT911 status: %s", esp_err_to_name(clr_ret));
+  }
 
   return ESP_OK;
 }
@@ -594,9 +671,10 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   const int int_pin = EXAMPLE_PIN_NUM_TOUCH_INT;
   const int rst_pin_io = IO_EXTENSION_IO_1;
 
-  ESP_LOGI(TAG,
-           "Starting GT911 Reset Sequence (IRQ=GPIO%d, RST=IOEXT%d addr=0x%02X)",
-           int_pin, rst_pin_io, ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS);
+  ESP_LOGI(
+      TAG,
+      "Starting GT911 Reset Sequence (IRQ=GPIO%d, RST=IOEXT%d addr=0x%02X)",
+      int_pin, rst_pin_io, ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS);
 
   gpio_config_t int_out_cfg = {
       .pin_bit_mask = BIT64(int_pin),
@@ -710,6 +788,19 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
   ESP_LOGI(TAG, "GT911 Initialized successfully at address 0x%02X",
            config_with_addr.dev_addr);
+
+  // FIX: Perform safe config update with checksum
+  // This ensures Resolution, Sensitivity, and Checksum are correct.
+  esp_err_t res_ret = gt911_update_config(tp_handle);
+  if (res_ret != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to update GT911 config (non-fatal)");
+  } else {
+    ESP_LOGI(TAG, "GT911 Config Verification / Update Complete");
+  }
+
+  // Dump GT911 config for debugging
+  gt911_dump_config();
+
   return tp_handle;
 }
 
@@ -761,6 +852,253 @@ static esp_err_t touch_gt911_read_cfg(esp_lcd_touch_handle_t tp) {
   ESP_LOGI(TAG, "TouchPad_ID:0x%02x,0x%02x,0x%02x", buf[0], buf[1], buf[2]);
   ESP_LOGI(TAG, "TouchPad_Config_Version:%d", buf[3]);
 
+  return ESP_OK;
+}
+
+// GT911 additional config registers for diagnostic
+#define GT911_REG_TOUCH_NUMBER (0x804C)     // Max touch points (default 5)
+#define GT911_REG_MODULE_SWITCH1 (0x804D)   // Module switch 1
+#define GT911_REG_MODULE_SWITCH2 (0x804E)   // Module switch 2
+#define GT911_REG_SHAKE_CNT (0x804F)        // Shake count (debounce)
+#define GT911_REG_FILTER (0x8050)           // Filter
+#define GT911_REG_LARGE_TOUCH (0x8051)      // Large touch
+#define GT911_REG_NOISE_REDUCTION (0x8052)  // Noise reduction
+#define GT911_REG_SCREEN_TOUCH_LVL (0x8053) // Screen touch level
+#define GT911_REG_SCREEN_LEAVE_LVL (0x8054) // Screen leave level
+#define GT911_REG_REFRESH_RATE (0x8056)     // Refresh rate (5+N ms)
+
+esp_err_t gt911_dump_config(void) {
+  if (!tp_handle) {
+    ESP_LOGE(TAG, "GT911 not initialized, cannot dump config");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  ESP_LOGW(TAG, "========== GT911 CONFIG DUMP ==========");
+
+  // Product ID (0x8140-0x8143)
+  uint8_t product_id[4] = {0};
+  esp_err_t ret = touch_gt911_i2c_read(
+      tp_handle, ESP_LCD_TOUCH_GT911_PRODUCT_ID_REG, product_id, 4);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Product ID: %c%c%c%c (0x%02X%02X%02X%02X)", product_id[0],
+             product_id[1], product_id[2], product_id[3], product_id[0],
+             product_id[1], product_id[2], product_id[3]);
+  } else {
+    ESP_LOGE(TAG, "Failed to read product ID: %s", esp_err_to_name(ret));
+  }
+
+  // Firmware version (0x8144-0x8145)
+  uint8_t fw_version[2] = {0};
+  ret = touch_gt911_i2c_read(tp_handle, 0x8144, fw_version, 2);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Firmware Version: 0x%02X%02X", fw_version[1], fw_version[0]);
+  }
+
+  // Config version (0x8047)
+  uint8_t config_version = 0;
+  ret = touch_gt911_i2c_read(tp_handle, ESP_LCD_TOUCH_GT911_CONFIG_REG,
+                             &config_version, 1);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Config Version: 0x%02X (%d)", config_version,
+             config_version);
+    if (config_version < 0x41) {
+      ESP_LOGE(TAG, "  WARNING: Config version is LOW (expected >= 0x41)");
+    }
+  }
+
+  // Resolution (0x8048-0x804B)
+  uint8_t res_buf[4] = {0};
+  ret = touch_gt911_i2c_read(tp_handle, GT911_REG_X_OUTPUT_MAX_L, res_buf, 4);
+  if (ret == ESP_OK) {
+    uint16_t x_max = (res_buf[1] << 8) | res_buf[0];
+    uint16_t y_max = (res_buf[3] << 8) | res_buf[2];
+    ESP_LOGW(TAG, "Resolution: X_MAX=%d, Y_MAX=%d", x_max, y_max);
+    if (x_max == 0 || y_max == 0) {
+      ESP_LOGE(TAG, "  WARNING: Resolution is ZERO - touch will not work!");
+    }
+    if (x_max != CONFIG_ARS_TOUCH_X_MAX || y_max != CONFIG_ARS_TOUCH_Y_MAX) {
+      ESP_LOGW(TAG, "  MISMATCH: Expected X=%d, Y=%d", CONFIG_ARS_TOUCH_X_MAX,
+               CONFIG_ARS_TOUCH_Y_MAX);
+    }
+  }
+
+  // Touch number (0x804C)
+  uint8_t touch_number = 0;
+  ret =
+      touch_gt911_i2c_read(tp_handle, GT911_REG_TOUCH_NUMBER, &touch_number, 1);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Max Touch Points: %d", touch_number);
+    if (touch_number == 0) {
+      ESP_LOGE(TAG, "  WARNING: Max touch is 0 - touch_cnt will always be 0!");
+    }
+  }
+
+  // Module switch 1 (0x804D)
+  uint8_t module_switch1 = 0;
+  ret = touch_gt911_i2c_read(tp_handle, GT911_REG_MODULE_SWITCH1,
+                             &module_switch1, 1);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Module Switch 1: 0x%02X (X2Y=%d, INT=%d)", module_switch1,
+             (module_switch1 >> 3) & 1, // X2Y swap
+             module_switch1 & 0x03);    // INT trigger mode
+  }
+
+  // Touch detection thresholds
+  uint8_t touch_lvl = 0, leave_lvl = 0;
+  touch_gt911_i2c_read(tp_handle, GT911_REG_SCREEN_TOUCH_LVL, &touch_lvl, 1);
+  touch_gt911_i2c_read(tp_handle, GT911_REG_SCREEN_LEAVE_LVL, &leave_lvl, 1);
+  ESP_LOGW(TAG, "Touch Level: %d, Leave Level: %d", touch_lvl, leave_lvl);
+  if (touch_lvl == 0 && leave_lvl == 0) {
+    ESP_LOGE(TAG, "  WARNING: Touch thresholds are 0!");
+  }
+
+  // Refresh rate (0x8056)
+  uint8_t refresh = 0;
+  ret = touch_gt911_i2c_read(tp_handle, GT911_REG_REFRESH_RATE, &refresh, 1);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG, "Refresh Rate: %d ms (5+%d)", 5 + refresh, refresh);
+  }
+
+  // Checksum (0x80FF) and Config Fresh (0x8100)
+  uint8_t checksum = 0, config_fresh = 0;
+  touch_gt911_i2c_read(tp_handle, GT911_REG_CONFIG_CHKSUM, &checksum, 1);
+  touch_gt911_i2c_read(tp_handle, GT911_REG_CONFIG_FRESH, &config_fresh, 1);
+  ESP_LOGW(TAG, "Checksum: 0x%02X, Config Fresh: 0x%02X", checksum,
+           config_fresh);
+
+  // Current status register (0x814E)
+  uint8_t status = 0;
+  ret = touch_gt911_i2c_read(tp_handle, ESP_LCD_TOUCH_GT911_STATUS_REG, &status,
+                             1);
+  if (ret == ESP_OK) {
+    ESP_LOGW(TAG,
+             "Status Reg: 0x%02X (buffer=%d, large=%d, prox=%d, havekey=%d, "
+             "touch_cnt=%d)",
+             status,
+             (status >> 7) & 1, // Buffer status
+             (status >> 6) & 1, // Large touch
+             (status >> 5) & 1, // Proximity
+             (status >> 4) & 1, // Have key
+             status & 0x0F);    // Touch count
+  }
+
+  ESP_LOGW(TAG, "========================================");
+
+  return ESP_OK;
+}
+
+/**
+ * @brief Calculate GT911 config checksum
+ * checksum = (~sum) + 1
+ */
+static uint8_t gt911_calc_checksum(uint8_t *config, int len) {
+  uint8_t checksum = 0;
+  for (int i = 0; i < len; i++) {
+    checksum += config[i];
+  }
+  return (~checksum) + 1;
+}
+
+/**
+ * @brief Update GT911 configuration safely (Read-Modify-Write)
+ */
+static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
+  esp_err_t ret = ESP_OK;
+  uint8_t config[186]; // GT911 config size is usually ~184-186 bytes
+
+  ESP_LOGI(TAG, "Checking GT911 Configuration...");
+
+  // 1. Read existing config
+  // Config register starts at 0x8047. We read enough bytes to cover the whole
+  // block. 0x8047 to 0x80FE + checksum(0x80FF)
+  ret = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_CONFIG_REG, config,
+                             sizeof(config));
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to read GT911 config");
+    return ret;
+  }
+
+  // 2. Modify Resolution (X_MAX @ 0x8048, Y_MAX @ 0x804A)
+  // Indexes are relative to 0x8047, so:
+  // 0x8048 - 0x8047 = 1 (X_Low)
+  // 0x8049 - 0x8047 = 2 (X_High)
+  // 0x804A - 0x8047 = 3 (Y_Low)
+  // 0x804B - 0x8047 = 4 (Y_High)
+
+  uint16_t x_max = CONFIG_ARS_TOUCH_X_MAX;
+  uint16_t y_max = CONFIG_ARS_TOUCH_Y_MAX;
+
+  uint16_t current_x = config[1] | (config[2] << 8);
+  uint16_t current_y = config[3] | (config[4] << 8);
+
+  bool changed = false;
+
+  if (current_x != x_max || current_y != y_max) {
+    ESP_LOGI(TAG, "Updating Resolution: (%d,%d) -> (%d,%d)", current_x,
+             current_y, x_max, y_max);
+    config[1] = x_max & 0xFF;
+    config[2] = (x_max >> 8) & 0xFF;
+    config[3] = y_max & 0xFF;
+    config[4] = (y_max >> 8) & 0xFF;
+    changed = true;
+  }
+
+  // 3. Ensure Touch Level (Sensitivity) is reasonable
+  // 0x8053 - 0x8047 = 12 (0x0C) -> Touch Level
+  // 0x8054 - 0x8047 = 13 (0x0D) -> Leave Level
+  // Default recommendation: Touch=60-100, Leave=40-80
+  if (config[12] == 0) {
+    ESP_LOGW(TAG, "Fixing invalid Touch Level (0 -> 80)");
+    config[12] = 80;
+    changed = true;
+  }
+  if (config[13] == 0) {
+    ESP_LOGW(TAG, "Fixing invalid Leave Level (0 -> 50)");
+    config[13] = 50;
+    changed = true;
+  }
+
+  if (!changed) {
+    ESP_LOGI(TAG, "GT911 Configuration is already correct.");
+    return ESP_OK;
+  }
+
+  // 4. Recalculate Checksum
+  // Checksum is at 0x80FF. Relative index: 0x80FF - 0x8047 = 184 (0xB8)
+  // Checksum range is 0x8047 to 0x80FE (184 bytes)
+  uint8_t checksum = gt911_calc_checksum(config, 184);
+  config[184] = checksum;
+  config[185] = 1; // Config Fresh = 1
+
+  ESP_LOGI(TAG, "Writing new config with Checksum 0x%02X...", checksum);
+
+  // 5. Write back config
+  // We write the whole block to be safe, or at least up to checksum + fresh
+  ret = touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_CONFIG_REG, config[0]);
+  // Wait... the write function writes a single byte. We need block write.
+  // We need to loop or use a block write helper.
+  // The existing touch_gt911_i2c_write only writes 1 byte.
+  // We will iterate for now, but block write is better.
+  // Actually, standard i2c_panel_io_tx_param can write buffer.
+
+  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(500));
+  if (!locked)
+    return ESP_ERR_TIMEOUT;
+
+  ret = esp_lcd_panel_io_tx_param(tp->io, ESP_LCD_TOUCH_GT911_CONFIG_REG,
+                                  config, 186);
+
+  i2c_bus_shared_unlock();
+
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to write GT911 config: %s", esp_err_to_name(ret));
+    return ret;
+  }
+
+  // Wait for config to apply
+  vTaskDelay(pdMS_TO_TICKS(100));
+
+  ESP_LOGI(TAG, "GT911 Configuration Updated Successfully.");
   return ESP_OK;
 }
 
@@ -839,7 +1177,8 @@ static void gt911_irq_task(void *arg) {
   int64_t last_error_log_us = 0;
 
   while (1) {
-    uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(GT911_POLL_INTERVAL_MS));
+    uint32_t notified =
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(GT911_POLL_INTERVAL_MS));
     int64_t now = esp_timer_get_time();
 
     if (s_spurious_block_until_us > now && !s_poll_mode) {
@@ -876,6 +1215,9 @@ static void gt911_irq_task(void *arg) {
       continue;
     }
     s_last_irq_us = now;
+
+    // FIX: Add delay after IRQ to allow GT911 to populate registers
+    vTaskDelay(pdMS_TO_TICKS(GT911_POST_IRQ_DELAY_MS));
 
     esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
     if (err != ESP_OK && (now - last_error_log_us) > 1000000) {

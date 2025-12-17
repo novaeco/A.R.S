@@ -111,6 +111,16 @@ touch_gt911_point_t touch_gt911_read_point(uint8_t max_touch_cnt);
 void gt911_get_stats(gt911_stats_t *stats);
 
 /**
+ * @brief Dump GT911 configuration registers for debugging
+ *
+ * This function reads and logs the key GT911 configuration registers
+ * to help diagnose touch issues.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t gt911_dump_config(void);
+
+/**
  * @brief Touch IO configuration structure for GT911
  *
  * This macro initializes the configuration structure for the GT911 touch

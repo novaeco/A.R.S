@@ -2,12 +2,12 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
-#include <inttypes.h>
+#include "touch.h"
 #include "ui_helpers.h"
 #include "ui_screen_manager.h"
 #include "ui_theme.h"
 #include "ui_wizard.h"
-#include "touch.h"
+#include <inttypes.h>
 
 static const char *TAG = "ui_calibration";
 static lv_timer_t *s_touch_dbg_timer = NULL;
@@ -27,10 +27,11 @@ static void touch_debug_timer_cb(lv_timer_t *timer) {
   }
 
   char buf[96];
-  lv_snprintf(buf, sizeof(buf), "raw:%d,%d xy:%d,%d irq:%" PRIu32 " empty:%" PRIu32
-                                " err:%" PRIu32 "%s", info.raw_x, info.raw_y,
-              info.x, info.y, info.irq_total, info.empty_irqs, info.i2c_errors,
-              info.polling ? " poll" : "");
+  lv_snprintf(buf, sizeof(buf),
+              "raw:%d,%d xy:%d,%d irq:%" PRIu32 " empty:%" PRIu32
+              " err:%" PRIu32 "%s",
+              info.raw_x, info.raw_y, info.x, info.y, info.irq_total,
+              info.empty_irqs, info.i2c_errors, info.polling ? " poll" : "");
   lv_label_set_text(label, buf);
 }
 
@@ -39,7 +40,8 @@ static void calibration_event_cb(lv_event_t *e) {
   ESP_LOGI(TAG, "validate clicked");
   esp_err_t err = ui_wizard_mark_setup_done();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to persist setup_done flag: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to persist setup_done flag: %s",
+             esp_err_to_name(err));
   }
   ui_wizard_complete_from_calibration();
 }
@@ -72,9 +74,9 @@ void ui_calibration_start(void) {
   lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
   lv_obj_t *lbl = lv_label_create(body);
-  lv_label_set_text(lbl,
-                    "Touchez l\u2019\u00e9cran pour v\u00e9rifier le tactile puis validez pour "
-                    "passer au tableau de bord.");
+  lv_label_set_text(
+      lbl, "Appuyez sur l ecran pour tester le tactile, puis validez pour "
+           "acceder au tableau de bord.");
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(lbl, LV_PCT(80));
   lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
@@ -101,7 +103,8 @@ void ui_calibration_start(void) {
   if (s_touch_dbg_timer) {
     lv_timer_del(s_touch_dbg_timer);
   }
-  s_touch_dbg_timer = lv_timer_create(touch_debug_timer_cb, 200, s_touch_dbg_label);
+  s_touch_dbg_timer =
+      lv_timer_create(touch_debug_timer_cb, 200, s_touch_dbg_label);
 
   ui_switch_screen(scr_cal, LV_SCR_LOAD_ANIM_NONE);
 }
