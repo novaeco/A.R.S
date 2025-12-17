@@ -2,6 +2,7 @@
 #include "../ui_helpers.h"
 #include "../ui_theme.h" // Assuming theme header
 #include "../ui_navigation.h"
+#include "../ui_screen_manager.h"
 #include "core_service.h"
 #include "esp_log.h"
 #include "lvgl.h"
