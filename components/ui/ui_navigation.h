@@ -13,10 +13,13 @@ typedef enum {
   UI_SCREEN_WEB,
   UI_SCREEN_LOGS,
   UI_SCREEN_ALERTS,
+  UI_SCREEN_ANIMAL_DETAILS,
+  UI_SCREEN_ANIMAL_FORM,
   UI_SCREEN_REPRODUCTION
 } ui_screen_t;
 
 // Navigation API
 void ui_nav_init(void);
 void ui_nav_navigate(ui_screen_t screen, bool anim);
+void ui_nav_navigate_ctx(ui_screen_t screen, void *ctx, bool anim);
 void ui_nav_go_back(void);

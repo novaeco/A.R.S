@@ -43,7 +43,7 @@ static void animal_item_wrapper_cb(lv_event_t *e) {
 
   if (code == LV_EVENT_CLICKED) {
     if (ctx->id_copy)
-      ui_create_animal_details_screen(ctx->id_copy);
+      ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, ctx->id_copy, true);
   } else if (code == LV_EVENT_DELETE) {
     if (ctx->id_copy) {
       ESP_LOGD(TAG, "Free animal list user_data for btn %s", ctx->id_copy);
@@ -129,7 +129,7 @@ static void back_event_cb(lv_event_t *e) {
 }
 
 static void add_animal_event_cb(lv_event_t *e) {
-  ui_create_animal_form_screen(NULL);
+  ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_FORM, NULL, true);
 }
 
 static void kb_event_cb(lv_event_t *e) {

@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "core_service.h"
 #include "lvgl.h"
+#include "../ui_navigation.h"
 #include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include <stdio.h>
@@ -29,7 +30,7 @@ static void format_date(char *buf, size_t len, uint32_t timestamp) {
 }
 
 static void back_event_cb(lv_event_t * e) {
-    ui_create_animal_details_screen(current_animal_id);
+    ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, current_animal_id, true);
 }
 
 // =============================================================================
@@ -53,7 +54,7 @@ static void save_repro_event_cb(lv_event_t * e) {
     if (core_add_event(current_animal_id, type, desc) == ESP_OK) {
         LV_LOG_USER("Repro event added");
         lv_msgbox_close(mbox_add);
-        ui_create_reproduction_screen(current_animal_id); // Reload
+        ui_nav_navigate_ctx(UI_SCREEN_REPRODUCTION, current_animal_id, false);
     }
 }
 
@@ -83,7 +84,7 @@ static void add_btn_cb(lv_event_t * e) {
 // Main Create
 // =============================================================================
 
-void ui_create_reproduction_screen(const char *animal_id) {
+lv_obj_t *ui_create_reproduction_screen(const char *animal_id) {
     strlcpy(current_animal_id, animal_id, sizeof(current_animal_id));
 
     lv_display_t *disp = lv_display_get_default();
@@ -92,7 +93,7 @@ void ui_create_reproduction_screen(const char *animal_id) {
     const lv_coord_t header_height = 60;
 
     animal_t animal;
-    if (core_get_animal(animal_id, &animal) != ESP_OK) return;
+    if (core_get_animal(animal_id, &animal) != ESP_OK) return NULL;
 
   scr_repro = lv_obj_create(NULL);
   ui_screen_claim_with_theme(scr_repro, "reproduction");
@@ -150,5 +151,5 @@ void ui_create_reproduction_screen(const char *animal_id) {
     }
 
     core_free_animal_content(&animal);
-    lv_screen_load(scr_repro);
+    return scr_repro;
 }

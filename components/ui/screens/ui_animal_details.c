@@ -3,6 +3,7 @@
 #include "lvgl.h"
 #include "ui.h"
 #include "ui_animal_form.h"
+#include "../ui_navigation.h"
 #include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "ui_animals.h"
@@ -34,14 +35,16 @@ static void format_date(char *buf, size_t len, uint32_t timestamp) {
   strftime(buf, len, "%d/%m/%Y", timeinfo);
 }
 
-static void back_event_cb(lv_event_t *e) { ui_create_animal_list_screen(); }
+static void back_event_cb(lv_event_t *e) {
+  ui_nav_navigate(UI_SCREEN_ANIMALS, true);
+}
 
 static void edit_event_cb(lv_event_t *e) {
-  ui_create_animal_form_screen(current_animal_id);
+  ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_FORM, current_animal_id, true);
 }
 
 static void repro_event_cb(lv_event_t *e) {
-  ui_create_reproduction_screen(current_animal_id);
+  ui_nav_navigate_ctx(UI_SCREEN_REPRODUCTION, current_animal_id, true);
 }
 
 // =============================================================================
@@ -96,7 +99,7 @@ static void save_weight_cb(lv_event_t *e) {
     if (core_add_weight(current_animal_id, val, "g") == ESP_OK) {
       LV_LOG_USER("Weight added");
       lv_msgbox_close(mbox_weight);
-      ui_create_animal_details_screen(current_animal_id); // Reload
+      ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, current_animal_id, false);
     }
   }
 }
@@ -148,7 +151,7 @@ static void save_event_cb(lv_event_t *e) {
   if (core_add_event(current_animal_id, type, desc) == ESP_OK) {
     LV_LOG_USER("Event added");
     lv_msgbox_close(mbox_event);
-    ui_create_animal_details_screen(current_animal_id); // Reload
+    ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, current_animal_id, false);
   }
 }
 
@@ -409,7 +412,7 @@ static void build_event_tab(lv_obj_t *parent, const animal_t *animal) {
 // Main Create
 // =============================================================================
 
-void ui_create_animal_details_screen(const char *animal_id) {
+lv_obj_t *ui_create_animal_details_screen(const char *animal_id) {
   strlcpy(current_animal_id, animal_id, sizeof(current_animal_id));
 
   lv_display_t *disp = lv_display_get_default();
@@ -420,7 +423,7 @@ void ui_create_animal_details_screen(const char *animal_id) {
   animal_t animal;
   if (core_get_animal(animal_id, &animal) != ESP_OK) {
     LV_LOG_ERROR("Failed to load animal %s", animal_id);
-    return;
+    return NULL;
   }
 
   scr_details = lv_obj_create(NULL);
@@ -459,5 +462,5 @@ void ui_create_animal_details_screen(const char *animal_id) {
   build_event_tab(t3, &animal);
 
   core_free_animal_content(&animal);
-  lv_screen_load(scr_details);
+  return scr_details;
 }
