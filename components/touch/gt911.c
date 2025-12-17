@@ -1270,6 +1270,14 @@ static void gt911_irq_task(void *arg) {
     }
 
     if (notified == 0) {
+      // Fallback: If no IRQ is received during the wait window, poll once to
+      // avoid losing touches when the interrupt line is noisy or missing.
+      esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
+      if (err != ESP_OK && (now - last_error_log_us) > 1000000) {
+        last_error_log_us = now;
+        ESP_LOGE(TAG, "GT911 fallback poll read failed: %s",
+                 esp_err_to_name(err));
+      }
       continue;
     }
 
