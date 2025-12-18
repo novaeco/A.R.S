@@ -14,6 +14,7 @@
 #ifndef __I2C_H
 #define __I2C_H
 
+#include "board.h"          // Pinout and frequency
 #include "i2c_bus_shared.h" // Global Mutex & Init
 
 #include "driver/i2c_master.h"
@@ -23,11 +24,6 @@
 #include "gpio.h"
 #include <stdio.h>
 #include <string.h>
-
-#define EXAMPLE_I2C_MASTER_SDA GPIO_NUM_8
-#define EXAMPLE_I2C_MASTER_SCL GPIO_NUM_9
-#define EXAMPLE_I2C_MASTER_FREQUENCY (100 * 1000) // 100 kHz for stability
-#define EXAMPLE_I2C_MASTER_NUM I2C_NUM_0
 
 typedef struct {
   i2c_master_bus_handle_t bus;
@@ -67,10 +63,10 @@ esp_err_t DEV_I2C_Init(DEV_I2C_Port *out_port);
 // --- Bus Safety & Recovery ---
 
 /**
- * @brief Sanitize an I2C address to ensure it is 7-bit.
- * Logic: If > 0x7F, right shift by 1, then mask with 0x7F.
+ * @brief Validate a 7-bit I2C address and return it through out parameter.
+ * Returns ESP_ERR_INVALID_ARG if the address is outside the 7-bit range.
  */
-uint8_t DEV_I2C_SanitizeAddr(uint8_t addr);
+esp_err_t DEV_I2C_SanitizeAddr(uint8_t addr, uint8_t *out_addr);
 
 /**
  * @brief Take the global I2C mutex.

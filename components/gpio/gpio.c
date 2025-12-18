@@ -12,6 +12,11 @@
  ******************************************************************************/
 #include "gpio.h"
 #include "driver/ledc.h"
+#include "esp_err.h"
+#include "esp_log.h"
+
+static const char *TAG = "gpio";
+static bool s_isr_service_installed = false;
 
 /**
  * @brief Configure a GPIO pin as input or output
@@ -28,12 +33,15 @@ void DEV_GPIO_Mode(uint16_t Pin, uint16_t Mode) {
   io_conf.intr_type = GPIO_INTR_DISABLE; // Disable interrupts for this pin
   io_conf.pin_bit_mask = 1ULL << Pin;    // Select the GPIO pin using a bitmask
 
+  io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+
   if (Mode == 0 || Mode == GPIO_MODE_INPUT) {
     io_conf.mode = GPIO_MODE_INPUT;          // Set pin as input
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE; // Enable internal pull-up resistor
   } else if (Mode == GPIO_MODE_INPUT_OUTPUT) {
-    io_conf.mode = GPIO_MODE_INPUT_OUTPUT;   // Set pin as input
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE; // Enable internal pull-up resistor
+    io_conf.mode = GPIO_MODE_INPUT_OUTPUT;   // Bidirectional use-case
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE; // Keep pull-up enabled for input
   } else {
     io_conf.mode = GPIO_MODE_OUTPUT;          // Set pin as output
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // Disable pull-up
@@ -51,11 +59,27 @@ void DEV_GPIO_Mode(uint16_t Pin, uint16_t Mode) {
  * @param Pin GPIO pin number
  * @param isr_handler Pointer to the interrupt handler function
  */
-void DEV_GPIO_INT(int32_t Pin, gpio_isr_t isr_handler) {
+static esp_err_t ensure_isr_service(void) {
+  if (s_isr_service_installed) {
+    return ESP_OK;
+  }
+
+  esp_err_t ret = gpio_install_isr_service(0);
+  if (ret == ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(TAG, "GPIO ISR service already installed");
+    ret = ESP_OK;
+  } else if (ret == ESP_OK) {
+    s_isr_service_installed = true;
+  } else {
+    ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(ret));
+  }
+  return ret;
+}
+
+void DEV_GPIO_INT(int32_t Pin, gpio_int_type_t intr_type, gpio_isr_t isr_handler) {
   // Zero-initialize the GPIO configuration structure
   gpio_config_t io_conf = {};
-  io_conf.intr_type =
-      GPIO_INTR_POSEDGE;          // Trigger on negative edge (falling edge)
+  io_conf.intr_type = intr_type; // Allow caller to choose edge
   io_conf.mode = GPIO_MODE_INPUT; // Set pin as input mode
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE; // Disable pull-down
   io_conf.pull_up_en = GPIO_PULLUP_ENABLE;      // Enable pull-up resistor
@@ -64,7 +88,9 @@ void DEV_GPIO_INT(int32_t Pin, gpio_isr_t isr_handler) {
   gpio_config(&io_conf); // Apply the configuration
 
   // Install the GPIO interrupt service if not already installed
-  gpio_install_isr_service(0); // Pass 0 for default ISR flags
+  if (ensure_isr_service() != ESP_OK) {
+    return;
+  }
 
   // Register the interrupt handler for the specified pin
   gpio_isr_handler_add(Pin, isr_handler, (void *)Pin);
@@ -116,13 +142,11 @@ void DEV_GPIO_PWM(uint16_t Pin, uint16_t frequency) {
  */
 void DEV_SET_PWM(uint8_t Value) {
   if (Value > 100) {
-    printf(
-        "Please enter a value between 0 and 100\n"); // Print a warning if the
-                                                     // value is out of range
+    ESP_LOGW(TAG, "Please enter a value between 0 and 100");
   } else {
     // Calculate the duty cycle based on the resolution (12 bits)
     uint32_t duty = Value * ((1 << LEDC_TIMER_12_BIT) / 100.0);
-    printf("Duty cycle: %ld\n", duty); // Print the calculated duty cycle
+    ESP_LOGI(TAG, "Duty cycle: %lu", (unsigned long)duty);
 
     // Set the new duty cycle for the PWM signal
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty));

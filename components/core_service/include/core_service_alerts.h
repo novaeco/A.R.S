@@ -16,10 +16,15 @@ typedef struct core_alert_s {
 
 /**
  * @brief Récupère la liste des alertes actives.
- * 
- * @param[out] alerts Pointeur vers le tableau d'alertes alloué.
- * @param[out] count  Nombre d'alertes récupérées.
- * @return esp_err_t ESP_OK en cas de succès.
+ *
+ * L'appelant devient propriétaire du tableau renvoyé et doit appeler
+ * `core_free_alert_list()` pour libérer la ressource, même lorsque aucune
+ * alerte n'est disponible (dans ce cas `*alerts` vaut NULL et `*count` est 0).
+ *
+ * @param[out] alerts Pointeur vers le tableau d'alertes alloué (NULL si aucune).
+ * @param[out] count  Nombre d'alertes récupérées (0 si aucune).
+ * @return esp_err_t ESP_OK en cas de succès, ESP_ERR_INVALID_ARG si un pointeur
+ *         requis est NULL.
  */
 esp_err_t core_get_alerts(core_alert_t **alerts, size_t *count);
 

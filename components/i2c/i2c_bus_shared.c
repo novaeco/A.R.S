@@ -61,3 +61,19 @@ void i2c_bus_shared_unlock(void) {
 i2c_master_bus_handle_t i2c_bus_shared_get_handle(void) { return s_shared_bus; }
 
 bool i2c_bus_shared_is_ready(void) { return s_shared_bus != NULL; }
+
+void i2c_bus_shared_deinit(void) {
+  if (s_shared_bus != NULL) {
+    esp_err_t del_ret = i2c_del_master_bus(s_shared_bus);
+    if (del_ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to delete shared I2C bus: %s",
+               esp_err_to_name(del_ret));
+    }
+    s_shared_bus = NULL;
+  }
+
+  if (g_i2c_bus_mutex != NULL) {
+    vSemaphoreDelete(g_i2c_bus_mutex);
+    g_i2c_bus_mutex = NULL;
+  }
+}

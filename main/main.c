@@ -30,6 +30,15 @@ void app_main(void) {
   bool touch_ok = false;
   bool lvgl_ok = false;
 
+  // Boot order guard rails:
+  // 0) Persistent storage + base network stack (NVS, esp_netif, events) so
+  //    that later services (Wi‑Fi/provisioning/Web) have their dependencies.
+  // 1) Filesystem to allow early configuration/assets access.
+  // 2) Board bring-up (panel + touch) before LVGL task so the UI can draw on a
+  //    valid display object.
+  // 3) SD card after UI to avoid blocking the boot UI if media is missing.
+  // 4) Network/provisioning last because it depends on the previous steps.
+
   // 0. System Initialization (Critical: NVS & Network before anything else)
   // Initialize NVS
   esp_err_t ret = nvs_flash_init();
@@ -47,6 +56,7 @@ void app_main(void) {
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   if (sta_netif == NULL) {
     ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
+    return;
   }
 
   // 1. Filesystem
