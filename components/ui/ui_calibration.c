@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "touch.h"
-#include "touch_orient.h"
+#include "touch_transform.h"
 #include "ui_helpers.h"
 #include "ui_screen_manager.h"
 #include "ui_theme.h"
@@ -24,12 +24,19 @@ static lv_obj_t *s_switch_swap = NULL;
 static lv_obj_t *s_switch_mir_x = NULL;
 static lv_obj_t *s_switch_mir_y = NULL;
 static lv_obj_t *s_capture_layer = NULL;
-static touch_orient_config_t s_current_cfg = {0};
+static touch_transform_record_t s_current_record = {0};
+static touch_transform_metrics_t s_last_metrics = {0};
+static lv_timer_t *s_auto_timer = NULL;
+static struct {
+  uint32_t start_tick;
+  lv_point_t origin;
+  lv_point_t delta;
+} s_auto_probe;
 
 #define CAL_POINT_COUNT 5
 typedef struct {
   lv_point_t target;
-  lv_point_t measured;
+  lv_point_t measured_raw;
   bool captured;
   lv_obj_t *marker;
 } cal_point_t;
@@ -51,6 +58,13 @@ static void stop_touch_debug_timer(void) {
   }
 }
 
+static void stop_auto_timer(void) {
+  if (s_auto_timer) {
+    lv_timer_del(s_auto_timer);
+    s_auto_timer = NULL;
+  }
+}
+
 static void apply_config_to_driver(bool reset_scale) {
   esp_lcd_touch_handle_t tp = app_board_get_touch_handle();
   if (!tp) {
@@ -58,52 +72,52 @@ static void apply_config_to_driver(bool reset_scale) {
     return;
   }
 
-  touch_orient_config_t cfg = s_current_cfg;
+  touch_transform_t tf = s_current_record.transform;
   if (reset_scale) {
-    cfg.scale_x = 1.0f;
-    cfg.scale_y = 1.0f;
-    cfg.offset_x = 0;
-    cfg.offset_y = 0;
+    touch_transform_identity(&tf);
+    tf.swap_xy = s_current_record.transform.swap_xy;
+    tf.mirror_x = s_current_record.transform.mirror_x;
+    tf.mirror_y = s_current_record.transform.mirror_y;
   }
-
-  esp_err_t err = touch_orient_apply(tp, &cfg);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to apply touch config: %s", esp_err_to_name(err));
-  }
+  touch_transform_set_active(&tf);
 }
 
 static void update_orientation_label(void) {
   if (!s_orientation_label)
     return;
 
-  lv_label_set_text_fmt(s_orientation_label,
-                        "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
-                        "\nEchelle: %.4f / %.4f\nOffset: %" PRIi32 " / %" PRIi32,
-                        s_current_cfg.swap_xy ? "ON" : "OFF",
-                        s_current_cfg.mirror_x ? "ON" : "OFF",
-                        s_current_cfg.mirror_y ? "ON" : "OFF",
-                        (double)s_current_cfg.scale_x,
-                        (double)s_current_cfg.scale_y, s_current_cfg.offset_x,
-                        s_current_cfg.offset_y);
+  lv_label_set_text_fmt(
+      s_orientation_label,
+      "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
+      "\nAffine: [%.3f %.3f %.1f; %.3f %.3f %.1f]",
+      s_current_record.transform.swap_xy ? "ON" : "OFF",
+      s_current_record.transform.mirror_x ? "ON" : "OFF",
+      s_current_record.transform.mirror_y ? "ON" : "OFF",
+      (double)s_current_record.transform.a11,
+      (double)s_current_record.transform.a12,
+      (double)s_current_record.transform.a13,
+      (double)s_current_record.transform.a21,
+      (double)s_current_record.transform.a22,
+      (double)s_current_record.transform.a23);
 }
 
 static void sync_switch_states(void) {
   if (s_switch_swap) {
-    if (s_current_cfg.swap_xy) {
+    if (s_current_record.transform.swap_xy) {
       lv_obj_add_state(s_switch_swap, LV_STATE_CHECKED);
     } else {
       lv_obj_clear_state(s_switch_swap, LV_STATE_CHECKED);
     }
   }
   if (s_switch_mir_x) {
-    if (s_current_cfg.mirror_x) {
+    if (s_current_record.transform.mirror_x) {
       lv_obj_add_state(s_switch_mir_x, LV_STATE_CHECKED);
     } else {
       lv_obj_clear_state(s_switch_mir_x, LV_STATE_CHECKED);
     }
   }
   if (s_switch_mir_y) {
-    if (s_current_cfg.mirror_y) {
+    if (s_current_record.transform.mirror_y) {
       lv_obj_add_state(s_switch_mir_y, LV_STATE_CHECKED);
     } else {
       lv_obj_clear_state(s_switch_mir_y, LV_STATE_CHECKED);
@@ -119,6 +133,30 @@ static void set_progress_text(const char *text_fmt, ...) {
   va_start(args, text_fmt);
   lv_label_set_text_vfmt(s_cal_progress_label, text_fmt, args);
   va_end(args);
+}
+
+static void auto_timer_cb(lv_timer_t *t) {
+  (void)t;
+  touch_sample_raw_t sample =
+      touch_transform_sample_raw_oriented(app_board_get_touch_handle(), true);
+  s_auto_probe.delta.x = sample.raw_x - s_auto_probe.origin.x;
+  s_auto_probe.delta.y = sample.raw_y - s_auto_probe.origin.y;
+
+  if (lv_tick_elaps(s_auto_probe.start_tick) > 800) {
+    stop_auto_timer();
+    bool swap = abs(s_auto_probe.delta.x) < abs(s_auto_probe.delta.y);
+    s_current_record.transform.swap_xy = swap;
+    s_current_record.transform.mirror_x = s_auto_probe.delta.x < 0;
+    s_current_record.transform.mirror_y = s_auto_probe.delta.y < 0;
+    apply_config_to_driver(false);
+    sync_switch_states();
+    set_progress_text("Auto orientation swap=%s mirX=%s mirY=%s",
+                      swap ? "oui" : "non",
+                      s_current_record.transform.mirror_x ? "oui" : "non",
+                      s_current_record.transform.mirror_y ? "oui" : "non");
+    ui_show_toast("Orientation d\u00e9duite, v\u00e9rifiez sur l\u2019\u00e9cran",
+                  UI_TOAST_INFO);
+  }
 }
 
 static void highlight_active_marker(void) {
@@ -138,6 +176,7 @@ static void stop_capture_layer(void) {
     lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
   }
+  stop_auto_timer();
 }
 
 static void reset_cal_points(lv_obj_t *overlay) {
@@ -154,11 +193,11 @@ static void reset_cal_points(lv_obj_t *overlay) {
       {.x = w / 2, .y = h / 2},
   };
 
-  for (int i = 0; i < CAL_POINT_COUNT; ++i) {
-    s_cal_points[i].target = targets[i];
-    s_cal_points[i].measured.x = 0;
-    s_cal_points[i].measured.y = 0;
-    s_cal_points[i].captured = false;
+    for (int i = 0; i < CAL_POINT_COUNT; ++i) {
+      s_cal_points[i].target = targets[i];
+      s_cal_points[i].measured_raw.x = 0;
+      s_cal_points[i].measured_raw.y = 0;
+      s_cal_points[i].captured = false;
     if (s_cal_points[i].marker) {
       lv_obj_del(s_cal_points[i].marker);
       s_cal_points[i].marker = NULL;
@@ -177,77 +216,82 @@ static void reset_cal_points(lv_obj_t *overlay) {
   highlight_active_marker();
 }
 
-static bool compute_calibration_from_samples(ars_touch_calibration_t *out) {
+static bool compute_calibration_from_samples(touch_transform_record_t *out) {
   if (!out)
     return false;
 
-  int captured = 0;
-  int32_t min_meas_x = INT32_MAX, min_meas_y = INT32_MAX;
-  int32_t max_meas_x = INT32_MIN, max_meas_y = INT32_MIN;
-  int32_t min_tgt_x = INT32_MAX, min_tgt_y = INT32_MAX;
-  int32_t max_tgt_x = INT32_MIN, max_tgt_y = INT32_MIN;
-
+  lv_point_t raw_pts[CAL_POINT_COUNT];
+  lv_point_t tgt_pts[CAL_POINT_COUNT];
+  size_t used = 0;
   for (int i = 0; i < CAL_POINT_COUNT; ++i) {
     if (!s_cal_points[i].captured)
       continue;
-    captured++;
-    const lv_point_t m = s_cal_points[i].measured;
-    const lv_point_t t = s_cal_points[i].target;
-    if (m.x < min_meas_x)
-      min_meas_x = m.x;
-    if (m.y < min_meas_y)
-      min_meas_y = m.y;
-    if (m.x > max_meas_x)
-      max_meas_x = m.x;
-    if (m.y > max_meas_y)
-      max_meas_y = m.y;
-
-    if (t.x < min_tgt_x)
-      min_tgt_x = t.x;
-    if (t.y < min_tgt_y)
-      min_tgt_y = t.y;
-    if (t.x > max_tgt_x)
-      max_tgt_x = t.x;
-    if (t.y > max_tgt_y)
-      max_tgt_y = t.y;
+    raw_pts[used] = s_cal_points[i].measured_raw;
+    tgt_pts[used] = s_cal_points[i].target;
+    used++;
   }
 
-  if (captured < 3)
+  if (used < 3)
     return false;
 
-  const float raw_dx = (float)(max_meas_x - min_meas_x);
-  const float raw_dy = (float)(max_meas_y - min_meas_y);
-  if (raw_dx < 10.0f || raw_dy < 10.0f)
-    return false;
+  touch_transform_record_t rec = {0};
+  rec.magic = TOUCH_FOURCC_TO_U32('T', 'C', 'A', 'L');
+  rec.version = 1;
+  rec.generation = s_current_record.generation;
+  rec.transform.swap_xy = s_current_record.transform.swap_xy;
+  rec.transform.mirror_x = s_current_record.transform.mirror_x;
+  rec.transform.mirror_y = s_current_record.transform.mirror_y;
 
-  const float target_dx = (float)(max_tgt_x - min_tgt_x);
-  const float target_dy = (float)(max_tgt_y - min_tgt_y);
-
-  out->scale_x = target_dx / raw_dx;
-  out->scale_y = target_dy / raw_dy;
-  out->offset_x = (int32_t)lrintf(min_tgt_x - ((float)min_meas_x * out->scale_x));
-  out->offset_y = (int32_t)lrintf(min_tgt_y - ((float)min_meas_y * out->scale_y));
+  touch_transform_metrics_t metrics = {0};
+  esp_err_t err = touch_transform_solve_affine(raw_pts, tgt_pts, used,
+                                               &rec.transform, &metrics);
+  if (err != ESP_OK || metrics.rms_error > 12.0f ||
+      metrics.condition_number > 5000.0f) {
+    ESP_LOGW(TAG, "Affine solve fallback rms=%.2f cond=%.1f err=%s",
+             (double)metrics.rms_error, (double)metrics.condition_number,
+             esp_err_to_name(err));
+    err = touch_transform_solve_fallback(raw_pts, tgt_pts, used,
+                                         &rec.transform);
+    if (err != ESP_OK) {
+      return false;
+    }
+    // recompute simple metrics for fallback
+    float sum_sq = 0.0f;
+    float max_err = 0.0f;
+    for (size_t i = 0; i < used; ++i) {
+      lv_point_t mapped;
+      touch_transform_apply(&rec.transform, raw_pts[i].x, raw_pts[i].y, -1, -1,
+                            &mapped);
+      float dx = (float)mapped.x - (float)tgt_pts[i].x;
+      float dy = (float)mapped.y - (float)tgt_pts[i].y;
+      float err_pt = sqrtf(dx * dx + dy * dy);
+      sum_sq += err_pt * err_pt;
+      if (err_pt > max_err)
+        max_err = err_pt;
+    }
+    metrics.rms_error = sqrtf(sum_sq / (float)used);
+    metrics.max_error = max_err;
+  }
+  s_last_metrics = metrics;
+  *out = rec;
   return true;
 }
 
 static void finalize_calibration(void) {
-  ars_touch_calibration_t cal = {0};
-  if (!compute_calibration_from_samples(&cal)) {
-    ui_show_error("Points insuffisants pour calibrer.");
+  touch_transform_record_t rec = {0};
+  if (!compute_calibration_from_samples(&rec)) {
+    ui_show_error("Points insuffisants ou mauvaise capture.");
     return;
   }
 
-  s_current_cfg.scale_x = cal.scale_x;
-  s_current_cfg.scale_y = cal.scale_y;
-  s_current_cfg.offset_x = cal.offset_x;
-  s_current_cfg.offset_y = cal.offset_y;
+  s_current_record = rec;
   stop_capture_layer();
 
   apply_config_to_driver(false);
   update_orientation_label();
-  set_progress_text("Calibration calcul\u00e9e: gain %.3f/%.3f, offset %d/%d",
-                    (double)cal.scale_x, (double)cal.scale_y, cal.offset_x,
-                    cal.offset_y);
+  set_progress_text("Calibration calcul\u00e9e RMS=%.2fpx max=%.2fpx",
+                    (double)s_last_metrics.rms_error,
+                    (double)s_last_metrics.max_error);
   ui_show_toast("Calibration tactile mise \u00e0 jour", UI_TOAST_SUCCESS);
 }
 
@@ -261,10 +305,11 @@ static void calibration_touch_cb(lv_event_t *e) {
   if (!indev)
     return;
 
-  lv_point_t pt;
-  lv_indev_get_point(indev, &pt);
+  touch_sample_raw_t sample =
+      touch_transform_sample_raw_oriented(app_board_get_touch_handle(), true);
+  lv_point_t pt = {.x = (lv_coord_t)sample.raw_x, .y = (lv_coord_t)sample.raw_y};
 
-  s_cal_points[s_active_cal_point].measured = pt;
+  s_cal_points[s_active_cal_point].measured_raw = pt;
   s_cal_points[s_active_cal_point].captured = true;
 
   s_active_cal_point++;
@@ -310,13 +355,13 @@ static void on_toggle_event(lv_event_t *e) {
 
   switch (flag) {
   case CAL_FLAG_SWAP:
-    s_current_cfg.swap_xy = enabled;
+    s_current_record.transform.swap_xy = enabled;
     break;
   case CAL_FLAG_MIRROR_X:
-    s_current_cfg.mirror_x = enabled;
+    s_current_record.transform.mirror_x = enabled;
     break;
   case CAL_FLAG_MIRROR_Y:
-    s_current_cfg.mirror_y = enabled;
+    s_current_record.transform.mirror_y = enabled;
     break;
   }
 
@@ -324,11 +369,28 @@ static void on_toggle_event(lv_event_t *e) {
   sync_switch_states();
 }
 
+static void auto_detect_cb(lv_event_t *e) {
+  if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
+    return;
+  touch_sample_raw_t sample =
+      touch_transform_sample_raw_oriented(app_board_get_touch_handle(), true);
+  s_auto_probe.origin.x = sample.raw_x;
+  s_auto_probe.origin.y = sample.raw_y;
+  s_auto_probe.delta.x = 0;
+  s_auto_probe.delta.y = 0;
+  s_auto_probe.start_tick = lv_tick_get();
+  stop_auto_timer();
+  s_auto_timer = lv_timer_create(auto_timer_cb, 60, NULL);
+  set_progress_text("Glissez vers la droite puis vers le bas pour auto-orienter");
+  ui_show_toast("Bougez lentement votre doigt pour d\u00e9duire l'orientation",
+                UI_TOAST_INFO);
+}
+
 static void reset_defaults_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
 
-  touch_orient_get_defaults(&s_current_cfg);
+  touch_transform_identity(&s_current_record.transform);
   stop_capture_layer();
   apply_config_to_driver(false);
   sync_switch_states();
@@ -361,7 +423,10 @@ static void save_and_finish_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
 
-  esp_err_t err = touch_orient_save(&s_current_cfg);
+  s_current_record.magic = TOUCH_FOURCC_TO_U32('T', 'C', 'A', 'L');
+  s_current_record.version = 1;
+
+  esp_err_t err = touch_transform_storage_save(&s_current_record);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to save calibration: %s", esp_err_to_name(err));
     ui_show_error("Echec enregistrement calibration");
@@ -454,12 +519,19 @@ static void build_screen(void) {
                         LV_FLEX_ALIGN_CENTER);
   lv_obj_set_width(toggles, LV_PCT(90));
 
-  create_toggle_row(toggles, "Swap X/Y", CAL_FLAG_SWAP, s_current_cfg.swap_xy,
-                    &s_switch_swap);
+  create_toggle_row(toggles, "Swap X/Y", CAL_FLAG_SWAP,
+                    s_current_record.transform.swap_xy, &s_switch_swap);
   create_toggle_row(toggles, "Miroir X", CAL_FLAG_MIRROR_X,
-                    s_current_cfg.mirror_x, &s_switch_mir_x);
+                    s_current_record.transform.mirror_x, &s_switch_mir_x);
   create_toggle_row(toggles, "Miroir Y", CAL_FLAG_MIRROR_Y,
-                    s_current_cfg.mirror_y, &s_switch_mir_y);
+                    s_current_record.transform.mirror_y, &s_switch_mir_y);
+
+  lv_obj_t *btn_auto = lv_button_create(toggles);
+  lv_obj_add_event_cb(btn_auto, auto_detect_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_style(btn_auto, &ui_style_btn_secondary, 0);
+  lv_obj_set_width(btn_auto, LV_PCT(100));
+  lv_label_set_text(lv_label_create(btn_auto),
+                    "Auto-d\u00e9tection orientation (glisser droite + bas)");
 
   lv_obj_t *card = lv_obj_create(body);
   lv_obj_set_width(card, LV_PCT(90));
@@ -553,21 +625,21 @@ static void build_screen(void) {
   ui_switch_screen(scr, LV_SCR_LOAD_ANIM_NONE);
 }
 
-void ui_calibration_apply(const touch_orient_config_t *cfg) {
-  if (cfg) {
-    s_current_cfg = *cfg;
+void ui_calibration_apply(const touch_transform_record_t *rec) {
+  if (rec) {
+    s_current_record = *rec;
   } else {
-    touch_orient_get_defaults(&s_current_cfg);
+    touch_transform_identity(&s_current_record.transform);
   }
   apply_config_to_driver(false);
   sync_switch_states();
 }
 
 bool ui_calibration_check_and_start(void) {
-  touch_orient_config_t cfg;
-  esp_err_t err = touch_orient_load(&cfg);
+  touch_transform_record_t rec = {0};
+  esp_err_t err = touch_transform_storage_load(&rec);
   if (err == ESP_OK) {
-    ui_calibration_apply(&cfg);
+    ui_calibration_apply(&rec);
     return false;
   }
 
@@ -580,8 +652,10 @@ bool ui_calibration_check_and_start(void) {
 void ui_calibration_start(void) {
   ESP_LOGI(TAG, "Starting Calibration UI");
 
-  if (touch_orient_load(&s_current_cfg) != ESP_OK) {
-    touch_orient_get_defaults(&s_current_cfg);
+  if (touch_transform_storage_load(&s_current_record) != ESP_OK) {
+    touch_transform_identity(&s_current_record.transform);
+    s_current_record.magic = TOUCH_TRANSFORM_MAGIC;
+    s_current_record.version = TOUCH_TRANSFORM_VERSION;
   }
   apply_config_to_driver(false);
   build_screen();
