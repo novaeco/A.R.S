@@ -8,7 +8,7 @@ idf_component_register(
     SRCS "touch_transform.c" "touch_transform_storage.c"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES ${priv_requires}
-    REQUIRES touch
+    REQUIRES touch touch_orient
 )
 
 if(CONFIG_TOUCH_TRANSFORM_ENABLE_TESTS)
