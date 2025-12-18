@@ -51,6 +51,20 @@ esp_err_t app_board_init(void) {
   } else {
     // ARS: Dump GT911 config for debugging touch issues
     gt911_dump_config();
+
+    touch_orient_config_t orient_cfg;
+    esp_err_t orient_err = touch_orient_load(&orient_cfg);
+    if (orient_err != ESP_OK) {
+      ESP_LOGW(TAG, "touch_orient load failed: %s; using defaults",
+               esp_err_to_name(orient_err));
+      touch_orient_get_defaults(&orient_cfg);
+    }
+
+    orient_err = touch_orient_apply(g_tp_handle, &orient_cfg);
+    if (orient_err != ESP_OK) {
+      ESP_LOGE(TAG, "touch_orient apply failed: %s",
+               esp_err_to_name(orient_err));
+    }
   }
 
   // 2. CRITICAL: Enable LCD Power (VCOM / LCD_VDD) via IO Expander (IO_6)
@@ -190,9 +204,7 @@ lv_display_t *app_board_get_disp(void) {
 }
 
 lv_indev_t *app_board_get_indev(void) {
-  // For now returning NULL is likely safe for this project unless used
-  // explicitly.
-  return NULL;
+  return lv_indev_get_next(NULL);
 }
 
 esp_lcd_touch_handle_t app_board_get_touch_handle(void) { return g_tp_handle; }

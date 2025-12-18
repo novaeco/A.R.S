@@ -97,11 +97,6 @@
  * @brief Function Declarations
  */
 esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init();
-/**
- * @brief Turn on the LCD backlight.
- */
-// Function Declarations
-esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init();
 
 /**
  * @brief Get the handle of the initialized RGB LCD panel.
@@ -110,15 +105,4 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_get_handle(void);
 
 void waveshare_rgb_lcd_bl_on();
 void waveshare_rgb_lcd_bl_off();
-
-void waveshare_rgb_lcd_display_window(int16_t Xstart, int16_t Ystart,
-                                      int16_t Xend, int16_t Yend,
-                                      uint8_t *Image);
-
-void waveshare_rgb_lcd_display(uint8_t *Image);
-
-void waveshare_get_frame_buffer(void **buf1, void **buf2);
-
-void waveshare_rgb_lcd_set_pclk(uint32_t freq_hz);
-void waveshare_rgb_lcd_restart();
 #endif // _RGB_LCD_H_

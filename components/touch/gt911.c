@@ -53,6 +53,8 @@
 
 #include "gt911.h"
 
+#define GT911_POLL_INTERVAL_MS 20
+
 static const char *TAG = "GT911";
 static TaskHandle_t s_gt911_irq_task = NULL;
 static volatile uint32_t s_gt911_irq_total = 0;
@@ -77,7 +79,6 @@ static portMUX_TYPE s_gt911_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 #define GT911_EMPTY_BURST_LIMIT 10
 #define GT911_EMPTY_WINDOW_US 200000
 #define GT911_POLL_DURATION_US 2000000
-#define GT911_POLL_INTERVAL_MS 20
 #define GT911_POLL_INTERVAL_MS_FALLBACK 60
 #define GT911_IRQ_REENABLE_DELAY_US 3000
 #define GT911_I2C_RESET_THRESHOLD 5
