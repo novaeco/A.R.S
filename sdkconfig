@@ -3400,11 +3400,23 @@ CONFIG_ARS_TOUCH_SCALE_Y=1000
 # end of Touch Configuration
 
 #
+# Touch transform options
+#
+# default:
+# CONFIG_TOUCH_TRANSFORM_ENABLE_TESTS is not set
+# end of Touch transform options
+
+#
 # ESP LCD TOUCH
 #
 CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
 CONFIG_ESP_LCD_TOUCH_MAX_BUTTONS=1
 # end of ESP LCD TOUCH
+
+#
+# ESP LVGL PORT
+#
+# end of ESP LVGL PORT
 # end of Component config
 
 # CONFIG_IDF_EXPERIMENTAL_FEATURES is not set
