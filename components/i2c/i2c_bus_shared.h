@@ -21,6 +21,12 @@ extern SemaphoreHandle_t g_i2c_bus_mutex;
 void i2c_bus_shared_init(void);
 
 /**
+ * @brief Release shared I2C resources (mutex and bus handle) when no user
+ *        remains. Intended for test teardown.
+ */
+void i2c_bus_shared_deinit(void);
+
+/**
  * @brief Acquire the shared I2C bus mutex.
  *
  * @param timeout_ticks Timeout in FreeRTOS ticks.

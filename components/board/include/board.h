@@ -4,6 +4,8 @@
 #include <esp_err.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include <lvgl.h>
 
 // Mapping Kconfig to Board Macros
@@ -23,6 +25,31 @@
 #define BOARD_BAT_DIVIDER    CONFIG_ARS_BAT_DIVIDER
 #else
 #define BOARD_BAT_DIVIDER    2.0f // Default fallback
+#endif
+
+// I2C routing (shared bus used by GT911 and IO expanders)
+#ifdef CONFIG_ARS_I2C_PORT
+#define ARS_I2C_PORT CONFIG_ARS_I2C_PORT
+#else
+#define ARS_I2C_PORT I2C_NUM_0
+#endif
+
+#ifdef CONFIG_ARS_I2C_SDA
+#define ARS_I2C_SDA CONFIG_ARS_I2C_SDA
+#else
+#define ARS_I2C_SDA GPIO_NUM_8
+#endif
+
+#ifdef CONFIG_ARS_I2C_SCL
+#define ARS_I2C_SCL CONFIG_ARS_I2C_SCL
+#else
+#define ARS_I2C_SCL GPIO_NUM_9
+#endif
+
+#ifdef CONFIG_ARS_I2C_FREQUENCY
+#define ARS_I2C_FREQUENCY CONFIG_ARS_I2C_FREQUENCY
+#else
+#define ARS_I2C_FREQUENCY (100 * 1000)
 #endif
 
 // Initialize Board Hardware (LCD, Touch, I2C, etc.)

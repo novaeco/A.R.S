@@ -36,13 +36,14 @@ void DEV_GPIO_Mode(uint16_t Pin, uint16_t Mode);
 /**
  * @brief Configure a GPIO pin for interrupt handling
  *
- * This function sets up a GPIO pin to generate an interrupt on a negative edge
- * (falling edge) and registers the specified interrupt handler.
+ * This function sets up a GPIO pin to generate an interrupt on the selected
+ * edge and registers the specified interrupt handler.
  *
  * @param Pin GPIO pin number
+ * @param intr_type Interrupt trigger type (rising/falling/any)
  * @param isr_handler Pointer to the interrupt handler function
  */
-void DEV_GPIO_INT(int32_t Pin, gpio_isr_t isr_handler);
+void DEV_GPIO_INT(int32_t Pin, gpio_int_type_t intr_type, gpio_isr_t isr_handler);
 
 /**
  * @brief Configure a GPIO pin for PWM output

@@ -28,13 +28,18 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 
 // --- Utility Functions ---
 
-uint8_t DEV_I2C_SanitizeAddr(uint8_t addr) {
-  if (addr > 0x7F) {
-    uint8_t old = addr;
-    addr = (addr >> 1) & 0x7F;
-    ESP_LOGD(TAG, "Sanitized 8-bit addr 0x%02X -> 7-bit 0x%02X", old, addr);
+esp_err_t DEV_I2C_SanitizeAddr(uint8_t addr, uint8_t *out_addr) {
+  if (out_addr == NULL) {
+    return ESP_ERR_INVALID_ARG;
   }
-  return addr & 0x7F;
+
+  if (addr > 0x7F) {
+    ESP_LOGE(TAG, "I2C address 0x%02X out of 7-bit range", addr);
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  *out_addr = addr & 0x7F;
+  return ESP_OK;
 }
 
 bool DEV_I2C_TakeLock(TickType_t wait_ms) {
@@ -54,25 +59,20 @@ esp_err_t DEV_I2C_Init_Bus(i2c_master_bus_handle_t *out_p_bus_handle) {
     return ESP_OK;
   }
 
-  // Create Mutex
-  // Create Mutex (if not already created by i2c_bus_shared_init)
-  if (g_i2c_bus_mutex == NULL) {
-    g_i2c_bus_mutex = xSemaphoreCreateRecursiveMutex();
-  }
+  i2c_bus_shared_init();
 
   // Config
   i2c_master_bus_config_t i2c_bus_config = {
       .clk_source = I2C_CLK_SRC_DEFAULT,
-      .i2c_port = EXAMPLE_I2C_MASTER_NUM,
-      .scl_io_num = EXAMPLE_I2C_MASTER_SCL,
-      .sda_io_num = EXAMPLE_I2C_MASTER_SDA,
+      .i2c_port = ARS_I2C_PORT,
+      .scl_io_num = ARS_I2C_SCL,
+      .sda_io_num = ARS_I2C_SDA,
       .glitch_ignore_cnt = 7, // Waveshare recommended
       .flags.enable_internal_pullup = true,
   };
 
   ESP_LOGI(TAG, "Initializing Shared I2C Bus (Port %d, SCL:%d, SDA:%d)",
-           EXAMPLE_I2C_MASTER_NUM, EXAMPLE_I2C_MASTER_SCL,
-           EXAMPLE_I2C_MASTER_SDA);
+           ARS_I2C_PORT, ARS_I2C_SCL, ARS_I2C_SDA);
 
   esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &s_bus_handle);
   if (ret != ESP_OK) {
@@ -93,12 +93,16 @@ esp_err_t DEV_I2C_Add_Device(uint8_t addr,
       return ret;
   }
 
-  uint8_t san_addr = DEV_I2C_SanitizeAddr(addr);
+  uint8_t san_addr = 0;
+  esp_err_t addr_ok = DEV_I2C_SanitizeAddr(addr, &san_addr);
+  if (addr_ok != ESP_OK) {
+    return addr_ok;
+  }
 
   i2c_device_config_t dev_cfg = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
       .device_address = san_addr,
-      .scl_speed_hz = EXAMPLE_I2C_MASTER_FREQUENCY,
+      .scl_speed_hz = ARS_I2C_FREQUENCY,
   };
 
   return i2c_master_bus_add_device(s_bus_handle, &dev_cfg, out_dev_handle);
@@ -132,7 +136,11 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
   // critical change is to sanitize and ADD properly.
 
   if (*dev_handle != NULL) {
-    i2c_master_bus_rm_device(*dev_handle);
+    esp_err_t rm_ret = i2c_master_bus_rm_device(*dev_handle);
+    if (rm_ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to remove previous device handle: %s",
+               esp_err_to_name(rm_ret));
+    }
     *dev_handle = NULL;
   }
 
