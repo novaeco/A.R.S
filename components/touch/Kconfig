@@ -54,6 +54,14 @@ menu "Touch Configuration"
         help
             Scale Y coordinate by (Value / 1000.0). Default 1000 = 1.0x.
 
+    config ARS_TOUCH_DISABLE_LEGACY_CAL
+        bool "Disable legacy Kconfig scale/offset when affine transform is used"
+        default y
+        help
+            When enabled, raw GT911 coordinates are forwarded without applying
+            the legacy offset/scale parameters. This avoids double calibration
+            when the affine touch_transform pipeline is active.
+
     config TOUCH_DEBUG_LOG
         bool "Enable Reduced Hardware Debug Logs"
         default n

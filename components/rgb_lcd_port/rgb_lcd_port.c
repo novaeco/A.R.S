@@ -17,7 +17,7 @@
 #include "io_extension.h"
 #include "lvgl_port.h"
 
-const char *TAG = "example";
+const char *TAG = "rgb_lcd";
 
 // Handle for the RGB LCD panel
 static esp_lcd_panel_handle_t panel_handle =

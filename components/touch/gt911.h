@@ -109,6 +109,7 @@ esp_lcd_touch_handle_t touch_gt911_init();
 touch_gt911_point_t touch_gt911_read_point(uint8_t max_touch_cnt);
 
 void gt911_get_stats(gt911_stats_t *stats);
+void gt911_reset_stats(void);
 
 /**
  * @brief Dump GT911 configuration registers for debugging

@@ -1,6 +1,7 @@
 #include "lvgl_port.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -99,12 +100,19 @@ static void lvgl_port_task(void *arg) {
 
 // --- 4. Initialization & API ---
 
-static SemaphoreHandle_t vsync_mux = NULL;
+typedef struct {
+  SemaphoreHandle_t sem;
+  uint8_t consecutive_timeouts;
+  bool wait_enabled;
+} vsync_sync_t;
+
+static vsync_sync_t s_vsync = {.sem = NULL, .consecutive_timeouts = 0,
+                               .wait_enabled = true};
 
 bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
-  if (vsync_mux) {
-    xSemaphoreGiveFromISR(vsync_mux, &high_task_awoken);
+  if (s_vsync.sem) {
+    xSemaphoreGiveFromISR(s_vsync.sem, &high_task_awoken);
   }
   return high_task_awoken == pdTRUE;
 }
@@ -130,26 +138,36 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   // ESP_LOGD(TAG, "Flush: (%d,%d) -> (%d,%d)", offsetx1, offsety1, offsetx2,
   // offsety2);
 
-  esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1,
-                            offsety2 + 1, px_map);
+  esp_err_t draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1,
+                                                offsety1, offsetx2 + 1,
+                                                offsety2 + 1, px_map);
+
+  if (draw_ret != ESP_OK) {
+    ESP_LOGE(TAG, "panel_draw_bitmap failed: %s", esp_err_to_name(draw_ret));
+    lv_display_flush_ready(disp);
+    return;
+  }
 
   // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear.
   // We only wait if we are large enough to care, or always if strict VSYNC is
   // desired. Timeout is small (20ms) to ensure we don't hang if VSYNC callback
   // fails.
-  if (vsync_mux) {
-    // Clear any pending semaphore from previous frames (optional but good for
-    // strict sync)
-    xSemaphoreTake(vsync_mux, 0);
+  if (s_vsync.sem && s_vsync.wait_enabled) {
+    xSemaphoreTake(s_vsync.sem, 0);
 
-    // Wait for VSYNC (Relaxed to 100ms for 1024x600 @ 18MHz)
-    if (xSemaphoreTake(vsync_mux, pdMS_TO_TICKS(100)) != pdTRUE) {
-      // Diagnostic: Warn if VSYNC is missing
-      ESP_LOGW(TAG, "VSYNC wait timeout! (Driver not firing ISR?) -> Disabling "
-                    "VSYNC wait");
-      // Disable VSYNC waiting for future frames to prevent blocking/spam
-      vSemaphoreDelete(vsync_mux);
-      vsync_mux = NULL;
+    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+      s_vsync.consecutive_timeouts++;
+      ESP_LOGW(TAG,
+               "VSYNC wait timeout (%u) — check RGB callbacks or PCLK timing",
+               s_vsync.consecutive_timeouts);
+      if (s_vsync.consecutive_timeouts >= 3) {
+        ESP_LOGW(TAG, "VSYNC wait disabled after repeated timeouts");
+        vSemaphoreDelete(s_vsync.sem);
+        s_vsync.sem = NULL;
+        s_vsync.wait_enabled = false;
+      }
+    } else {
+      s_vsync.consecutive_timeouts = 0;
     }
   }
 
@@ -162,7 +180,9 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   ESP_LOGI(TAG, "Initializing LVGL Display Driver...");
 
   // ARS: VSYNC Synchronization Semaphore
-  vsync_mux = xSemaphoreCreateBinary();
+  s_vsync.sem = xSemaphoreCreateBinary();
+  s_vsync.consecutive_timeouts = 0;
+  s_vsync.wait_enabled = true;
 
   // Buffer Configuration
   int width = LVGL_PORT_H_RES;
@@ -176,16 +196,16 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   ESP_LOGI(TAG, "Allocating LVGL Buffers: %d lines (~%d KB)", lines,
            buffer_size / 1024);
 
-  uint32_t caps = MALLOC_CAP_DEFAULT;
+  uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
 #if CONFIG_SPIRAM
-  caps = MALLOC_CAP_SPIRAM;
+  caps |= MALLOC_CAP_SPIRAM;
 #endif
 
-  void *buf1 = heap_caps_malloc(buffer_size, caps);
+  void *buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
   void *buf2 = NULL;
 
 #if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
-  buf2 = heap_caps_malloc(buffer_size, caps);
+  buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #endif
 
   if (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
@@ -201,9 +221,9 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     lines = lines_fallback;
     buffer_size = width * lines * byte_per_pixel;
 
-    buf1 = heap_caps_malloc(buffer_size, caps);
+    buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
-    buf2 = heap_caps_malloc(buffer_size, caps);
+    buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #endif
   }
 
