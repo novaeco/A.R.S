@@ -794,7 +794,11 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
   // Ensure IO Extension is ready via safe init/handle
   // Ensure IO Extension is ready via safe init
-  IO_EXTENSION_Init();
+  esp_err_t ioext_ret = IO_EXTENSION_Init();
+  if (ioext_ret != ESP_OK) {
+    ESP_LOGE(TAG, "IO extension init failed: %s", esp_err_to_name(ioext_ret));
+    return NULL;
+  }
 
   // 2. Perform Robust Reset Sequence (Waveshare specific)
   const int int_pin = EXAMPLE_PIN_NUM_TOUCH_INT;
@@ -819,6 +823,7 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   esp_err_t io_ret = IO_EXTENSION_Output(rst_pin_io, 0);
   if (io_ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset low failed: %s", esp_err_to_name(io_ret));
+    return NULL;
   }
   vTaskDelay(pdMS_TO_TICKS(20));
 
@@ -826,6 +831,7 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   io_ret = IO_EXTENSION_Output(rst_pin_io, 1);
   if (io_ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset high failed: %s", esp_err_to_name(io_ret));
+    return NULL;
   }
   vTaskDelay(pdMS_TO_TICKS(60)); // Wait >50ms
 
@@ -856,9 +862,19 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   esp_lcd_panel_io_i2c_config_t config_with_addr = tp_io_config;
   config_with_addr.dev_addr = current_addr;
 
+  // Probe before creating IO handle to avoid aborting the boot on absent device
+  if (DEV_I2C_Probe(bus_handle, config_with_addr.dev_addr) != ESP_OK) {
+    ESP_LOGE(TAG, "GT911 not responding at 0x%02X", config_with_addr.dev_addr);
+    return NULL;
+  }
+
   // Use Shared Bus Handle!
-  ESP_ERROR_CHECK(
-      esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle));
+  ret = esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to create GT911 panel IO at 0x%02X: %s",
+             config_with_addr.dev_addr, esp_err_to_name(ret));
+    return NULL;
+  }
 
   // 4. Initialize Touch Driver
   esp_lcd_touch_io_gt911_config_t gt911_io_cfg = {
@@ -917,8 +933,12 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     }
     config_with_addr.dev_addr = sanitized_addr;
 
-    ESP_ERROR_CHECK(
-        esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle));
+    ret = esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to create GT911 panel IO fallback 0x%02X: %s",
+               config_with_addr.dev_addr, esp_err_to_name(ret));
+      return NULL;
+    }
 
     gt911_io_cfg.dev_addr = config_with_addr.dev_addr;
     ret = esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle);

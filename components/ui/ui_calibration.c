@@ -419,8 +419,13 @@ static void start_capture_cb(lv_event_t *e) {
     return;
   }
 
-  // Force identity scale during acquisition to avoid compenser deux fois
-  apply_config_to_driver(true);
+  // Force full identity (no swap/mirror) during acquisition to avoid double
+  // orientation while collecting raw points
+  touch_transform_identity(&s_current_record.transform);
+  s_current_record.transform.swap_xy = false;
+  s_current_record.transform.mirror_x = false;
+  s_current_record.transform.mirror_y = false;
+  apply_config_to_driver(false);
   reset_cal_points(s_capture_layer);
   lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
