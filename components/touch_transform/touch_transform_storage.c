@@ -24,6 +24,27 @@ __attribute__((weak)) esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
   return ESP_ERR_NOT_SUPPORTED;
 }
 
+__attribute__((weak)) void touch_orient_get_defaults(touch_orient_config_t *cfg) {
+  if (!cfg)
+    return;
+
+  *cfg = (touch_orient_config_t){
+      .magic = TOUCH_ORIENT_MAGIC,
+      .version = TOUCH_ORIENT_VERSION,
+      .swap_xy = false,
+      .mirror_x = false,
+      .mirror_y = false,
+      .scale_x = 1.0f,
+      .scale_y = 1.0f,
+      .offset_x = 0,
+      .offset_y = 0,
+      .crc32 = 0,
+  };
+
+  cfg->crc32 = esp_crc32_le(0, (const uint8_t *)cfg,
+                             sizeof(*cfg) - sizeof(cfg->crc32));
+}
+
 static uint32_t calc_crc(const touch_transform_record_t *rec) {
   size_t payload_len = sizeof(touch_transform_record_t) - sizeof(uint32_t);
   return esp_crc32_le(0, (const uint8_t *)rec, payload_len);
