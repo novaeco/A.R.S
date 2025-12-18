@@ -20,9 +20,12 @@ static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
 static lv_obj_t *s_debug_screen = NULL; // Debug screen object
 #endif
 
-// UI init is provided by the UI component; declared weak to avoid hard
-// dependency cycles while still calling the real implementation when linked.
-void __attribute__((weak)) ui_init(void);
+typedef void (*lvgl_port_ui_init_cb_t)(void);
+
+// UI init callback registered by the UI component (set from main before
+// lvgl_port_init). We avoid a hard component dependency cycle by storing a
+// function pointer instead of including ui.h here.
+static lvgl_port_ui_init_cb_t s_ui_init_cb = NULL;
 
 // --- Debug Helper ---
 #if CONFIG_ARS_LVGL_DEBUG_SCREEN
@@ -80,10 +83,10 @@ static void lvgl_port_task(void *arg) {
 
   // Create UI elements in this task contexts (Core 1)
   if (lvgl_port_lock(-1)) {
-    // ARS: Always call real UI Init if linked; otherwise log a warning to avoid
-    // a hard dependency loop at link time.
-    if (ui_init) {
-      ui_init();
+    // ARS: Always call real UI Init if registered; otherwise log a warning to
+    // avoid a hard dependency loop at link time.
+    if (s_ui_init_cb) {
+      s_ui_init_cb();
     } else {
       ESP_LOGW(TAG, "ui_init() not linked; UI will not start");
     }
@@ -112,6 +115,10 @@ typedef struct {
 
 static vsync_sync_t s_vsync = {.sem = NULL, .consecutive_timeouts = 0,
                                .wait_enabled = true, .events_seen = 0};
+
+void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb) {
+  s_ui_init_cb = cb;
+}
 
 bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
