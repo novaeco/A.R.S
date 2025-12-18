@@ -15,6 +15,15 @@
 
 static const char *TAG = "touch_tf_store";
 
+__attribute__((weak)) esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
+  ESP_LOGW(TAG,
+           "touch_orient_load weak stub invoked (component not linked); skipping "
+           "legacy migration");
+  if (cfg)
+    touch_orient_get_defaults(cfg);
+  return ESP_ERR_NOT_SUPPORTED;
+}
+
 static uint32_t calc_crc(const touch_transform_record_t *rec) {
   size_t payload_len = sizeof(touch_transform_record_t) - sizeof(uint32_t);
   return esp_crc32_le(0, (const uint8_t *)rec, payload_len);
