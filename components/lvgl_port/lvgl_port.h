@@ -9,6 +9,8 @@
 #include "lvgl.h"
 #include "touch.h"
 
+typedef void (*lvgl_port_ui_init_cb_t)(void);
+
 /**
  * LVGL related parameters, can be adjusted by users
  *
@@ -160,3 +162,6 @@ TaskHandle_t lvgl_port_get_task_handle(void);
  *      - false: The tasks don't need to be re-scheduled
  */
 bool lvgl_port_notify_rgb_vsync(void);
+
+/** Register UI init callback to run in LVGL task context. */
+void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb);

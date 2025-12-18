@@ -65,6 +65,9 @@ void app_main(void) {
   // 2. Display Hardware (BSP Init)
   // Dependency Injection for UI to avoid circular Board dependency
   ui_set_battery_cb(board_get_battery_level);
+  // Ensure LVGL task invokes the real UI init instead of falling back to the
+  // weak stub.
+  lvgl_port_set_ui_init_cb(ui_init);
 
   // This initializes LCD, Touch, SD, and starts the LVGL task.
   if (app_board_init() != ESP_OK) {
