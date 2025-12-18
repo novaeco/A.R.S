@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "touch_transform.c" "touch_transform_storage.c"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES nvs_flash esp_timer
+    PRIV_REQUIRES nvs_flash esp_timer touch_orient unity
     REQUIRES touch
 )
 

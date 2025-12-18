@@ -1,6 +1,5 @@
 #include "touch_transform.h"
 #include "esp_log.h"
-#include "esp_math.h"
 #include "gt911.h"
 #include <limits.h>
 #include <math.h>
