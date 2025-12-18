@@ -69,6 +69,12 @@ esp_err_t DEV_I2C_Init(DEV_I2C_Port *out_port);
 esp_err_t DEV_I2C_SanitizeAddr(uint8_t addr, uint8_t *out_addr);
 
 /**
+ * @brief Probe for a device on the given bus and address.
+ * Uses the shared bus mutex to serialize access.
+ */
+esp_err_t DEV_I2C_Probe(i2c_master_bus_handle_t bus_handle, uint8_t addr);
+
+/**
  * @brief Take the global I2C mutex.
  * Call this before a sequence of atomic I2C operations if needed,
  * though individual Read/Write functions will also lock it.
