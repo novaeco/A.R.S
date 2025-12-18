@@ -40,9 +40,9 @@
 // =============================================================================
 // Typography
 // =============================================================================
-#define UI_FONT_BODY (&ui_font_montserrat_20_fr)
-#define UI_FONT_TITLE (&ui_font_montserrat_20_fr)
-#define UI_FONT_SMALL (&ui_font_montserrat_14_fr)
+#define UI_FONT_BODY (&lv_font_montserrat_20)
+#define UI_FONT_TITLE (&lv_font_montserrat_20)
+#define UI_FONT_SMALL (&lv_font_montserrat_14)
 
 // =============================================================================
 // Spacing / Radii / Elevation

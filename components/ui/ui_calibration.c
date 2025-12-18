@@ -88,7 +88,7 @@ static void update_orientation_label(void) {
 
   lv_label_set_text_fmt(
       s_orientation_label,
-      "Orientation actuelle:\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
+      "Orientation actuelle :\nSwap XY: %s\nMiroir X: %s\nMiroir Y: %s"
       "\nAffine: [%.3f %.3f %.1f; %.3f %.3f %.1f]",
       s_current_record.transform.swap_xy ? "ON" : "OFF",
       s_current_record.transform.mirror_x ? "ON" : "OFF",
@@ -154,7 +154,7 @@ static void auto_timer_cb(lv_timer_t *t) {
                       swap ? "oui" : "non",
                       s_current_record.transform.mirror_x ? "oui" : "non",
                       s_current_record.transform.mirror_y ? "oui" : "non");
-    ui_show_toast("Orientation d\u00e9duite, v\u00e9rifiez sur l\u2019\u00e9cran",
+    ui_show_toast("Orientation deduite, verifiez sur l'ecran",
                   UI_TOAST_INFO);
   }
 }
@@ -289,10 +289,10 @@ static void finalize_calibration(void) {
 
   apply_config_to_driver(false);
   update_orientation_label();
-  set_progress_text("Calibration calcul\u00e9e RMS=%.2fpx max=%.2fpx",
+  set_progress_text("Calibration calculee RMS=%.2fpx max=%.2fpx",
                     (double)s_last_metrics.rms_error,
                     (double)s_last_metrics.max_error);
-  ui_show_toast("Calibration tactile mise \u00e0 jour", UI_TOAST_SUCCESS);
+  ui_show_toast("Calibration tactile mise a jour", UI_TOAST_SUCCESS);
 }
 
 static void calibration_touch_cb(lv_event_t *e) {
@@ -382,7 +382,7 @@ static void auto_detect_cb(lv_event_t *e) {
   stop_auto_timer();
   s_auto_timer = lv_timer_create(auto_timer_cb, 60, NULL);
   set_progress_text("Glissez vers la droite puis vers le bas pour auto-orienter");
-  ui_show_toast("Bougez lentement votre doigt pour d\u00e9duire l'orientation",
+  ui_show_toast("Bougez lentement votre doigt pour deduire l'orientation",
                 UI_TOAST_INFO);
 }
 
@@ -394,8 +394,8 @@ static void reset_defaults_cb(lv_event_t *e) {
   stop_capture_layer();
   apply_config_to_driver(false);
   sync_switch_states();
-  set_progress_text("Calibration par d\u00e9faut appliqu\u00e9e");
-  ui_show_toast("Calibration par d\u00e9faut appliqu\u00e9e", UI_TOAST_INFO);
+  set_progress_text("Calibration par defaut appliquee");
+  ui_show_toast("Calibration par defaut appliquee", UI_TOAST_INFO);
 }
 
 static void start_capture_cb(lv_event_t *e) {
@@ -484,124 +484,124 @@ static void build_screen(void) {
       ui_helper_create_header(scr, "Calibration tactile", NULL, NULL /* back */);
   lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
 
+  // Main body - compact layout
   lv_obj_t *body = lv_obj_create(scr);
-  lv_obj_set_size(body, LV_PCT(100), LV_PCT(100));
-  lv_obj_align(body, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT + UI_SPACE_MD);
+  lv_display_t *disp = lv_display_get_default();
+  lv_coord_t body_h = lv_display_get_vertical_resolution(disp) - UI_HEADER_HEIGHT - UI_SPACE_SM;
+  lv_obj_set_size(body, LV_PCT(100), body_h);
+  lv_obj_align(body, LV_ALIGN_TOP_MID, 0, UI_HEADER_HEIGHT);
   lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(body, 0, 0);
-  lv_obj_set_style_pad_all(body, UI_SPACE_XL, 0);
-  lv_obj_set_style_pad_gap(body, UI_SPACE_LG, 0);
+  lv_obj_set_style_pad_all(body, UI_SPACE_SM, 0);
+  lv_obj_set_style_pad_gap(body, UI_SPACE_SM, 0);
   lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(body, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+  lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
 
-  lv_obj_t *title = lv_label_create(body);
-  lv_label_set_text(title, "Ajustez l'orientation du tactile");
-  lv_obj_add_style(title, &ui_style_title, 0);
-  lv_obj_set_style_text_color(title, lv_color_white(), 0);
-
+  // Short description
   lv_obj_t *desc = lv_label_create(body);
   lv_label_set_text(desc,
-                    "V\u00e9rifiez que votre doigt suit bien les croix rouges."
-                    " Activez Swap/Miroir si le pointeur est invers\u00e9,"
-                    " puis validez pour poursuivre.");
+                    "Verifiez que le doigt suit bien les croix rouges. Activez Swap/Miroir si le pointeur est inverse, puis validez pour poursuivre.");
   lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(desc, LV_PCT(90));
+  lv_obj_set_width(desc, LV_PCT(100));
   lv_obj_add_style(desc, &ui_style_text_body, 0);
   lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
 
+  // Toggles in horizontal row
   lv_obj_t *toggles = lv_obj_create(body);
   lv_obj_set_style_bg_opa(toggles, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(toggles, 0, 0);
-  lv_obj_set_style_pad_gap(toggles, UI_SPACE_MD, 0);
-  lv_obj_set_flex_flow(toggles, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(toggles, 0, 0);
+  lv_obj_set_style_pad_gap(toggles, UI_SPACE_SM, 0);
+  lv_obj_set_flex_flow(toggles, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(toggles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_width(toggles, LV_PCT(90));
+  lv_obj_set_width(toggles, LV_PCT(100));
 
-  create_toggle_row(toggles, "Swap X/Y", CAL_FLAG_SWAP,
-                    s_current_record.transform.swap_xy, &s_switch_swap);
-  create_toggle_row(toggles, "Miroir X", CAL_FLAG_MIRROR_X,
-                    s_current_record.transform.mirror_x, &s_switch_mir_x);
-  create_toggle_row(toggles, "Miroir Y", CAL_FLAG_MIRROR_Y,
-                    s_current_record.transform.mirror_y, &s_switch_mir_y);
+  // Inline toggle helper - compact version
+  {
+    lv_obj_t *lbl1 = lv_label_create(toggles);
+    lv_label_set_text(lbl1, "Swap:");
+    lv_obj_add_style(lbl1, &ui_style_text_body, 0);
+    s_switch_swap = lv_switch_create(toggles);
+    if (s_current_record.transform.swap_xy) lv_obj_add_state(s_switch_swap, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(s_switch_swap, on_toggle_event, LV_EVENT_VALUE_CHANGED, (void*)(uintptr_t)CAL_FLAG_SWAP);
 
-  lv_obj_t *btn_auto = lv_button_create(toggles);
-  lv_obj_add_event_cb(btn_auto, auto_detect_cb, LV_EVENT_CLICKED, NULL);
-  lv_obj_add_style(btn_auto, &ui_style_btn_secondary, 0);
-  lv_obj_set_width(btn_auto, LV_PCT(100));
-  lv_label_set_text(lv_label_create(btn_auto),
-                    "Auto-d\u00e9tection orientation (glisser droite + bas)");
+    lv_obj_t *lbl2 = lv_label_create(toggles);
+    lv_label_set_text(lbl2, "MirX:");
+    lv_obj_add_style(lbl2, &ui_style_text_body, 0);
+    s_switch_mir_x = lv_switch_create(toggles);
+    if (s_current_record.transform.mirror_x) lv_obj_add_state(s_switch_mir_x, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(s_switch_mir_x, on_toggle_event, LV_EVENT_VALUE_CHANGED, (void*)(uintptr_t)CAL_FLAG_MIRROR_X);
 
+    lv_obj_t *lbl3 = lv_label_create(toggles);
+    lv_label_set_text(lbl3, "MirY:");
+    lv_obj_add_style(lbl3, &ui_style_text_body, 0);
+    s_switch_mir_y = lv_switch_create(toggles);
+    if (s_current_record.transform.mirror_y) lv_obj_add_state(s_switch_mir_y, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(s_switch_mir_y, on_toggle_event, LV_EVENT_VALUE_CHANGED, (void*)(uintptr_t)CAL_FLAG_MIRROR_Y);
+  }
+
+  // Info card - compact
   lv_obj_t *card = lv_obj_create(body);
-  lv_obj_set_width(card, LV_PCT(90));
-  lv_obj_set_style_pad_all(card, UI_SPACE_MD, 0);
-  lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+  lv_obj_set_width(card, LV_PCT(100));
+  lv_obj_set_style_pad_all(card, UI_SPACE_SM, 0);
+  lv_obj_set_style_radius(card, UI_RADIUS_SM, 0);
   lv_obj_set_style_bg_color(card, UI_COLOR_SURFACE, 0);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(card, 0, 0);
-  lv_obj_set_style_shadow_width(card, UI_SHADOW_MD, 0);
   lv_obj_set_layout(card, LV_LAYOUT_FLEX);
   lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_gap(card, UI_SPACE_SM, 0);
+  lv_obj_set_style_pad_gap(card, UI_SPACE_XS, 0);
 
   s_orientation_label = lv_label_create(card);
   lv_obj_add_style(s_orientation_label, &ui_style_text_body, 0);
   lv_obj_set_style_text_color(s_orientation_label, lv_color_white(), 0);
   update_orientation_label();
 
-  lv_obj_t *coord_hint = lv_label_create(card);
-  lv_label_set_text(coord_hint,
-                    "Les croix rouges sont plac\u00e9es dans les 4 coins et au centre."
-                    " Le texte ci-dessous affiche les coordonn\u00e9es brutes lues"
-                    " depuis le GT911.");
-  lv_label_set_long_mode(coord_hint, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(coord_hint, LV_PCT(100));
-  lv_obj_add_style(coord_hint, &ui_style_text_body, 0);
-  lv_obj_set_style_text_color(coord_hint, lv_color_white(), 0);
-
   s_touch_dbg_label = lv_label_create(card);
   lv_obj_set_style_bg_opa(s_touch_dbg_label, LV_OPA_40, 0);
   lv_obj_set_style_bg_color(s_touch_dbg_label, lv_color_black(), 0);
   lv_obj_set_style_text_color(s_touch_dbg_label, lv_color_white(), 0);
-  lv_obj_set_style_pad_all(s_touch_dbg_label, UI_SPACE_SM, 0);
-  lv_label_set_text(s_touch_dbg_label, "touch dbg");
+  lv_obj_set_style_pad_all(s_touch_dbg_label, UI_SPACE_XS, 0);
+  lv_label_set_text(s_touch_dbg_label, "touch: --");
 
+  // Progress label
   s_cal_progress_label = lv_label_create(body);
   lv_obj_add_style(s_cal_progress_label, &ui_style_text_body, 0);
   lv_obj_set_style_text_align(s_cal_progress_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_width(s_cal_progress_label, LV_PCT(90));
-  set_progress_text(
-      "Appuyez sur \"Calibrer\" puis touchez les 5 croix rouges"
-      " pour ajuster pr\u00e9cis\u00e9ment le GT911.");
+  lv_obj_set_width(s_cal_progress_label, LV_PCT(100));
+  set_progress_text("Appuyez sur \"Calibrer\" puis touchez les 5 croix pour ajuster le GT911.");
 
+  // Action buttons - compact
   lv_obj_t *actions = lv_obj_create(body);
   lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(actions, 0, 0);
-  lv_obj_set_style_pad_gap(actions, UI_SPACE_MD, 0);
-  lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_style_pad_all(actions, 0, 0);
+  lv_obj_set_style_pad_gap(actions, UI_SPACE_SM, 0);
+  lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
   lv_obj_set_width(actions, LV_PCT(100));
 
   lv_obj_t *btn_calibrate = lv_button_create(actions);
   lv_obj_add_style(btn_calibrate, &ui_style_btn_primary, 0);
-  lv_obj_set_style_min_width(btn_calibrate, 200, 0);
-  lv_obj_set_style_min_height(btn_calibrate, 52, 0);
+  lv_obj_set_style_min_width(btn_calibrate, 140, 0);
+  lv_obj_set_style_min_height(btn_calibrate, 44, 0);
   lv_obj_add_event_cb(btn_calibrate, start_capture_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_calibrate), "Calibrer (5 points)");
 
   lv_obj_t *btn_reset = lv_button_create(actions);
   lv_obj_add_style(btn_reset, &ui_style_btn_secondary, 0);
-  lv_obj_set_style_min_width(btn_reset, 200, 0);
-  lv_obj_set_style_min_height(btn_reset, 52, 0);
+  lv_obj_set_style_min_width(btn_reset, 120, 0);
+  lv_obj_set_style_min_height(btn_reset, 44, 0);
   lv_obj_add_event_cb(btn_reset, reset_defaults_cb, LV_EVENT_CLICKED, NULL);
-  lv_label_set_text(lv_label_create(btn_reset), "Par d\u00e9faut");
+  lv_label_set_text(lv_label_create(btn_reset), "Par defaut");
 
   lv_obj_t *btn_validate = lv_button_create(actions);
   lv_obj_add_style(btn_validate, &ui_style_btn_primary, 0);
-  lv_obj_set_style_min_width(btn_validate, 200, 0);
-  lv_obj_set_style_min_height(btn_validate, 52, 0);
+  lv_obj_set_style_min_width(btn_validate, 120, 0);
+  lv_obj_set_style_min_height(btn_validate, 44, 0);
   lv_obj_add_event_cb(btn_validate, save_and_finish_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_validate), "Enregistrer");
 
