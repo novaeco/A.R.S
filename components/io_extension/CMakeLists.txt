@@ -1,4 +1,4 @@
-idf_component_register(SRCS "io_extension.c" 
+idf_component_register(SRCS "io_extension.c"
                         INCLUDE_DIRS "."
-                        REQUIRES driver i2c gpio
+                        REQUIRES driver i2c gpio board
                     )

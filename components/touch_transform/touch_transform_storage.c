@@ -50,21 +50,44 @@ static uint32_t calc_crc(const touch_transform_record_t *rec) {
   return esp_crc32_le(0, (const uint8_t *)rec, payload_len);
 }
 
-static esp_err_t nvs_read_record(nvs_handle_t h, const char *key,
-                                 touch_transform_record_t *out) {
+static bool nvs_read_record(nvs_handle_t h, const char *key,
+                            touch_transform_record_t *out) {
   size_t len = sizeof(*out);
   esp_err_t err = nvs_get_blob(h, key, out, &len);
-  if (err != ESP_OK)
-    return err;
-  if (len != sizeof(*out))
-    return ESP_ERR_INVALID_SIZE;
-  if (out->magic != TOUCHCAL_MAGIC)
-    return ESP_ERR_INVALID_STATE;
-  if (out->version != TOUCHCAL_VERSION)
-    return ESP_ERR_INVALID_VERSION;
-  if (calc_crc(out) != out->crc32)
-    return ESP_ERR_INVALID_CRC;
-  return ESP_OK;
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGD(TAG, "Slot %s not found", key);
+    return false;
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Slot %s read error: %s", key, esp_err_to_name(err));
+    return false;
+  }
+  if (len != sizeof(*out)) {
+    ESP_LOGW(TAG, "Slot %s size mismatch (got %zu)", key, len);
+    return false;
+  }
+  if (out->magic != TOUCHCAL_MAGIC) {
+    ESP_LOGW(TAG, "Slot %s invalid magic 0x%08" PRIx32, key, out->magic);
+    return false;
+  }
+  if (out->version != TOUCHCAL_VERSION) {
+    ESP_LOGW(TAG, "Slot %s invalid version %u", key, out->version);
+    return false;
+  }
+  uint32_t crc_calc = calc_crc(out);
+  if (crc_calc != out->crc32) {
+    ESP_LOGE(TAG, "Slot %s CRC mismatch calc=0x%08" PRIx32 " stored=0x%08" PRIx32,
+             key, crc_calc, out->crc32);
+    return false;
+  }
+
+  ESP_LOGI(TAG,
+           "Slot %s OK gen=%" PRIu32 " v%u crc=0x%08" PRIx32
+           " swap=%d mirX=%d mirY=%d",
+           key, out->generation, out->version, out->crc32,
+           out->transform.swap_xy, out->transform.mirror_x,
+           out->transform.mirror_y);
+  return true;
 }
 
 static esp_err_t nvs_write_record(nvs_handle_t h, const char *key,
@@ -110,20 +133,28 @@ esp_err_t touch_transform_storage_load(touch_transform_record_t *out) {
   }
 
   touch_transform_record_t slot_a, slot_b;
-  bool has_a = nvs_read_record(h, TOUCHCAL_SLOT_A, &slot_a) == ESP_OK;
-  bool has_b = nvs_read_record(h, TOUCHCAL_SLOT_B, &slot_b) == ESP_OK;
+  bool has_a = nvs_read_record(h, TOUCHCAL_SLOT_A, &slot_a);
+  bool has_b = nvs_read_record(h, TOUCHCAL_SLOT_B, &slot_b);
   nvs_close(h);
 
   const touch_transform_record_t *winner = NULL;
   const char *winner_key = NULL;
   choose_slots(has_a ? &slot_a : NULL, has_b ? &slot_b : NULL, &winner,
                &winner_key);
-  if (!winner)
+  if (!winner) {
+    ESP_LOGW(TAG, "No valid touch transform slots found in NVS");
     return ESP_ERR_NOT_FOUND;
+  }
 
   *out = *winner;
-  ESP_LOGI(TAG, "Loaded transform from %s gen=%" PRIu32 " v%u", winner_key,
-           winner->generation, winner->version);
+  ESP_LOGI(TAG,
+           "Loaded transform from %s gen=%" PRIu32
+           " swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",
+           winner_key, winner->generation, winner->transform.swap_xy,
+           winner->transform.mirror_x, winner->transform.mirror_y,
+           (double)winner->transform.a11, (double)winner->transform.a12,
+           (double)winner->transform.a13, (double)winner->transform.a21,
+           (double)winner->transform.a22, (double)winner->transform.a23);
   return ESP_OK;
 }
 
@@ -151,8 +182,8 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
     return err;
 
   touch_transform_record_t slot_a, slot_b;
-  bool has_a = nvs_read_record(h, TOUCHCAL_SLOT_A, &slot_a) == ESP_OK;
-  bool has_b = nvs_read_record(h, TOUCHCAL_SLOT_B, &slot_b) == ESP_OK;
+  bool has_a = nvs_read_record(h, TOUCHCAL_SLOT_A, &slot_a);
+  bool has_b = nvs_read_record(h, TOUCHCAL_SLOT_B, &slot_b);
   uint32_t next_gen = 1;
   if (has_a)
     next_gen = slot_a.generation + 1;
@@ -172,8 +203,12 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
   err = nvs_write_record(h, target_key, &to_store);
   nvs_close(h);
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Stored transform into %s gen=%" PRIu32, target_key,
-             to_store.generation);
+    ESP_LOGI(TAG,
+             "Stored transform into %s gen=%" PRIu32
+             " crc=0x%08" PRIx32 " swap=%d mirX=%d mirY=%d",
+             target_key, to_store.generation, to_store.crc32,
+             to_store.transform.swap_xy, to_store.transform.mirror_x,
+             to_store.transform.mirror_y);
   } else {
     ESP_LOGE(TAG, "Failed to save transform: %s", esp_err_to_name(err));
   }

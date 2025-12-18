@@ -102,6 +102,7 @@ esp_err_t app_board_init(void) {
       }
     }
     if (err == ESP_OK) {
+      ESP_LOGI(TAG, "Touch transform present (gen=%" PRIu32 ") applying", rec.generation);
       touch_transform_set_active(&rec.transform);
     } else {
       ESP_LOGW(TAG, "Touch transform missing: %s", esp_err_to_name(err));
