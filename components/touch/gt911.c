@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -70,12 +71,14 @@ static int64_t s_empty_window_start_us = 0;
 static uint32_t s_empty_window_count = 0;
 static bool s_poll_mode = false;
 static int64_t s_poll_mode_until_us = 0;
+static uint32_t s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
 static portMUX_TYPE s_gt911_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define GT911_EMPTY_BURST_LIMIT 10
 #define GT911_EMPTY_WINDOW_US 200000
 #define GT911_POLL_DURATION_US 2000000
 #define GT911_POLL_INTERVAL_MS 20
+#define GT911_POLL_INTERVAL_MS_FALLBACK 60
 #define GT911_IRQ_REENABLE_DELAY_US 3000
 #define GT911_I2C_RESET_THRESHOLD 5
 
@@ -86,6 +89,13 @@ static inline void gt911_enable_irq_guarded(void) {
   }
 }
 
+static inline void gt911_enter_poll_mode(uint32_t interval_ms, int64_t duration_us) {
+  s_poll_mode = true;
+  s_poll_interval_ms = interval_ms;
+  s_poll_mode_until_us = duration_us > 0 ? (esp_timer_get_time() + duration_us)
+                                          : INT64_MAX;
+}
+
 static uint16_t s_raw_max_x_seen = CONFIG_ARS_TOUCH_X_MAX;
 static uint16_t s_raw_max_y_seen = CONFIG_ARS_TOUCH_Y_MAX;
 
@@ -93,6 +103,20 @@ static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
                                                int offset, int scale,
                                                bool *clamped,
                                                bool is_x_axis) {
+#if CONFIG_ARS_TOUCH_DISABLE_LEGACY_CAL
+  (void)offset;
+  (void)scale;
+  (void)is_x_axis;
+
+  uint16_t val = raw;
+  if (val >= max_value) {
+    val = max_value - 1;
+    if (clamped) {
+      *clamped = true;
+    }
+  }
+  return val;
+#else
   int32_t val = (int32_t)raw + offset;
   val = (val * scale + 500) / 1000; // scale is milli-units
 
@@ -125,6 +149,7 @@ static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
   }
 
   return (uint16_t)val;
+#endif
 }
 
 /* GT911 registers */
@@ -300,8 +325,8 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
              gt911_config ? gt911_config->dev_addr : 0);
   }
 
-  /* Prepare pin for touch interrupt */
-  if (esp_lcd_touch_gt911->config.int_gpio_num != GPIO_NUM_NC) {
+  bool int_configured = esp_lcd_touch_gt911->config.int_gpio_num != GPIO_NUM_NC;
+  if (int_configured) {
     const gpio_config_t int_gpio_config = {
         .mode = GPIO_MODE_INPUT,
         .intr_type = GPIO_INTR_NEGEDGE,
@@ -311,17 +336,19 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
     ret = gpio_config(&int_gpio_config);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "GPIO config failed");
 
-    // Install ISR service if not already installed
     ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
       ESP_LOGE(TAG, "Failed to install ISR service: %s", esp_err_to_name(ret));
       goto err;
     }
 
-    // Register interrupt handler with gating
     ret = gpio_isr_handler_add(esp_lcd_touch_gt911->config.int_gpio_num,
                                gt911_gpio_isr_handler, esp_lcd_touch_gt911);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "ISR handler add failed");
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "ISR handler add failed (%s), using polling fallback",
+               esp_err_to_name(ret));
+      int_configured = false;
+    }
   }
 
   /* Read status and config info */
@@ -331,21 +358,25 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
   // Ensure shared I2C mutex is available
   i2c_bus_shared_init();
 
-  // Create IRQ task to handle I2C reads outside ISR
-  if (esp_lcd_touch_gt911->config.int_gpio_num != GPIO_NUM_NC) {
-    static bool task_created = false;
-    if (!task_created) {
-      s_gt911_int_gpio = esp_lcd_touch_gt911->config.int_gpio_num;
-      BaseType_t task_ret = xTaskCreatePinnedToCore(
-          gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911, 5,
-          &s_gt911_irq_task, tskNO_AFFINITY);
-      if (task_ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create GT911 IRQ task");
-        ret = ESP_FAIL;
-        goto err;
-      }
-      task_created = true;
+  // Create IRQ task to handle I2C reads outside ISR or run polling fallback
+  static bool task_created = false;
+  if (!task_created) {
+    s_gt911_int_gpio = int_configured ? esp_lcd_touch_gt911->config.int_gpio_num
+                                      : -1;
+    BaseType_t task_ret = xTaskCreatePinnedToCore(
+        gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911, 5,
+        &s_gt911_irq_task, tskNO_AFFINITY);
+    if (task_ret != pdPASS) {
+      ESP_LOGE(TAG, "Failed to create GT911 IRQ task");
+      ret = ESP_FAIL;
+      goto err;
     }
+    task_created = true;
+  }
+
+  if (!int_configured) {
+    ESP_LOGW(TAG, "Touch INT not available -> enabling bounded polling mode");
+    gt911_enter_poll_mode(GT911_POLL_INTERVAL_MS_FALLBACK, 0);
   }
 
 err:
@@ -491,8 +522,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     }
     s_empty_window_count++;
     if (s_empty_window_count >= GT911_EMPTY_BURST_LIMIT && !s_poll_mode) {
-      s_poll_mode = true;
-      s_poll_mode_until_us = now + GT911_POLL_DURATION_US;
+      gt911_enter_poll_mode(GT911_POLL_INTERVAL_MS, GT911_POLL_DURATION_US);
       ESP_LOGW(TAG,
                "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
                s_empty_window_count);
@@ -704,6 +734,17 @@ void gt911_get_stats(gt911_stats_t *stats) {
   stats->polling_active = s_poll_mode;
   stats->last_raw_x = s_gt911_last_raw_x;
   stats->last_raw_y = s_gt911_last_raw_y;
+  portEXIT_CRITICAL(&s_gt911_stats_lock);
+}
+
+void gt911_reset_stats(void) {
+  portENTER_CRITICAL(&s_gt911_stats_lock);
+  s_gt911_irq_total = 0;
+  s_gt911_irq_empty = 0;
+  s_gt911_irq_storm = 0;
+  s_gt911_i2c_errors = 0;
+  s_gt911_last_raw_x = 0;
+  s_gt911_last_raw_y = 0;
   portEXIT_CRITICAL(&s_gt911_stats_lock);
 }
 
@@ -1278,8 +1319,7 @@ static void gt911_irq_task(void *arg) {
   int64_t last_error_log_us = 0;
 
   while (1) {
-    uint32_t notified =
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(GT911_POLL_INTERVAL_MS));
+    uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_interval_ms));
     int64_t now = esp_timer_get_time();
 
     if (s_spurious_block_until_us > now && !s_poll_mode) {
@@ -1300,9 +1340,10 @@ static void gt911_irq_task(void *arg) {
         s_poll_mode = false;
         s_empty_window_count = 0;
         s_empty_window_start_us = 0;
+        s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
         gt911_enable_irq_guarded();
       } else {
-        vTaskDelay(pdMS_TO_TICKS(GT911_POLL_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(s_poll_interval_ms));
       }
       continue;
     }

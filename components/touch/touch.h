@@ -53,3 +53,4 @@ void ars_touch_apply_calibration(esp_lcd_touch_point_data_t *points,
 void ars_touch_debug_feed(int16_t raw_x, int16_t raw_y, int16_t x, int16_t y,
                           bool pressed);
 esp_err_t ars_touch_debug_get(ars_touch_debug_info_t *info);
+void ars_touch_debug_reset(void);

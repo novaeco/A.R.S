@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include <stdlib.h>
+#include <string.h>
 
 /*******************************************************************************
  * Function definitions
@@ -127,4 +128,11 @@ esp_err_t ars_touch_debug_get(ars_touch_debug_info_t *info) {
   *info = s_touch_debug_info;
   portEXIT_CRITICAL(&s_touch_debug_mux);
   return ESP_OK;
+}
+
+void ars_touch_debug_reset(void) {
+  gt911_reset_stats();
+  portENTER_CRITICAL(&s_touch_debug_mux);
+  memset(&s_touch_debug_info, 0, sizeof(s_touch_debug_info));
+  portEXIT_CRITICAL(&s_touch_debug_mux);
 }
