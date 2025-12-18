@@ -28,6 +28,7 @@ static float s_bat_divider = BOARD_BAT_DIVIDER;
 #include "sd.h"
 #include "touch.h"
 #include "touch_orient.h"
+#include "touch_transform.h"
 
 // ... (other includes)
 
@@ -91,14 +92,22 @@ esp_err_t app_board_init(void) {
   // LVGL
   board_lcd_test_pattern();
 
-  // 5. Touch Orientation (Deferred)
+  // 5. Touch Transform (load + migrate legacy if needed)
   if (g_tp_handle) {
-    touch_orient_config_t cfg;
-    esp_err_t err = touch_orient_load(&cfg);
+    touch_transform_record_t rec = {0};
+    esp_err_t err = touch_transform_storage_load(&rec);
+    if (err == ESP_ERR_NOT_FOUND) {
+      if (touch_transform_storage_migrate_old(&rec) == ESP_OK) {
+        err = ESP_OK;
+      }
+    }
     if (err == ESP_OK) {
-      touch_orient_apply(g_tp_handle, &cfg);
+      touch_transform_set_active(&rec.transform);
     } else {
-      ESP_LOGW(TAG, "Touch orientation load failed: %s", esp_err_to_name(err));
+      ESP_LOGW(TAG, "Touch transform missing: %s", esp_err_to_name(err));
+      touch_transform_t id;
+      touch_transform_identity(&id);
+      touch_transform_set_active(&id);
     }
   }
 

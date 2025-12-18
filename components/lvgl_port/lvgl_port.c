@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 #include "ui.h"
 #include "touch.h"
+#include "touch_transform.h"
 #include <inttypes.h>
 
 static const char *TAG = "lv_port";          // Tag for logging
@@ -259,8 +260,10 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   // Get coords from last read (buffered in driver data)
   bool pressed = esp_lcd_touch_get_data(tp, touch_points, &touchpad_cnt, 1);
 
-  int16_t raw_x = -1;
-  int16_t raw_y = -1;
+  touch_sample_raw_t raw_sample =
+      touch_transform_sample_raw_oriented(tp, false /* orientation */);
+  int16_t raw_x = raw_sample.raw_x;
+  int16_t raw_y = raw_sample.raw_y;
   // ARS: Apply Calibration
   lv_indev_state_t prev_state = last_state;
 
@@ -268,9 +271,13 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   bool stable_pressed = pressed && touchpad_cnt > 0;
 
   if (stable_pressed) {
-    raw_x = touch_points[0].x;
-    raw_y = touch_points[0].y;
-    ars_touch_apply_calibration(touch_points, touchpad_cnt);
+    if (raw_sample.pressed) {
+      raw_x = raw_sample.raw_x;
+      raw_y = raw_sample.raw_y;
+    } else {
+      raw_x = touch_points[0].x;
+      raw_y = touch_points[0].y;
+    }
     last_press_us = now_us;
     has_valid_point = true;
   }
@@ -286,8 +293,17 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   }
 
   if (stable_pressed) {
-    int16_t x = touch_points[0].x;
-    int16_t y = touch_points[0].y;
+    lv_point_t mapped = {.x = raw_x, .y = raw_y};
+    const touch_transform_t *tf = touch_transform_get_active();
+    if (tf) {
+      if (touch_transform_apply(tf, raw_x, raw_y, LVGL_PORT_H_RES,
+                                LVGL_PORT_V_RES, &mapped) != ESP_OK) {
+        mapped.x = raw_x;
+        mapped.y = raw_y;
+      }
+    }
+    int16_t x = mapped.x;
+    int16_t y = mapped.y;
 
     // ARS: Jitter Filter
     // 1. Threshold check: ignore small moves if previously pressed

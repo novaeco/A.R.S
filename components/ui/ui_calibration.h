@@ -1,7 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
-#include "touch_orient.h"
+#include "touch_transform.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -28,7 +28,7 @@ void ui_calibration_start(void);
 /**
  * @brief Apply an existing calibration to the touch driver.
  */
-void ui_calibration_apply(const touch_orient_config_t *cfg);
+void ui_calibration_apply(const touch_transform_record_t *rec);
 
 #ifdef __cplusplus
 }
