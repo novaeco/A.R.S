@@ -502,9 +502,9 @@ static void build_screen(void) {
 
   lv_obj_t *desc = lv_label_create(body);
   lv_label_set_text(desc,
-                    "V\u00e9rifiez que votre doigt suit correctement les croix rouges."
-                    " Activez Swap/Miroir si le pointeur se d\u00e9place \u00e0 l'envers,"
-                    " puis validez pour continuer.");
+                    "V\u00e9rifiez que votre doigt suit bien les croix rouges."
+                    " Activez Swap/Miroir si le pointeur est invers\u00e9,"
+                    " puis validez pour poursuivre.");
   lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(desc, LV_PCT(90));
   lv_obj_add_style(desc, &ui_style_text_body, 0);
@@ -553,8 +553,8 @@ static void build_screen(void) {
   lv_obj_t *coord_hint = lv_label_create(card);
   lv_label_set_text(coord_hint,
                     "Les croix rouges sont plac\u00e9es dans les 4 coins et au centre."
-                    " Le texte ci-dessous affiche les coordonn\u00e9es brutes"
-                    " lues depuis le GT911.");
+                    " Le texte ci-dessous affiche les coordonn\u00e9es brutes lues"
+                    " depuis le GT911.");
   lv_label_set_long_mode(coord_hint, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(coord_hint, LV_PCT(100));
   lv_obj_add_style(coord_hint, &ui_style_text_body, 0);
@@ -572,8 +572,8 @@ static void build_screen(void) {
   lv_obj_set_style_text_align(s_cal_progress_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_cal_progress_label, LV_PCT(90));
   set_progress_text(
-      "Appuyez sur \"Calibrer\" puis touchez successivement les 5 croix rouges"
-      " pour ajuster le GT911.");
+      "Appuyez sur \"Calibrer\" puis touchez les 5 croix rouges"
+      " pour ajuster pr\u00e9cis\u00e9ment le GT911.");
 
   lv_obj_t *actions = lv_obj_create(body);
   lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
@@ -586,21 +586,21 @@ static void build_screen(void) {
 
   lv_obj_t *btn_calibrate = lv_button_create(actions);
   lv_obj_add_style(btn_calibrate, &ui_style_btn_primary, 0);
-  lv_obj_set_style_min_width(btn_calibrate, 180, 0);
+  lv_obj_set_style_min_width(btn_calibrate, 200, 0);
   lv_obj_set_style_min_height(btn_calibrate, 52, 0);
   lv_obj_add_event_cb(btn_calibrate, start_capture_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_calibrate), "Calibrer (5 points)");
 
   lv_obj_t *btn_reset = lv_button_create(actions);
   lv_obj_add_style(btn_reset, &ui_style_btn_secondary, 0);
-  lv_obj_set_style_min_width(btn_reset, 180, 0);
+  lv_obj_set_style_min_width(btn_reset, 200, 0);
   lv_obj_set_style_min_height(btn_reset, 52, 0);
   lv_obj_add_event_cb(btn_reset, reset_defaults_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_reset), "Par d\u00e9faut");
 
   lv_obj_t *btn_validate = lv_button_create(actions);
   lv_obj_add_style(btn_validate, &ui_style_btn_primary, 0);
-  lv_obj_set_style_min_width(btn_validate, 180, 0);
+  lv_obj_set_style_min_width(btn_validate, 200, 0);
   lv_obj_set_style_min_height(btn_validate, 52, 0);
   lv_obj_add_event_cb(btn_validate, save_and_finish_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_validate), "Enregistrer");
