@@ -801,7 +801,14 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   // 3. I2C Address Scan / Validation
   uint8_t current_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;
   // Sanitize Address immediately
-  current_addr = DEV_I2C_SanitizeAddr(current_addr);
+  uint8_t sanitized_addr = 0;
+  esp_err_t sanitize_ret = DEV_I2C_SanitizeAddr(current_addr, &sanitized_addr);
+  if (sanitize_ret != ESP_OK) {
+    ESP_LOGE(TAG, "Invalid GT911 I2C address 0x%02X: %s", current_addr,
+             esp_err_to_name(sanitize_ret));
+    return NULL;
+  }
+  current_addr = sanitized_addr;
 
   ESP_LOGI(TAG, "Initialize I2C panel IO at address 0x%02X", current_addr);
   esp_lcd_panel_io_i2c_config_t config_with_addr = tp_io_config;
@@ -859,7 +866,14 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
     // Retry Init at 0x5D (Fallback)
     config_with_addr.dev_addr = 0x5D; // Fallback to 0x5D
-    config_with_addr.dev_addr = DEV_I2C_SanitizeAddr(config_with_addr.dev_addr);
+    sanitize_ret =
+        DEV_I2C_SanitizeAddr(config_with_addr.dev_addr, &sanitized_addr);
+    if (sanitize_ret != ESP_OK) {
+      ESP_LOGE(TAG, "Invalid GT911 fallback address 0x%02X: %s",
+               config_with_addr.dev_addr, esp_err_to_name(sanitize_ret));
+      return NULL;
+    }
+    config_with_addr.dev_addr = sanitized_addr;
 
     ESP_ERROR_CHECK(
         esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle));
