@@ -80,6 +80,10 @@ static void apply_config_to_driver(bool reset_scale) {
     tf.mirror_y = s_current_record.transform.mirror_y;
   }
   touch_transform_set_active(&tf);
+  ESP_LOGI(TAG,
+           "Applied transform swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",
+           tf.swap_xy, tf.mirror_x, tf.mirror_y, (double)tf.a11, (double)tf.a12,
+           (double)tf.a13, (double)tf.a21, (double)tf.a22, (double)tf.a23);
 }
 
 static void update_orientation_label(void) {
@@ -273,6 +277,14 @@ static bool compute_calibration_from_samples(touch_transform_record_t *out) {
     metrics.max_error = max_err;
   }
   s_last_metrics = metrics;
+  if (s_last_metrics.rms_error > 12.0f || s_last_metrics.max_error > 24.0f) {
+    ESP_LOGW(TAG, "Calibration rejected: RMS=%.2fpx max=%.2fpx", (double)s_last_metrics.rms_error,
+             (double)s_last_metrics.max_error);
+    set_progress_text("Erreur RMS=%.1fpx (>12). Recommencez.",
+                      (double)s_last_metrics.rms_error);
+    ui_show_error("Precision insuffisante, relancez la capture.");
+    return false;
+  }
   *out = rec;
   return true;
 }
@@ -639,6 +651,7 @@ bool ui_calibration_check_and_start(void) {
   touch_transform_record_t rec = {0};
   esp_err_t err = touch_transform_storage_load(&rec);
   if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Calibration loaded at boot; applying without UI");
     ui_calibration_apply(&rec);
     return false;
   }

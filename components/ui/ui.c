@@ -7,6 +7,7 @@
 #include "ui_screen_manager.h"
 #include "ui_theme.h"
 #include "ui_wizard.h"
+#include "ui_calibration.h"
 #include <stdbool.h>
 
 static const char *TAG = "ui";
@@ -57,7 +58,11 @@ void ui_init(void) {
   ui_nav_init();
 
   if (ui_is_setup_done()) {
-    ESP_LOGI(TAG, "Setup already completed -> loading dashboard");
+    ESP_LOGI(TAG, "Setup already completed -> checking calibration");
+    if (ui_calibration_check_and_start()) {
+      ESP_LOGW(TAG, "Calibration invalid -> Calibration UI launched before dashboard");
+      return;
+    }
     ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
   } else {
     ESP_LOGI(TAG, "Setup pending -> starting wizard flow");

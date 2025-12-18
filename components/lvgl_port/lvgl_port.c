@@ -305,6 +305,14 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     int16_t x = mapped.x;
     int16_t y = mapped.y;
 
+    if ((s_touch_event_seq++ % 64) == 0) {
+      ESP_LOGD(TAG,
+               "touch raw(%d,%d)->(%d,%d) pressed=%d swap=%d mirX=%d mirY=%d",
+               raw_x, raw_y, x, y, (int)stable_pressed,
+               tf ? tf->swap_xy : -1, tf ? tf->mirror_x : -1,
+               tf ? tf->mirror_y : -1);
+    }
+
     // ARS: Jitter Filter
     // 1. Threshold check: ignore small moves if previously pressed
     if (last_state == LV_INDEV_STATE_PRESSED) {
