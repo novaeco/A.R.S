@@ -9,7 +9,6 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "sdkconfig.h"
-#include "ui.h"
 #include "touch.h"
 #include "touch_transform.h"
 #include <inttypes.h>
@@ -21,9 +20,9 @@ static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
 static lv_obj_t *s_debug_screen = NULL; // Debug screen object
 #endif
 
-// Weak declaration MUST be before usage
-// Weak declaration REMOVED to force strong link
-// void ui_init(void);
+// UI init is provided by the UI component; declared weak to avoid hard
+// dependency cycles while still calling the real implementation when linked.
+void __attribute__((weak)) ui_init(void);
 
 // --- Debug Helper ---
 #if CONFIG_ARS_LVGL_DEBUG_SCREEN
@@ -81,9 +80,13 @@ static void lvgl_port_task(void *arg) {
 
   // Create UI elements in this task contexts (Core 1)
   if (lvgl_port_lock(-1)) {
-    // ARS: Always call real UI Init.
-    // Debug screen logic removed or integrated into ui_init if needed.
-    ui_init();
+    // ARS: Always call real UI Init if linked; otherwise log a warning to avoid
+    // a hard dependency loop at link time.
+    if (ui_init) {
+      ui_init();
+    } else {
+      ESP_LOGW(TAG, "ui_init() not linked; UI will not start");
+    }
     lvgl_port_unlock();
   }
 
@@ -104,14 +107,20 @@ typedef struct {
   SemaphoreHandle_t sem;
   uint8_t consecutive_timeouts;
   bool wait_enabled;
+  uint32_t events_seen;
 } vsync_sync_t;
 
 static vsync_sync_t s_vsync = {.sem = NULL, .consecutive_timeouts = 0,
-                               .wait_enabled = true};
+                               .wait_enabled = true, .events_seen = 0};
 
 bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
   if (s_vsync.sem) {
+    s_vsync.events_seen++;
+    if (!s_vsync.wait_enabled && s_vsync.events_seen > 0) {
+      s_vsync.wait_enabled = true;
+      s_vsync.consecutive_timeouts = 0;
+    }
     xSemaphoreGiveFromISR(s_vsync.sem, &high_task_awoken);
   }
   return high_task_awoken == pdTRUE;
@@ -152,7 +161,7 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   // We only wait if we are large enough to care, or always if strict VSYNC is
   // desired. Timeout is small (20ms) to ensure we don't hang if VSYNC callback
   // fails.
-  if (s_vsync.sem && s_vsync.wait_enabled) {
+  if (s_vsync.sem && s_vsync.wait_enabled && s_vsync.events_seen > 0) {
     xSemaphoreTake(s_vsync.sem, 0);
 
     if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -161,9 +170,7 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                "VSYNC wait timeout (%u) — check RGB callbacks or PCLK timing",
                s_vsync.consecutive_timeouts);
       if (s_vsync.consecutive_timeouts >= 3) {
-        ESP_LOGW(TAG, "VSYNC wait disabled after repeated timeouts");
-        vSemaphoreDelete(s_vsync.sem);
-        s_vsync.sem = NULL;
+        ESP_LOGW(TAG, "VSYNC wait temporarily disabled after repeated timeouts");
         s_vsync.wait_enabled = false;
       }
     } else {
@@ -183,6 +190,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   s_vsync.sem = xSemaphoreCreateBinary();
   s_vsync.consecutive_timeouts = 0;
   s_vsync.wait_enabled = true;
+  s_vsync.events_seen = 0;
 
   // Buffer Configuration
   int width = LVGL_PORT_H_RES;

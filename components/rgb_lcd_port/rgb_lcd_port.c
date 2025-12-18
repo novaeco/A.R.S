@@ -26,10 +26,9 @@ static esp_lcd_panel_handle_t panel_handle =
     NULL; // Declare a handle for the LCD panel
 
 // Frame buffer complete event callback function
-IRAM_ATTR static bool
-rgb_lcd_on_frame_buf_complete_event(esp_lcd_panel_handle_t panel,
-                                    const esp_lcd_rgb_panel_event_data_t *edata,
-                                    void *user_ctx) {
+IRAM_ATTR static bool rgb_lcd_on_vsync_event(esp_lcd_panel_handle_t panel,
+                                             const esp_lcd_rgb_panel_event_data_t *edata,
+                                             void *user_ctx) {
   if (lvgl_port_notify_rgb_vsync) {
     return lvgl_port_notify_rgb_vsync();
   }
@@ -132,10 +131,8 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
 
   esp_lcd_rgb_panel_event_callbacks_t cbs = {
-      .on_frame_buf_complete =
-          rgb_lcd_on_frame_buf_complete_event, // Callback for frame buffer
-                                               // complete
-      .on_vsync = rgb_lcd_on_frame_buf_complete_event, // Also trigger on VSYNC
+      .on_frame_buf_complete = NULL,
+      .on_vsync = rgb_lcd_on_vsync_event, // Dedicated VSYNC notification
   };
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(
       panel_handle, &cbs, NULL)); // Register event callbacks
