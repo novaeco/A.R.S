@@ -25,6 +25,7 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 // g_i2c_bus_mutex is now extern from i2c_bus_shared.h
 
 #define I2C_MUTEX_TIMEOUT_MS 200
+#define I2C_PROBE_TIMEOUT_MS 100
 
 // --- Utility Functions ---
 
@@ -48,6 +49,38 @@ bool DEV_I2C_TakeLock(TickType_t wait_ms) {
 
 void DEV_I2C_GiveLock(void) {
   i2c_bus_shared_unlock();
+}
+
+esp_err_t DEV_I2C_Probe(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
+  if (bus_handle == NULL) {
+    bus_handle = s_bus_handle;
+  }
+
+  if (bus_handle == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  uint8_t san_addr = 0;
+  esp_err_t ret = DEV_I2C_SanitizeAddr(addr, &san_addr);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
+  if (!DEV_I2C_TakeLock(pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS))) {
+    return ESP_ERR_TIMEOUT;
+  }
+
+  ret = i2c_master_probe(bus_handle, san_addr,
+                         pdMS_TO_TICKS(I2C_PROBE_TIMEOUT_MS));
+  DEV_I2C_GiveLock();
+
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "I2C probe 0x%02X failed: %s", san_addr, esp_err_to_name(ret));
+  } else {
+    ESP_LOGD(TAG, "I2C probe 0x%02X OK", san_addr);
+  }
+
+  return ret;
 }
 
 // --- Initialization ---
