@@ -1,0 +1,11 @@
+menu "Touch transform options"
+
+config TOUCH_TRANSFORM_ENABLE_TESTS
+    bool "Build touch transform unit tests"
+    default n
+    help
+        Enable building of the touch_transform component's Unity tests.
+        Leave disabled for production firmware to avoid linking the Unity
+        test framework into the main application image.
+
+endmenu
