@@ -15,7 +15,9 @@
 #include "esp_idf_version.h"
 #include "esp_lcd_types.h"
 #include "io_extension.h"
-#include "lvgl_port.h"
+#include <stdbool.h>
+
+__attribute__((weak)) bool lvgl_port_notify_rgb_vsync(void);
 
 const char *TAG = "rgb_lcd";
 
@@ -28,7 +30,10 @@ IRAM_ATTR static bool
 rgb_lcd_on_frame_buf_complete_event(esp_lcd_panel_handle_t panel,
                                     const esp_lcd_rgb_panel_event_data_t *edata,
                                     void *user_ctx) {
-  return lvgl_port_notify_rgb_vsync();
+  if (lvgl_port_notify_rgb_vsync) {
+    return lvgl_port_notify_rgb_vsync();
+  }
+  return false;
 }
 
 /**
@@ -146,96 +151,6 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_get_handle(void) {
   return panel_handle;
 }
 
-/**
- * @brief Display a specific window of an image on the RGB LCD.
- *
- * This function updates a rectangular portion of the RGB LCD screen with the
- * image data provided. The region is defined by the start and end coordinates
- * in both X and Y directions. If the specified coordinates exceed the screen
- * boundaries, they will be clipped accordingly.
- *
- * @param Xstart Starting X coordinate of the display window (inclusive).
- * @param Ystart Starting Y coordinate of the display window (inclusive).
- * @param Xend Ending X coordinate of the display window (exclusive, relative to
- * Xstart).
- * @param Yend Ending Y coordinate of the display window (exclusive, relative to
- * Ystart).
- * @param Image Pointer to the image data buffer, representing the full LCD
- * resolution.
- */
-void waveshare_rgb_lcd_display_window(int16_t Xstart, int16_t Ystart,
-                                      int16_t Xend, int16_t Yend,
-                                      uint8_t *Image) {
-  // Ensure Xstart is within valid range, clip Xend to the screen width if
-  // necessary
-  if (Xstart < 0)
-    Xstart = 0;
-  else if (Xend > EXAMPLE_LCD_H_RES)
-    Xend = EXAMPLE_LCD_H_RES;
-
-  // Ensure Ystart is within valid range, clip Yend to the screen height if
-  // necessary
-  if (Ystart < 0)
-    Ystart = 0;
-  else if (Yend > EXAMPLE_LCD_V_RES)
-    Yend = EXAMPLE_LCD_V_RES;
-
-  // Calculate the width and height of the cropped region
-  int crop_width = Xend - Xstart;
-  int crop_height = Yend - Ystart;
-
-  // Allocate memory for the cropped image data
-  uint8_t *dst_data =
-      (uint8_t *)malloc(crop_width * crop_height * 2); // 2 bytes per pixel
-  if (!dst_data) {
-    printf("Error: Failed to allocate memory for cropped bitmap.\n");
-    return;
-  }
-
-  // Crop the image data (copy each row of the selected region)
-  for (int y = 0; y < crop_height; y++) {
-    // Calculate the source row start in the original image buffer
-    const uint8_t *src_row =
-        Image + ((Ystart + y) * EXAMPLE_LCD_H_RES + Xstart) * 2;
-    // Calculate the destination row start in the cropped buffer
-    uint8_t *dst_row = dst_data + y * crop_width * 2;
-    // Copy the row data
-    memcpy(dst_row, src_row, crop_width * 2);
-  }
-
-  // Draw the cropped region onto the LCD at the specified coordinates
-  // The esp_lcd_panel_draw_bitmap function uses absolute screen coordinates.
-  esp_lcd_panel_draw_bitmap(panel_handle, Xstart, Ystart, Xend, Yend, dst_data);
-
-  // Free the allocated memory for the cropped image buffer
-  free(dst_data);
-}
-
-/**
- * @brief Display a full-screen image on the RGB LCD.
- *
- * This function replaces the entire LCD screen content with the image data
- * provided. It assumes the display resolution matches EXAMPLE_LCD_H_RES x
- * EXAMPLE_LCD_V_RES.
- *
- * @param Image Pointer to the image data buffer.
- */
-void waveshare_rgb_lcd_display(uint8_t *Image) {
-  // Draw the entire image on the screen
-  esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, EXAMPLE_LCD_H_RES,
-                            EXAMPLE_LCD_V_RES, Image);
-}
-
-void waveshare_get_frame_buffer(void **buf1, void **buf2) {
-  ESP_ERROR_CHECK(
-      esp_lcd_rgb_panel_get_frame_buffer(panel_handle, 2, buf1, buf2));
-}
-
-void waveshare_rgb_lcd_set_pclk(uint32_t freq_hz) {
-  esp_lcd_rgb_panel_set_pclk(panel_handle, freq_hz);
-}
-
-void waveshare_rgb_lcd_restart() { esp_lcd_rgb_panel_restart(panel_handle); }
 /**
  * @brief Turn on the RGB LCD screen backlight.
  *
