@@ -625,6 +625,13 @@ static void build_screen(void) {
   lv_obj_add_event_cb(btn_calibrate, start_capture_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_calibrate), "Calibrer (5 points)");
 
+  lv_obj_t *btn_auto = lv_button_create(actions);
+  lv_obj_add_style(btn_auto, &ui_style_btn_secondary, 0);
+  lv_obj_set_style_min_width(btn_auto, 120, 0);
+  lv_obj_set_style_min_height(btn_auto, 44, 0);
+  lv_obj_add_event_cb(btn_auto, auto_detect_cb, LV_EVENT_CLICKED, NULL);
+  lv_label_set_text(lv_label_create(btn_auto), "Auto-orienter");
+
   lv_obj_t *btn_reset = lv_button_create(actions);
   lv_obj_add_style(btn_reset, &ui_style_btn_secondary, 0);
   lv_obj_set_style_min_width(btn_reset, 120, 0);
