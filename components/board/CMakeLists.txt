@@ -1,5 +1,5 @@
 if(NOT BOOTLOADER_BUILD)
-    idf_component_register(SRCS "src/board.c"
+    idf_component_register(SRCS "src/board.c" "src/board_orientation.c"
                         INCLUDE_DIRS "include"
                         REQUIRES esp_lcd lvgl touch
                         PRIV_REQUIRES esp_driver_i2c esp_driver_gpio esp_common log freertos esp_partition fatfs
