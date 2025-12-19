@@ -14,6 +14,18 @@
 #include "touch_transform.h"
 #include <inttypes.h>
 
+#if defined(CONFIG_ARS_LCD_WAIT_VSYNC)
+#define ARS_LCD_WAIT_VSYNC_ENABLED 1
+#else
+#define ARS_LCD_WAIT_VSYNC_ENABLED 0
+#endif
+
+#if defined(CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)
+#define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS
+#else
+#define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS 20
+#endif
+
 static const char *TAG = "lv_port";          // Tag for logging
 static SemaphoreHandle_t lvgl_mux = NULL;    // LVGL mutex for synchronization
 static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
@@ -117,26 +129,26 @@ static void lvgl_port_task(void *arg) {
 
 typedef struct {
   SemaphoreHandle_t sem;
-  uint8_t consecutive_timeouts;
-  bool wait_enabled;
   uint32_t events_seen;
+  bool wait_enabled;
+  bool wait_supported;
+  bool timeout_logged;
 } vsync_sync_t;
 
-static vsync_sync_t s_vsync = {.sem = NULL, .consecutive_timeouts = 0,
-                               .wait_enabled = true, .events_seen = 0};
+static vsync_sync_t s_vsync = {.sem = NULL,
+                               .events_seen = 0,
+                               .wait_enabled = ARS_LCD_WAIT_VSYNC_ENABLED,
+                               .wait_supported = ARS_LCD_WAIT_VSYNC_ENABLED,
+                               .timeout_logged = false};
 
 void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb) {
   s_ui_init_cb = cb;
 }
 
-bool lvgl_port_notify_rgb_vsync(void) {
+IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
-  if (s_vsync.sem) {
+  if (s_vsync.sem && s_vsync.wait_supported) {
     s_vsync.events_seen++;
-    if (!s_vsync.wait_enabled && s_vsync.events_seen > 0) {
-      s_vsync.wait_enabled = true;
-      s_vsync.consecutive_timeouts = 0;
-    }
     xSemaphoreGiveFromISR(s_vsync.sem, &high_task_awoken);
   }
   return high_task_awoken == pdTRUE;
@@ -173,20 +185,18 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
     return;
   }
 
-  // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear.
-  // We only wait if we are large enough to care, or always if strict VSYNC is
-  // desired. Timeout is small (20ms) to ensure we don't hang if VSYNC callback
-  // fails.
-  if (s_vsync.sem && s_vsync.wait_enabled && s_vsync.events_seen > 0) {
+  // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear. Timeout is
+  // small (configurable) to avoid blocking if the callback is missing.
+  if (s_vsync.sem && s_vsync.wait_supported && s_vsync.wait_enabled) {
     xSemaphoreTake(s_vsync.sem, 0);
 
-    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(20)) != pdTRUE) {
-      s_vsync.consecutive_timeouts++;
-      ESP_LOGW(TAG, "VSYNC wait timeout — disabling wait (count=%u)",
-               s_vsync.consecutive_timeouts);
+    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)) !=
+        pdTRUE) {
       s_vsync.wait_enabled = false;
-    } else {
-      s_vsync.consecutive_timeouts = 0;
+      if (!s_vsync.timeout_logged) {
+        ESP_LOGW(TAG, "VSYNC wait timeout — disabling wait");
+        s_vsync.timeout_logged = true;
+      }
     }
   }
 
@@ -202,14 +212,21 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   ESP_LOGI(TAG, "Initializing LVGL Display Driver...");
 
   // ARS: VSYNC Synchronization Semaphore
-  s_vsync.sem = xSemaphoreCreateBinary();
-  if (!s_vsync.sem) {
-    ESP_LOGE(TAG, "Failed to allocate VSYNC semaphore");
-    return NULL;
-  }
-  s_vsync.consecutive_timeouts = 0;
-  s_vsync.wait_enabled = true;
+  s_vsync.wait_enabled = ARS_LCD_WAIT_VSYNC_ENABLED;
+  s_vsync.wait_supported = ARS_LCD_WAIT_VSYNC_ENABLED;
+  s_vsync.timeout_logged = false;
   s_vsync.events_seen = 0;
+
+  if (s_vsync.wait_supported) {
+    s_vsync.sem = xSemaphoreCreateBinary();
+    if (!s_vsync.sem) {
+      ESP_LOGE(TAG, "Failed to allocate VSYNC semaphore");
+      s_vsync.wait_enabled = false;
+      s_vsync.wait_supported = false;
+    }
+  } else {
+    ESP_LOGI(TAG, "VSYNC wait disabled by configuration");
+  }
 
   // Buffer Configuration
   int width = LVGL_PORT_H_RES;

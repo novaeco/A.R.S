@@ -58,6 +58,23 @@ menu "LVGL Port Configuration"
             Buffer size = H_RES * LINES * (DEPTH/8).
             Example: 1024 * 60 * 2 = ~120KB.
 
+    config ARS_LCD_WAIT_VSYNC
+        bool "Wait for RGB VSYNC before releasing LVGL flush"
+        default y
+        help
+            When enabled, the LVGL flush waits for the next RGB VSYNC event
+            (via driver callback) with a bounded timeout. Disable if the panel
+            or SDK does not support RGB VSYNC callbacks.
+
+    config ARS_LCD_WAIT_VSYNC_TIMEOUT_MS
+        int "VSYNC wait timeout (ms)"
+        depends on ARS_LCD_WAIT_VSYNC
+        default 20
+        range 5 100
+        help
+            Maximum time to wait for an RGB VSYNC notification before
+            disabling VSYNC wait to avoid stalls.
+
     config ARS_LVGL_DEBUG_SCREEN
         bool "Enable Debug Screen"
         default n
