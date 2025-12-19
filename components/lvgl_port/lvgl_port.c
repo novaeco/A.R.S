@@ -11,6 +11,7 @@
 #include "sdkconfig.h"
 #include "gt911.h"
 #include "touch.h"
+#include "touch_orient.h"
 #include "touch_transform.h"
 #include "board_orientation.h"
 #include <inttypes.h>
@@ -328,6 +329,9 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   int64_t now_us = esp_timer_get_time();
   bool stable_pressed = pressed && touchpad_cnt > 0;
 
+  lv_point_t oriented_point = {.x = raw_x, .y = raw_y};
+  lv_point_t mapped_point = oriented_point;
+
   if (stable_pressed) {
     if (raw_sample.pressed) {
       raw_x = raw_sample.raw_x;
@@ -351,24 +355,31 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   }
 
   if (stable_pressed) {
-    lv_point_t mapped = {.x = raw_x, .y = raw_y};
+    // Pipeline: raw -> orientation (swap/mirror/clamp) -> calibration -> LVGL
+    const touch_orient_config_t *orient = touch_orient_get_active();
+    lv_point_t oriented = {.x = raw_x, .y = raw_y};
+    touch_orient_map_point(orient, raw_x, raw_y, LVGL_PORT_H_RES,
+                           LVGL_PORT_V_RES, &oriented);
+
+    oriented_point = oriented;
+    mapped_point = oriented;
     const touch_transform_t *tf = touch_transform_get_active();
     if (tf) {
-      if (touch_transform_apply(tf, raw_x, raw_y, LVGL_PORT_H_RES,
-                                LVGL_PORT_V_RES, &mapped) != ESP_OK) {
-        mapped.x = raw_x;
-        mapped.y = raw_y;
+      if (touch_transform_apply_ex(tf, oriented.x, oriented.y, LVGL_PORT_H_RES,
+                                   LVGL_PORT_V_RES, false, &mapped_point) !=
+          ESP_OK) {
+        mapped_point = oriented;
       }
     }
-    int16_t x = mapped.x;
-    int16_t y = mapped.y;
+    int16_t x = mapped_point.x;
+    int16_t y = mapped_point.y;
 
     if ((s_touch_event_seq++ % 64) == 0) {
       ESP_LOGD(TAG,
-               "touch raw(%d,%d)->(%d,%d) pressed=%d swap=%d mirX=%d mirY=%d",
-               raw_x, raw_y, x, y, (int)stable_pressed,
-               tf ? tf->swap_xy : -1, tf ? tf->mirror_x : -1,
-               tf ? tf->mirror_y : -1);
+               "touch raw(%d,%d)->orient(%d,%d)->final(%d,%d) pressed=%d",
+               raw_x, raw_y, (int)oriented_point.x, (int)oriented_point.y, x,
+               y,
+               (int)stable_pressed);
     }
 
     // ARS: Jitter Filter
@@ -418,6 +429,10 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
       data->state = LV_INDEV_STATE_RELEASED;
       data->point.x = has_valid_point ? last_x : 0;
       data->point.y = has_valid_point ? last_y : 0;
+    }
+    if (has_valid_point) {
+      oriented_point.x = last_x;
+      oriented_point.y = last_y;
     }
   }
 
@@ -469,9 +484,9 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     const char *state_str =
         data->state == LV_INDEV_STATE_PRESSED ? "pressed" : "released";
     ESP_LOGI(TOUCH_DIAG_TAG,
-             "seq=%" PRIu32 " %s raw=(%d,%d) screen=(%d,%d)",
-             s_touch_event_seq, state_str, raw_x, raw_y, data->point.x,
-             data->point.y);
+             "seq=%" PRIu32 " %s raw=(%d,%d) orient=(%d,%d) final=(%d,%d)",
+             s_touch_event_seq, state_str, raw_x, raw_y, (int)oriented_point.x,
+             (int)oriented_point.y, data->point.x, data->point.y);
   }
 
   ars_touch_debug_feed(raw_x, raw_y, data->point.x, data->point.y,

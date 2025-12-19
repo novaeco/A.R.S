@@ -105,6 +105,7 @@ typedef struct {
 } gt911_error_metrics_t;
 
 static gt911_error_metrics_t s_gt911_errors = {0};
+static bool s_config_dumped_once = false;
 
 #define GT911_EMPTY_BURST_LIMIT 10
 #define GT911_EMPTY_WINDOW_US 200000
@@ -1179,6 +1180,12 @@ esp_err_t gt911_dump_config(void) {
     ESP_LOGE(TAG, "GT911 not initialized, cannot dump config");
     return ESP_ERR_INVALID_STATE;
   }
+
+  if (s_config_dumped_once) {
+    ESP_LOGD(TAG, "GT911 config dump already emitted");
+    return ESP_OK;
+  }
+  s_config_dumped_once = true;
 
   ESP_LOGW(TAG, "========== GT911 CONFIG DUMP ==========");
 
