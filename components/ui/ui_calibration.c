@@ -2,6 +2,7 @@
 #include "board.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "lvgl.h"
 #include "touch.h"
 #include "touch_transform.h"
