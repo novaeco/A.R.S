@@ -62,8 +62,6 @@ esp_err_t app_board_init(void) {
     if (g_tp_handle == NULL) {
       ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
     } else {
-      gt911_dump_config();
-
       touch_orient_config_t orient_cfg;
       esp_err_t orient_err = touch_orient_load(&orient_cfg);
       if (orient_err != ESP_OK) {
