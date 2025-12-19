@@ -13,6 +13,8 @@ static const char *TAG = "touch_orient";
 static touch_orient_config_t s_active_cfg = {0};
 static bool s_active_cfg_set = false;
 
+static uint32_t calculate_crc(const touch_orient_config_t *cfg);
+
 static void set_active_cfg(const touch_orient_config_t *cfg) {
   if (!cfg)
     return;
