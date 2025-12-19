@@ -25,9 +25,11 @@ static lv_obj_t *s_switch_swap = NULL;
 static lv_obj_t *s_switch_mir_x = NULL;
 static lv_obj_t *s_switch_mir_y = NULL;
 static lv_obj_t *s_capture_layer = NULL;
+static lv_obj_t *s_save_btn = NULL;
 static touch_transform_record_t s_current_record = {0};
 static touch_transform_metrics_t s_last_metrics = {0};
 static lv_timer_t *s_auto_timer = NULL;
+static bool s_has_valid_solution = false;
 static struct {
   uint32_t start_tick;
   lv_point_t origin;
@@ -138,6 +140,21 @@ static void set_progress_text(const char *text_fmt, ...) {
   va_start(args, text_fmt);
   lv_label_set_text_vfmt(s_cal_progress_label, text_fmt, args);
   va_end(args);
+}
+
+static void set_save_enabled(bool enabled, const char *disabled_hint) {
+  if (!s_save_btn)
+    return;
+
+  if (enabled) {
+    lv_obj_clear_state(s_save_btn, LV_STATE_DISABLED);
+    return;
+  }
+
+  lv_obj_add_state(s_save_btn, LV_STATE_DISABLED);
+  if (disabled_hint && s_cal_progress_label) {
+    lv_label_set_text(s_cal_progress_label, disabled_hint);
+  }
 }
 
 static void auto_timer_cb(lv_timer_t *t) {
@@ -297,6 +314,8 @@ static void finalize_calibration(void) {
   touch_transform_record_t rec = {0};
   if (!compute_calibration_from_samples(&rec)) {
     ui_show_error("Points insuffisants ou mauvaise capture.");
+    set_save_enabled(false,
+                    "Capturez 5 points avant d'enregistrer la calibration.");
     return;
   }
 
@@ -309,6 +328,8 @@ static void finalize_calibration(void) {
                     (double)s_last_metrics.rms_error,
                     (double)s_last_metrics.max_error);
   ui_show_toast("Calibration tactile mise a jour", UI_TOAST_SUCCESS);
+  s_has_valid_solution = true;
+  set_save_enabled(true, NULL);
 }
 
 static void calibration_touch_cb(lv_event_t *e) {
@@ -389,6 +410,10 @@ static void on_toggle_event(lv_event_t *e) {
 
   apply_config_to_driver(false);
   sync_switch_states();
+  s_has_valid_solution = touch_transform_validate(&s_current_record.transform) == ESP_OK;
+  set_save_enabled(s_has_valid_solution,
+                   s_has_valid_solution ? NULL
+                                       : "Transformation invalide : reinitialisez ou relancez la capture.");
 }
 
 static void auto_detect_cb(lv_event_t *e) {
@@ -406,6 +431,8 @@ static void auto_detect_cb(lv_event_t *e) {
   set_progress_text("Glissez vers la droite puis vers le bas pour auto-orienter");
   ui_show_toast("Bougez lentement votre doigt pour deduire l'orientation",
                 UI_TOAST_INFO);
+  s_has_valid_solution = true;
+  set_save_enabled(true, NULL);
 }
 
 static void reset_defaults_cb(lv_event_t *e) {
@@ -418,6 +445,8 @@ static void reset_defaults_cb(lv_event_t *e) {
   sync_switch_states();
   set_progress_text("Calibration par defaut appliquee");
   ui_show_toast("Calibration par defaut appliquee", UI_TOAST_INFO);
+  s_has_valid_solution = true;
+  set_save_enabled(true, NULL);
 }
 
 static void start_capture_cb(lv_event_t *e) {
@@ -426,6 +455,11 @@ static void start_capture_cb(lv_event_t *e) {
 
   if (!s_capture_layer) {
     ui_show_error("Calque de capture absent");
+    return;
+  }
+
+  if (!app_board_get_touch_handle()) {
+    ui_show_error("Interface tactile indisponible (GT911)");
     return;
   }
 
@@ -441,11 +475,26 @@ static void start_capture_cb(lv_event_t *e) {
   highlight_active_marker();
   set_progress_text("Taper sur la croix 1/%d", CAL_POINT_COUNT);
   ui_show_toast("Touchez chaque croix pour calibrer", UI_TOAST_INFO);
+  s_has_valid_solution = false;
+  set_save_enabled(false,
+                   "Capture en cours : validez les 5 croix pour activer l'enregistrement.");
 }
 
 static void save_and_finish_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
+
+  if (s_is_collecting) {
+    ui_show_error("Terminez la capture avant d'enregistrer.");
+    return;
+  }
+
+  if (!s_has_valid_solution) {
+    ui_show_error("Aucune calibration valide. Relancez \"Calibrer\".");
+    set_save_enabled(false,
+                     "Pas de solution valide : relancez une capture ou l'auto-orientation.");
+    return;
+  }
 
   s_current_record.magic = TOUCH_FOURCC_TO_U32('T', 'C', 'A', 'L');
   s_current_record.version = 1;
@@ -645,6 +694,11 @@ static void build_screen(void) {
   lv_obj_set_style_min_height(btn_validate, 44, 0);
   lv_obj_add_event_cb(btn_validate, save_and_finish_cb, LV_EVENT_CLICKED, NULL);
   lv_label_set_text(lv_label_create(btn_validate), "Enregistrer");
+  s_save_btn = btn_validate;
+  set_save_enabled(s_has_valid_solution,
+                   s_has_valid_solution
+                       ? NULL
+                       : "Calibrez ou utilisez l'auto-orientation avant d'enregistrer.");
 
   // Visual markers to verify orientation (non-interactive)
   lv_obj_t *overlay = lv_obj_create(scr);
@@ -674,6 +728,10 @@ void ui_calibration_apply(const touch_transform_record_t *rec) {
   }
   apply_config_to_driver(false);
   sync_switch_states();
+  s_has_valid_solution = touch_transform_validate(&s_current_record.transform) == ESP_OK;
+  set_save_enabled(s_has_valid_solution,
+                   s_has_valid_solution ? NULL
+                                       : "Calibrez ou auto-orientez avant d'enregistrer.");
 }
 
 bool ui_calibration_check_and_start(void) {
@@ -704,6 +762,7 @@ void ui_calibration_start(void) {
     s_current_record.magic = TOUCH_TRANSFORM_MAGIC;
     s_current_record.version = TOUCH_TRANSFORM_VERSION;
   }
+  s_has_valid_solution = touch_transform_validate(&s_current_record.transform) == ESP_OK;
   apply_config_to_driver(false);
   build_screen();
 }
