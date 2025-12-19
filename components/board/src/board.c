@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "board_orientation.h"
 
 // ADC One-Shot & Calibration Includes
 #include "esp_adc/adc_cali.h"
@@ -78,12 +79,16 @@ esp_err_t app_board_init(void) {
     if (g_tp_handle == NULL) {
       ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
     } else {
+      board_orientation_t orient_defaults;
+      board_orientation_get_defaults(&orient_defaults);
+
       touch_orient_config_t orient_cfg;
       esp_err_t orient_err = touch_orient_load(&orient_cfg);
       if (orient_err != ESP_OK) {
         ESP_LOGW(TAG, "touch_orient load failed: %s; using defaults",
                  esp_err_to_name(orient_err));
         touch_orient_get_defaults(&orient_cfg);
+        board_orientation_apply_touch_defaults(&orient_cfg, &orient_defaults);
       }
 
       orient_err = touch_orient_apply(g_tp_handle, &orient_cfg);
@@ -148,6 +153,9 @@ esp_err_t app_board_init(void) {
 
   // 5. Touch Transform (load + migrate legacy if needed)
   if (g_tp_handle) {
+    board_orientation_t orient_defaults;
+    board_orientation_get_defaults(&orient_defaults);
+
     touch_transform_record_t rec = {0};
     esp_err_t err = touch_transform_storage_load(&rec);
     if (err == ESP_ERR_NOT_FOUND) {
@@ -167,6 +175,9 @@ esp_err_t app_board_init(void) {
         ESP_LOGW(TAG, "Touch transform invalid; using identity");
         touch_transform_t id;
         touch_transform_identity(&id);
+        id.swap_xy = orient_defaults.swap_xy;
+        id.mirror_x = orient_defaults.mirror_x;
+        id.mirror_y = orient_defaults.mirror_y;
         touch_transform_set_active(&id);
       }
     } else {
@@ -177,6 +188,9 @@ esp_err_t app_board_init(void) {
       }
       touch_transform_t id;
       touch_transform_identity(&id);
+      id.swap_xy = orient_defaults.swap_xy;
+      id.mirror_x = orient_defaults.mirror_x;
+      id.mirror_y = orient_defaults.mirror_y;
       touch_transform_set_active(&id);
     }
   }

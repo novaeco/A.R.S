@@ -42,4 +42,18 @@ config ARS_SKIP_TEST_PATTERN
         Désactive l'affichage systématique du motif de test (barres RGBWB)
         pour éviter une allocation PSRAM importante et accélérer le démarrage.
 
+choice ARS_DISPLAY_ROTATION
+    prompt "Rotation de l'affichage (LVGL)"
+    default ARS_DISPLAY_ROTATION_180
+
+    config ARS_DISPLAY_ROTATION_0
+        bool "0° (origine en haut/gauche)"
+    config ARS_DISPLAY_ROTATION_90
+        bool "90°"
+    config ARS_DISPLAY_ROTATION_180
+        bool "180°"
+    config ARS_DISPLAY_ROTATION_270
+        bool "270°"
+endchoice
+
 endmenu

@@ -12,6 +12,7 @@
 #include "gt911.h"
 #include "touch.h"
 #include "touch_transform.h"
+#include "board_orientation.h"
 #include <inttypes.h>
 
 #if defined(CONFIG_ARS_LCD_WAIT_VSYNC)
@@ -298,6 +299,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 
 static int64_t s_last_touch_diag_us = 0;
 static uint32_t s_touch_event_seq = 0;
+static const char *TOUCH_DIAG_TAG = "TOUCH_DIAG";
 
 static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   esp_lcd_touch_handle_t tp =
@@ -457,36 +459,20 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     }
   }
 
-#if CONFIG_TOUCH_DEBUG_LOG
-  bool rate_allow =
-      data->state == LV_INDEV_STATE_PRESSED &&
-      ((now_us - s_last_touch_diag_us) >= 1000000);
-  bool log_release = state_changed && prev_state == LV_INDEV_STATE_PRESSED;
-  if (state_changed || rate_allow || log_release) {
+  bool log_press = data->state == LV_INDEV_STATE_PRESSED &&
+                   ((now_us - s_last_touch_diag_us) >= 200000 || state_changed);
+  bool log_release = state_changed &&
+                     prev_state == LV_INDEV_STATE_PRESSED && has_valid_point;
+  if (log_press || log_release) {
     s_last_touch_diag_us = now_us;
     s_touch_event_seq++;
-
     const char *state_str =
         data->state == LV_INDEV_STATE_PRESSED ? "pressed" : "released";
-    ESP_LOGI("TOUCH_EVT",
-             "seq=%" PRIu32 " state=%s x=%d y=%d raw_x=%d raw_y=%d",
-             s_touch_event_seq, state_str, data->point.x, data->point.y, raw_x,
-             raw_y);
+    ESP_LOGI(TOUCH_DIAG_TAG,
+             "seq=%" PRIu32 " %s raw=(%d,%d) screen=(%d,%d)",
+             s_touch_event_seq, state_str, raw_x, raw_y, data->point.x,
+             data->point.y);
   }
-#else
-  if (state_changed && data->state == LV_INDEV_STATE_PRESSED) {
-    s_last_touch_diag_us = now_us;
-    s_touch_event_seq++;
-    ESP_LOGI("TOUCH_EVT", "seq=%" PRIu32 " pressed x=%d y=%d raw_x=%d raw_y=%d",
-             s_touch_event_seq, data->point.x, data->point.y, raw_x, raw_y);
-  } else if (state_changed && data->state == LV_INDEV_STATE_RELEASED &&
-             has_valid_point) {
-    s_last_touch_diag_us = now_us;
-    s_touch_event_seq++;
-    ESP_LOGD("TOUCH_EVT", "seq=%" PRIu32 " released x=%d y=%d",
-             s_touch_event_seq, data->point.x, data->point.y);
-  }
-#endif
 
   ars_touch_debug_feed(raw_x, raw_y, data->point.x, data->point.y,
                        data->state == LV_INDEV_STATE_PRESSED);
@@ -518,6 +504,10 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
     esp_timer_stop(s_lvgl_tick_timer);
     return ESP_FAIL;
   }
+
+  board_orientation_t orient_defaults;
+  board_orientation_get_defaults(&orient_defaults);
+  board_orientation_apply_display(disp, &orient_defaults);
 
   if (tp_handle) {
     lv_indev_t *indev = indev_init(tp_handle);

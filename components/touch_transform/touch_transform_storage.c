@@ -5,6 +5,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "touch_orient.h"
+#include "sdkconfig.h"
 #include <inttypes.h>
 #include <string.h>
 
@@ -23,6 +24,9 @@ static void touch_transform_set_defaults(touch_transform_record_t *rec) {
     return;
   memset(rec, 0, sizeof(*rec));
   touch_transform_identity(&rec->transform);
+  rec->transform.swap_xy = CONFIG_ARS_TOUCH_SWAP_XY;
+  rec->transform.mirror_x = CONFIG_ARS_TOUCH_MIRROR_X;
+  rec->transform.mirror_y = CONFIG_ARS_TOUCH_MIRROR_Y;
   rec->magic = TOUCHCAL_MAGIC;
   rec->version = TOUCHCAL_VERSION;
   rec->generation = 0;
