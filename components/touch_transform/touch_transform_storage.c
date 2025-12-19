@@ -19,6 +19,16 @@ static const char *TAG = "touch_tf_store";
 static uint32_t calc_crc(const touch_transform_record_t *rec);
 static void sync_touch_orient_flags(const touch_transform_t *tf);
 
+#ifndef CONFIG_ARS_TOUCH_SWAP_XY
+#define CONFIG_ARS_TOUCH_SWAP_XY 0
+#endif
+#ifndef CONFIG_ARS_TOUCH_MIRROR_X
+#define CONFIG_ARS_TOUCH_MIRROR_X 0
+#endif
+#ifndef CONFIG_ARS_TOUCH_MIRROR_Y
+#define CONFIG_ARS_TOUCH_MIRROR_Y 0
+#endif
+
 static void touch_transform_set_defaults(touch_transform_record_t *rec) {
   if (!rec)
     return;
