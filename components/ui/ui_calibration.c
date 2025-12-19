@@ -452,6 +452,16 @@ static void save_and_finish_cb(lv_event_t *e) {
 
   ESP_LOGI(TAG, "Calibration saved to NVS");
 
+  touch_transform_record_t reload = {0};
+  err = touch_transform_storage_load(&reload);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Reloaded calibration after save; applying to driver");
+    ui_calibration_apply(&reload);
+  } else {
+    ESP_LOGW(TAG, "Calibration reload failed after save: %s",
+             esp_err_to_name(err));
+  }
+
   err = ui_wizard_mark_setup_done();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to persist setup_done flag: %s", esp_err_to_name(err));
@@ -661,8 +671,13 @@ bool ui_calibration_check_and_start(void) {
     return false;
   }
 
-  ESP_LOGW(TAG, "Calibration missing or invalid (%s); starting wizard",
-           esp_err_to_name(err));
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(TAG,
+             "Calibration not found in NVS; starting wizard with defaults");
+  } else {
+    ESP_LOGW(TAG, "Calibration missing or invalid (%s); starting wizard",
+             esp_err_to_name(err));
+  }
   ui_calibration_start();
   return true;
 }

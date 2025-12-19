@@ -69,5 +69,13 @@ menu "Touch Configuration"
             Enable debug logging for touch input processing in LVGL port.
             Reduces spam by only logging changes or significant events.
 
+    config GT911_DEBUG_DUMP
+        bool "Dump raw GT911 frames (rate-limited)"
+        default n
+        help
+            When enabled, the GT911 driver will periodically dump the status
+            byte and raw point buffer in hexadecimal along with decoded fields
+            to ease troubleshooting of touch parsing/endianness issues.
+
 endmenu
 

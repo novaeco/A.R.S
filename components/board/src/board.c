@@ -123,7 +123,11 @@ esp_err_t app_board_init(void) {
       rec.transform.mirror_y = false;
       touch_transform_set_active(&rec.transform);
     } else {
-      ESP_LOGW(TAG, "Touch transform missing: %s", esp_err_to_name(err));
+      if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "Touch transform not found in NVS; using defaults");
+      } else {
+        ESP_LOGW(TAG, "Touch transform missing: %s", esp_err_to_name(err));
+      }
       touch_transform_t id;
       touch_transform_identity(&id);
       touch_transform_set_active(&id);
