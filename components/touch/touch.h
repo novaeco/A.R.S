@@ -11,6 +11,10 @@ typedef struct {
   uint32_t irq_total;
   uint32_t empty_irqs;
   uint32_t i2c_errors;
+  uint32_t invalid_points;
+  uint32_t clamped_points;
+  uint16_t last_invalid_x;
+  uint16_t last_invalid_y;
   bool pressed;
   bool polling;
 } ars_touch_debug_info_t;

@@ -1,12 +1,9 @@
 #include "touch_transform.h"
-#include "esp_log.h"
 #include "esp_timer.h"
 #include "gt911.h"
 #include <limits.h>
 #include <math.h>
 #include <string.h>
-
-static const char *TAG = "touch_tf";
 static touch_transform_t s_active_transform = {.a11 = 1.0f, .a22 = 1.0f};
 
 void touch_transform_identity(touch_transform_t *out) {
