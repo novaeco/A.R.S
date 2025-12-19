@@ -15,7 +15,14 @@
 #include "esp_idf_version.h"
 #include "esp_lcd_types.h"
 #include "io_extension.h"
+#include "sdkconfig.h"
 #include <stdbool.h>
+
+#if defined(CONFIG_ARS_LCD_WAIT_VSYNC)
+#define ARS_LCD_WAIT_VSYNC_ENABLED 1
+#else
+#define ARS_LCD_WAIT_VSYNC_ENABLED 0
+#endif
 
 __attribute__((weak)) bool lvgl_port_notify_rgb_vsync(void);
 
@@ -130,12 +137,20 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   // Initialize the RGB LCD panel
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
 
-  esp_lcd_rgb_panel_event_callbacks_t cbs = {
-      .on_frame_buf_complete = NULL,
-      .on_vsync = rgb_lcd_on_vsync_event, // Dedicated VSYNC notification
-  };
-  ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(
-      panel_handle, &cbs, NULL)); // Register event callbacks
+  if (ARS_LCD_WAIT_VSYNC_ENABLED) {
+    esp_lcd_rgb_panel_event_callbacks_t cbs = {
+        .on_frame_buf_complete = NULL,
+        .on_vsync = rgb_lcd_on_vsync_event, // Dedicated VSYNC notification
+    };
+    esp_err_t cb_ret = esp_lcd_rgb_panel_register_event_callbacks(
+        panel_handle, &cbs, NULL); // Register event callbacks
+    if (cb_ret != ESP_OK) {
+      ESP_LOGW(TAG, "VSYNC callback unsupported; wait will be disabled: %s",
+               esp_err_to_name(cb_ret));
+    }
+  } else {
+    ESP_LOGI(TAG, "VSYNC wait disabled; skipping RGB VSYNC callback");
+  }
 
   return panel_handle;
 }
