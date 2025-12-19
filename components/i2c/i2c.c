@@ -28,6 +28,11 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 #define I2C_PROBE_TIMEOUT_MS 100
 #define I2C_XFER_TIMEOUT_MS 200
 
+static inline bool i2c_lock() {
+  return DEV_I2C_TakeLock(pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS));
+}
+static inline void i2c_unlock() { DEV_I2C_GiveLock(); }
+
 // --- Utility Functions ---
 
 esp_err_t DEV_I2C_SanitizeAddr(uint8_t addr, uint8_t *out_addr) {
@@ -184,11 +189,6 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
 }
 
 // --- Data Transmission with Mutex ---
-
-static inline bool i2c_lock() {
-  return DEV_I2C_TakeLock(pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS));
-}
-static inline void i2c_unlock() { DEV_I2C_GiveLock(); }
 
 esp_err_t DEV_I2C_Write_Byte(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
                              uint8_t value) {
