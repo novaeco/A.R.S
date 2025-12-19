@@ -79,14 +79,14 @@ esp_err_t touch_transform_validate(const touch_transform_t *tf) {
 
 esp_err_t touch_transform_apply_ex(const touch_transform_t *tf, int32_t raw_x,
                                    int32_t raw_y, int32_t max_x,
-                                   int32_t max_y, bool apply_orientation,
+                                   int32_t max_y, bool apply_orientation_flag,
                                    lv_point_t *out) {
   if (!tf || !out)
     return ESP_ERR_INVALID_ARG;
 
   int32_t x = raw_x;
   int32_t y = raw_y;
-  if (apply_orientation) {
+  if (apply_orientation_flag) {
     apply_orientation(tf, &x, &y);
   }
 
