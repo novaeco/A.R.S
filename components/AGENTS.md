@@ -20,3 +20,9 @@
 
 ## 4) “Do not resurrect” policy
 - Never reintroduce CH422G codepaths or `sd_waveshare` references anywhere in components.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; composants optionnels n’empêchent pas le démarrage.
+- Logs: chaque TAG composant émet init + erreur synthétique avec `esp_err_to_name`.
+- Threads/bus: respecter les règles locales (I2C sérialisé, LVGL dans sa tâche, etc.).

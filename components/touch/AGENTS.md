@@ -1,4 +1,4 @@
-# components/gt911/AGENTS — Touch driver rules (Strict)
+# components/touch/AGENTS — Touch driver rules (Strict)
 
 ## 1) Init robustness
 - Must handle:
@@ -15,3 +15,9 @@
 ## 3) Safety
 - No touch data -> return “no points” cleanly.
 - Any I2C error should not crash LVGL input device path.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; absence de GT911 ou d’IRQ ne bloque pas le démarrage.
+- Logs: TAG touch signale init et erreurs I2C avec `esp_err_to_name` sans spam.
+- Threading: accès I2C sérialisé selon règles bus, callbacks LVGL non bloquants.

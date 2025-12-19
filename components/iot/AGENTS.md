@@ -9,3 +9,9 @@ Covers Wi-Fi control and OTA helpers under `components/iot`.
 - Ensure OTA uses TLS/HTTPS when available and validates image signatures/checksums per ESP-IDF defaults.
 - Keep connection/retry logic bounded to avoid blocking other tasks; provide hooks for graceful stop/deinit.
 - Document task names, stack sizes, and core affinity if background tasks are added; maintain compatibility with provisioning flow.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; absence de Wi-Fi ou OTA ne bloque pas l’UI.
+- Logs: TAG iot signale init/connexion/erreur sans divulguer SSID/mdp.
+- Threading: retries bornés et tâches documentées restent compatibles provisioning.

@@ -34,3 +34,13 @@
 - **Fail-Safe**:
   - Missing fonts or images should log `ESP_LOGE` but **MUST NOT** crash/panic the controller.
   - If a screen fails to load, fallback to a "Safe Mode" or Dashboard.
+
+## 6) Correctifs vs améliorations
+- En correctif (bug/build/driver), priorité à la stabilité et au diff minimal.
+- Les améliorations esthétiques/animations ne sont autorisées que lorsqu’elles sont demandées explicitement.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; absence d’assets ne bloque pas l’UI (fallback Safe Mode autorisé).
+- Logs: TAG ui signale init/erreurs en quelques messages sans spam.
+- Threading: toutes les interactions LVGL passent par la tâche LVGL ou un lock explicite.

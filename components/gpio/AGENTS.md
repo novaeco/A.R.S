@@ -9,3 +9,9 @@ Applies to the GPIO utility layer in `components/gpio` used by display, touch, a
 - Keep ISR installation idempotent and avoid leaking handlers; disable/teardown cleanly when provided.
 - PWM/LEDC setup must bound frequencies and duty cycles to safe ranges for attached hardware (backlight, buzzers).
 - Logging must include pin numbers and `esp_err_to_name` on failure; never block boot on GPIO errors.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; erreurs GPIO restent non bloquantes pour le démarrage/UI.
+- Logs: TAG gpio montre init/config et erreurs avec pin + `esp_err_to_name`.
+- Threading: ISR/LEDC configurés de façon idempotente, sans blocage des autres tâches.
