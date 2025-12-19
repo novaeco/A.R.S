@@ -16,6 +16,7 @@
 
 static const char *TAG = "touch_tf_store";
 static uint32_t calc_crc(const touch_transform_record_t *rec);
+static void sync_touch_orient_flags(const touch_transform_t *tf);
 
 static void touch_transform_set_defaults(touch_transform_record_t *rec) {
   if (!rec)
@@ -223,6 +224,7 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
   err = nvs_write_record(h, target_key, &to_store);
   nvs_close(h);
   if (err == ESP_OK) {
+    sync_touch_orient_flags(&to_store.transform);
     ESP_LOGI(TAG,
              "Stored transform into %s gen=%" PRIu32
              " crc=0x%08" PRIx32 " swap=%d mirX=%d mirY=%d",
@@ -231,6 +233,23 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
              to_store.transform.mirror_y);
   } else {
     ESP_LOGE(TAG, "Failed to save transform: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t touch_transform_storage_clear(void) {
+  nvs_handle_t h;
+  esp_err_t err = open_rw(&h);
+  if (err != ESP_OK)
+    return err;
+
+  err = nvs_erase_all(h);
+  if (err == ESP_OK) {
+    err = nvs_commit(h);
+  }
+  nvs_close(h);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Cleared touchcal namespace (slots A/B)");
   }
   return err;
 }
@@ -257,5 +276,28 @@ esp_err_t touch_transform_storage_migrate_old(touch_transform_record_t *out) {
   out->crc32 = calc_crc(out);
   ESP_LOGW(TAG, "Migrated legacy touch_orient to touchcal namespace");
   return touch_transform_storage_save(out);
+}
+
+static void sync_touch_orient_flags(const touch_transform_t *tf) {
+  if (!tf)
+    return;
+
+  touch_orient_config_t orient_cfg;
+  if (touch_orient_load(&orient_cfg) != ESP_OK) {
+    touch_orient_get_defaults(&orient_cfg);
+  }
+
+  orient_cfg.swap_xy = tf->swap_xy;
+  orient_cfg.mirror_x = tf->mirror_x;
+  orient_cfg.mirror_y = tf->mirror_y;
+  orient_cfg.scale_x = 1.0f;
+  orient_cfg.scale_y = 1.0f;
+  orient_cfg.offset_x = 0;
+  orient_cfg.offset_y = 0;
+
+  esp_err_t err = touch_orient_save(&orient_cfg);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to sync touch_orient flags: %s", esp_err_to_name(err));
+  }
 }
 

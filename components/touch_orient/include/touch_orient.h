@@ -63,6 +63,14 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
  */
 void touch_orient_get_defaults(touch_orient_config_t *cfg);
 
+/**
+ * @brief Remove the stored orientation profile from NVS (if present).
+ *
+ * This is useful to force regeneration from Kconfig defaults or
+ * recalibration flows.
+ */
+esp_err_t touch_orient_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

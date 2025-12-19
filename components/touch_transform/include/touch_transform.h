@@ -75,6 +75,13 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec);
 
 esp_err_t touch_transform_storage_migrate_old(touch_transform_record_t *out);
 
+/**
+ * @brief Erase stored calibration/orientation slots from NVS.
+ *
+ * Useful to reset to build-time defaults or before running the calibration UI.
+ */
+esp_err_t touch_transform_storage_clear(void);
+
 #ifdef __cplusplus
 }
 #endif
