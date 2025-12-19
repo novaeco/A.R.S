@@ -60,6 +60,7 @@ typedef struct {
   uint32_t irq_total;
   uint32_t empty_irqs;
   uint32_t i2c_errors;
+  uint32_t poll_timeouts;
   uint32_t invalid_points;
   uint32_t clamped_points;
   bool polling_active;

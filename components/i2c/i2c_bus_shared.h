@@ -18,7 +18,7 @@ extern SemaphoreHandle_t g_i2c_bus_mutex;
  *        Pins: SDA=8, SCL=9
  *        Speed: 400kHz
  */
-void i2c_bus_shared_init(void);
+esp_err_t i2c_bus_shared_init(void);
 
 /**
  * @brief Release shared I2C resources (mutex and bus handle) when no user

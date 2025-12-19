@@ -94,6 +94,17 @@ static int64_t s_poll_mode_until_us = 0;
 static uint32_t s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
 static portMUX_TYPE s_gt911_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_last_touch_down = false;
+static portMUX_TYPE s_gt911_error_lock = portMUX_INITIALIZER_UNLOCKED;
+
+typedef struct {
+  uint32_t i2c_errors;
+  uint32_t poll_timeouts;
+  uint32_t last_reported_i2c_errors;
+  uint32_t last_reported_poll_timeouts;
+  int64_t last_log_us;
+} gt911_error_metrics_t;
+
+static gt911_error_metrics_t s_gt911_errors = {0};
 
 #define GT911_EMPTY_BURST_LIMIT 10
 #define GT911_EMPTY_WINDOW_US 200000
@@ -114,6 +125,22 @@ static inline void gt911_enter_poll_mode(uint32_t interval_ms, int64_t duration_
   s_poll_interval_ms = interval_ms;
   s_poll_mode_until_us = duration_us > 0 ? (esp_timer_get_time() + duration_us)
                                           : INT64_MAX;
+}
+
+static inline void gt911_mark_i2c_error(void) {
+  portENTER_CRITICAL(&s_gt911_error_lock);
+  s_gt911_errors.i2c_errors++;
+  portEXIT_CRITICAL(&s_gt911_error_lock);
+
+  portENTER_CRITICAL(&s_gt911_stats_lock);
+  s_gt911_i2c_errors++;
+  portEXIT_CRITICAL(&s_gt911_stats_lock);
+}
+
+static inline void gt911_mark_poll_timeout(void) {
+  portENTER_CRITICAL(&s_gt911_error_lock);
+  s_gt911_errors.poll_timeouts++;
+  portEXIT_CRITICAL(&s_gt911_error_lock);
 }
 
 #if !CONFIG_ARS_TOUCH_DISABLE_LEGACY_CAL
@@ -417,7 +444,8 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
   ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 init failed");
 
   // Ensure shared I2C mutex is available
-  i2c_bus_shared_init();
+  ret = i2c_bus_shared_init();
+  ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 shared I2C init failed");
 
   // Create IRQ task to handle I2C reads outside ISR or run polling fallback
   static bool task_created = false;
@@ -828,6 +856,7 @@ void gt911_get_stats(gt911_stats_t *stats) {
   stats->irq_total = s_gt911_irq_total;
   stats->empty_irqs = s_gt911_irq_empty;
   stats->i2c_errors = s_gt911_i2c_errors;
+  stats->poll_timeouts = s_gt911_errors.poll_timeouts;
   stats->invalid_points = s_gt911_invalid_points;
   stats->clamped_points = s_gt911_clamped_points;
   stats->polling_active = s_poll_mode;
@@ -846,6 +875,8 @@ void gt911_reset_stats(void) {
   s_gt911_irq_empty = 0;
   s_gt911_irq_storm = 0;
   s_gt911_i2c_errors = 0;
+  s_gt911_errors.i2c_errors = 0;
+  s_gt911_errors.poll_timeouts = 0;
   s_gt911_last_raw_x = 0;
   s_gt911_last_raw_y = 0;
   s_gt911_invalid_points = 0;
@@ -888,13 +919,18 @@ esp_lcd_touch_handle_t touch_gt911_init() {
       ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
   // Initialize Shared I2C Bus First (single owner)
-  i2c_bus_shared_init();
+  esp_err_t ret = i2c_bus_shared_init();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "I2C Bus Init Failed: %s", esp_err_to_name(ret));
+    return NULL;
+  }
+
   i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_handle();
   if (!bus_handle) {
     ESP_LOGE(TAG, "I2C Bus Init Failed (shared bus not ready)");
     return NULL;
   }
-  esp_err_t ret = DEV_I2C_Init_Bus(&bus_handle);
+  ret = DEV_I2C_Init_Bus(&bus_handle);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "I2C Bus Init Failed");
     return NULL;
@@ -1445,7 +1481,6 @@ static void IRAM_ATTR gt911_gpio_isr_handler(void *arg) {
 static void gt911_irq_task(void *arg) {
   esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
   const int64_t debounce_us = 5000; // 5 ms anti-bounce
-  int64_t last_error_log_us = 0;
   uint32_t error_backoff_ms = 10;
 
   while (1) {
@@ -1462,10 +1497,7 @@ static void gt911_irq_task(void *arg) {
     if (s_poll_mode) {
       esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
       if (err != ESP_OK) {
-        if ((now - last_error_log_us) > 1000000) {
-          last_error_log_us = now;
-          ESP_LOGE(TAG, "GT911 poll read failed: %s", esp_err_to_name(err));
-        }
+        gt911_mark_i2c_error();
         vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
         if (error_backoff_ms < 200) {
           error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
@@ -1489,13 +1521,10 @@ static void gt911_irq_task(void *arg) {
     if (notified == 0) {
       // Fallback: If no IRQ is received during the wait window, poll once to
       // avoid losing touches when the interrupt line is noisy or missing.
+      gt911_mark_poll_timeout();
       esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
       if (err != ESP_OK) {
-        if ((now - last_error_log_us) > 1000000) {
-          last_error_log_us = now;
-          ESP_LOGE(TAG, "GT911 fallback poll read failed: %s",
-                   esp_err_to_name(err));
-        }
+        gt911_mark_i2c_error();
         vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
         if (error_backoff_ms < 200) {
           error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
@@ -1517,10 +1546,7 @@ static void gt911_irq_task(void *arg) {
 
     esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
     if (err != ESP_OK) {
-      if ((now - last_error_log_us) > 1000000) {
-        last_error_log_us = now;
-        ESP_LOGE(TAG, "GT911 read failed: %s", esp_err_to_name(err));
-      }
+      gt911_mark_i2c_error();
       vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
       if (error_backoff_ms < 200) {
         error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;

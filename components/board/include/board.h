@@ -15,17 +15,14 @@
 #define BOARD_BAT_ADC_UNIT   ADC_UNIT_1 // Default fallback
 #endif
 
-#ifdef CONFIG_ARS_BAT_ADC_CHAN
-#define BOARD_BAT_ADC_CHAN   CONFIG_ARS_BAT_ADC_CHAN
+#ifdef CONFIG_ARS_BAT_ADC_CHANNEL
+#define BOARD_BAT_ADC_CHAN   CONFIG_ARS_BAT_ADC_CHANNEL
 #else
 #define BOARD_BAT_ADC_CHAN   0 // Default fallback
 #endif
 
-#ifdef CONFIG_ARS_BAT_DIVIDER
-#define BOARD_BAT_DIVIDER    CONFIG_ARS_BAT_DIVIDER
-#else
-#define BOARD_BAT_DIVIDER    2.0f // Default fallback
-#endif
+#define BOARD_BAT_DIV_NUM    CONFIG_ARS_BAT_DIV_NUM
+#define BOARD_BAT_DIV_DEN    CONFIG_ARS_BAT_DIV_DEN
 
 // I2C routing (shared bus used by GT911 and IO expanders)
 #ifdef CONFIG_ARS_I2C_PORT

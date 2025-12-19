@@ -115,6 +115,7 @@ void ars_touch_debug_feed(int16_t raw_x, int16_t raw_y, int16_t x, int16_t y,
   s_touch_debug_info.irq_total = stats.irq_total;
   s_touch_debug_info.empty_irqs = stats.empty_irqs;
   s_touch_debug_info.i2c_errors = stats.i2c_errors;
+  s_touch_debug_info.poll_timeouts = stats.poll_timeouts;
   s_touch_debug_info.invalid_points = stats.invalid_points;
   s_touch_debug_info.clamped_points = stats.clamped_points;
   s_touch_debug_info.last_invalid_x = stats.last_invalid_x;

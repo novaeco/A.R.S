@@ -46,6 +46,8 @@ static bool s_wifi_started = false;
 static esp_timer_handle_t s_wifi_retry_timer = NULL;
 static uint32_t s_wifi_backoff_ms = 1000; // start at 1s
 static const uint32_t WIFI_RETRY_BACKOFF_MAX_MS = 30000;
+static const uint32_t WIFI_RETRY_MAX_ATTEMPTS = 8;
+static uint32_t s_wifi_retry_count = 0;
 static TaskHandle_t s_wifi_retry_task = NULL;
 static TaskHandle_t s_wifi_provisioning_task = NULL;
 static bool s_watchdog_task_created = false;
@@ -296,6 +298,13 @@ static void schedule_wifi_retry(uint32_t delay_ms) {
 
   stop_wifi_retry_timer_best_effort();
 
+  if (s_wifi_retry_count >= WIFI_RETRY_MAX_ATTEMPTS) {
+    ESP_LOGW(TAG, "Wi-Fi retry limit reached (%u attempts)",
+             WIFI_RETRY_MAX_ATTEMPTS);
+    return;
+  }
+  s_wifi_retry_count++;
+
   esp_err_t err = esp_timer_start_once(s_wifi_retry_timer, delay_ms * 1000ULL);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to schedule Wi-Fi retry: %s", esp_err_to_name(err));
@@ -390,6 +399,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "Got IP: %s", s_net_status.ip_addr);
 
     s_wifi_backoff_ms = 1000; // reset backoff after success
+    s_wifi_retry_count = 0;
     stop_wifi_retry_timer_best_effort();
 
     wifi_ap_record_t ap_info = {0};
@@ -503,6 +513,7 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
     net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
                              WIFI_REASON_UNSPECIFIED);
     s_wifi_backoff_ms = 1000;
+    s_wifi_retry_count = 0;
     esp_err_t start_err = start_wifi_station_if_provisioned();
     if (start_err == ESP_OK && CONFIG_ARS_WIFI_AUTOCONNECT) {
       ensure_wifi_retry_task();
