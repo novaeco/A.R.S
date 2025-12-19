@@ -42,6 +42,22 @@ esp_err_t app_board_init(void) {
     return err;
   }
 
+#if CONFIG_ARS_TOUCH_CLEAR_PROFILES_ON_BOOT
+  esp_err_t orient_reset = touch_orient_clear();
+  if (orient_reset == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(TAG, "touch_orient NVS already clean");
+  } else if (orient_reset != ESP_OK) {
+    ESP_LOGW(TAG, "touch_orient clear failed: %s", esp_err_to_name(orient_reset));
+  }
+
+  esp_err_t tf_reset = touch_transform_storage_clear();
+  if (tf_reset == ESP_OK) {
+    ESP_LOGI(TAG, "touchcal slots cleared at boot");
+  } else {
+    ESP_LOGW(TAG, "touchcal clear failed: %s", esp_err_to_name(tf_reset));
+  }
+#endif
+
   bool ioext_ok = false;
   err = IO_EXTENSION_Init(); // IO Expander (CH32V003, Waveshare)
   if (err != ESP_OK) {

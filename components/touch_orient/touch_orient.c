@@ -202,3 +202,25 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
            (double)cal.scale_y, cal.offset_x, cal.offset_y);
   return ESP_OK;
 }
+
+esp_err_t touch_orient_clear(void) {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (err != ESP_OK)
+    return err;
+
+  err = nvs_erase_key(handle, NVS_KEY);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    nvs_close(handle);
+    return ESP_ERR_NVS_NOT_FOUND;
+  }
+
+  esp_err_t commit_err = nvs_commit(handle);
+  nvs_close(handle);
+
+  if (commit_err != ESP_OK)
+    return commit_err;
+
+  ESP_LOGI(TAG, "Cleared touch orientation entry from NVS");
+  return ESP_OK;
+}

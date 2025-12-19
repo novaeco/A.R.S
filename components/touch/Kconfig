@@ -62,6 +62,15 @@ menu "Touch Configuration"
             the legacy offset/scale parameters. This avoids double calibration
             when the affine touch_transform pipeline is active.
 
+    config ARS_TOUCH_CLEAR_PROFILES_ON_BOOT
+        bool "Clear touch orientation/calibration profiles on each boot"
+        default n
+        help
+            When enabled, the touch orientation namespace ("touch") and
+            calibration slots ("touchcal") are erased at boot before applying
+            defaults. Use this to recover from inverted axes caused by stale
+            NVS entries or after changing hardware orientation.
+
     config TOUCH_DEBUG_LOG
         bool "Enable Reduced Hardware Debug Logs"
         default n
