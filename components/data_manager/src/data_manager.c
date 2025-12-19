@@ -254,6 +254,7 @@ cJSON *data_manager_list_reptiles(void) {
       if (strstr(dir->d_name, ".json")) {
         char id[MAX_ID_LEN];
         strncpy(id, dir->d_name, sizeof(id));
+        id[sizeof(id) - 1] = '\0';
         char *ext = strstr(id, ".json");
         if (ext)
           *ext = '\0';
@@ -262,7 +263,7 @@ cJSON *data_manager_list_reptiles(void) {
         if (data_manager_load_reptile(id, &r) == ESP_OK) {
           cJSON *obj = cJSON_CreateObject();
           if (!obj) {
-            ESP_LOGE(TAG, "Failed to allocate reptile entry for %s", entry->d_name);
+            ESP_LOGE(TAG, "Failed to allocate reptile entry for %s", dir->d_name);
             closedir(d);
             cJSON_Delete(arr);
             return NULL;
