@@ -57,6 +57,14 @@
 #define GT911_RAW_MARGIN 64
 #define GT911_DEBUG_DUMP_INTERVAL_US 500000
 
+#if CONFIG_ARS_TOUCH_GT911_LAYOUT_A
+#define GT911_LAYOUT_FORCED 1
+#elif CONFIG_ARS_TOUCH_GT911_LAYOUT_B
+#define GT911_LAYOUT_FORCED 2
+#else
+#define GT911_LAYOUT_FORCED 0
+#endif
+
 static inline uint16_t u16_le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -480,16 +488,31 @@ static esp_err_t esp_lcd_touch_gt911_exit_sleep(esp_lcd_touch_handle_t tp) {
 
 // static esp_err_t gt911_ensure_io_handle(esp_lcd_touch_handle_t tp);
 
+static inline bool gt911_should_log(int64_t *last_log_us, int64_t interval_us) {
+  int64_t now = esp_timer_get_time();
+  if ((now - *last_log_us) >= interval_us) {
+    *last_log_us = now;
+    return true;
+  }
+  return false;
+}
+
+typedef struct {
+  uint16_t raw_x;
+  uint16_t raw_y;
+  uint16_t x;
+  uint16_t y;
+  uint16_t strength;
+  bool clamped;
+} gt911_point_decoded_t;
+
 static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   esp_err_t err = ESP_OK;
   uint8_t status = 0;
   uint8_t touch_cnt = 0;
-  size_t i = 0;
 
   assert(tp != NULL);
 
-  // FIX: Read status and immediately process - no retry loop for valid touches
-  // The GT911 clears data very quickly, so we must read coordinates immediately
   err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, &status, 1);
   if (err != ESP_OK) {
     s_gt911_consecutive_errors++;
@@ -512,17 +535,14 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   const bool data_ready = (status & 0x80) != 0;
   touch_cnt = status & 0x0F;
 
-  // If not data_ready, nothing to process
   if (!data_ready) {
     return ESP_OK;
   }
 
-  // Define static filter variables here so we can reset them on release
   static int32_t filt_x = -1;
   static int32_t filt_y = -1;
 
   if (touch_cnt == 0) {
-    // Clear status for empty touch (release event)
     esp_err_t clr_ret =
         touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, 0x00);
     if (clr_ret != ESP_OK) {
@@ -531,7 +551,6 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
                esp_err_to_name(clr_ret));
     }
 
-    // FIX 2: Reset filter on release to prevent "dragging" from old coordinates
     filt_x = -1;
     filt_y = -1;
 
@@ -540,7 +559,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     int64_t now = esp_timer_get_time();
 
     if (s_spurious_block_until_us < now) {
-      s_spurious_block_until_us = now + 20000; // 20 ms cooldown
+      s_spurious_block_until_us = now + 20000;
     }
     if (s_empty_window_start_us == 0 ||
         (now - s_empty_window_start_us) > GT911_EMPTY_WINDOW_US) {
@@ -550,9 +569,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_empty_window_count++;
     if (s_empty_window_count >= GT911_EMPTY_BURST_LIMIT && !s_poll_mode) {
       gt911_enter_poll_mode(GT911_POLL_INTERVAL_MS, GT911_POLL_DURATION_US);
-      ESP_LOGW(TAG,
-               "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
-               s_empty_window_count);
+      static int64_t last_poll_log = 0;
+      if (gt911_should_log(&last_poll_log, 1000000)) {
+        ESP_LOGW(TAG,
+                 "Empty IRQ burst detected (%" PRIu32 "), switching to polling",
+                 s_empty_window_count);
+      }
     }
 
     portENTER_CRITICAL(&tp->data.lock);
@@ -577,10 +599,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   if (err != ESP_OK) {
     s_gt911_i2c_errors++;
     s_gt911_consecutive_errors++;
-    int64_t now = esp_timer_get_time();
     static int64_t last_err_log = 0;
-    if ((now - last_err_log) > 1000000) {
-      last_err_log = now;
+    if (gt911_should_log(&last_err_log, 1000000)) {
       ESP_LOGW(TAG, "I2C read points error: %s", esp_err_to_name(err));
     }
     return err;
@@ -588,6 +608,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
 
   gt911_debug_dump_frame(status, point_buf, read_len);
 
+  gt911_point_decoded_t decoded[ESP_LCD_TOUCH_MAX_POINTS] = {0};
   uint16_t first_raw_x = 0;
   uint16_t first_raw_y = 0;
   uint32_t invalid_points = 0;
@@ -597,21 +618,48 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   uint16_t last_clamped_x = 0;
   uint16_t last_clamped_y = 0;
   size_t stored_points = 0;
+  bool first_raw_set = false;
 
-  portENTER_CRITICAL(&tp->data.lock);
-  tp->data.points = 0;
-  for (i = 0; i < touch_cnt; i++) {
+  for (size_t i = 0; i < touch_cnt; i++) {
     const uint8_t *p = &point_buf[i * 8];
-    uint16_t raw_x = u16_le(&p[1]);
-    uint16_t raw_y = u16_le(&p[3]);
 
-    bool plausible = raw_x <= (tp->config.x_max + GT911_RAW_MARGIN) &&
-                     raw_y <= (tp->config.y_max + GT911_RAW_MARGIN);
-    if (!plausible) {
+    uint16_t xa = u16_le(&p[0]);
+    uint16_t ya = u16_le(&p[2]);
+    uint16_t size_a = u16_le(&p[4]);
+    uint16_t xb = u16_le(&p[1]);
+    uint16_t yb = u16_le(&p[3]);
+    uint16_t size_b = u16_le(&p[5]);
+
+    bool a_ok = xa <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
+                ya <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
+    bool b_ok = xb <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
+                yb <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
+
+    const bool forced_layout = (GT911_LAYOUT_FORCED != 0);
+    bool use_layout_a = true;
+    if (GT911_LAYOUT_FORCED == 1) {
+      use_layout_a = true;
+    } else if (GT911_LAYOUT_FORCED == 2) {
+      use_layout_a = false;
+    } else if (b_ok && !a_ok) {
+      use_layout_a = false;
+    } else {
+      use_layout_a = a_ok || (!a_ok && !b_ok);
+    }
+
+    uint16_t raw_x = use_layout_a ? xa : xb;
+    uint16_t raw_y = use_layout_a ? ya : yb;
+    bool plausible = (use_layout_a ? a_ok : b_ok);
+    if (!plausible && !forced_layout) {
       invalid_points++;
       last_invalid_x = raw_x;
       last_invalid_y = raw_y;
       continue;
+    }
+    if (!plausible && forced_layout) {
+      invalid_points++;
+      last_invalid_x = raw_x;
+      last_invalid_y = raw_y;
     }
 
     bool clamped = false;
@@ -628,15 +676,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
       last_clamped_y = raw_y;
     }
 
-    // FIX: Store true raw values for first point before any filtering
-    if (stored_points == 0) {
+    if (!first_raw_set) {
+      first_raw_set = true;
       first_raw_x = raw_x;
       first_raw_y = raw_y;
-      // Log removed from critical section to prevent panic
     }
 
-    // Simple low-pass filter to suppress jitter before LVGL gets the data.
-    // filt_x and filt_y are now defined above to share scope with release block
     if (filt_x < 0 || filt_y < 0) {
       filt_x = cal_x;
       filt_y = cal_y;
@@ -645,10 +690,21 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
       filt_y = (filt_y + cal_y) / 2;
     }
 
-    tp->data.coords[stored_points].x = (uint16_t)filt_x;
-    tp->data.coords[stored_points].y = (uint16_t)filt_y;
-    tp->data.coords[stored_points].strength = ((uint16_t)p[6] << 8) | p[5];
+    decoded[stored_points].raw_x = raw_x;
+    decoded[stored_points].raw_y = raw_y;
+    decoded[stored_points].x = (uint16_t)filt_x;
+    decoded[stored_points].y = (uint16_t)filt_y;
+    decoded[stored_points].strength = use_layout_a ? size_a : size_b;
+    decoded[stored_points].clamped = clamped;
     stored_points++;
+  }
+
+  portENTER_CRITICAL(&tp->data.lock);
+  tp->data.points = 0;
+  for (size_t i = 0; i < stored_points; i++) {
+    tp->data.coords[i].x = decoded[i].x;
+    tp->data.coords[i].y = decoded[i].y;
+    tp->data.coords[i].strength = decoded[i].strength;
   }
   tp->data.points = stored_points;
   portEXIT_CRITICAL(&tp->data.lock);
@@ -679,12 +735,24 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   }
   portEXIT_CRITICAL(&s_gt911_stats_lock);
 
-  // FIX: Clear status AFTER reading point data to prevent data loss
   esp_err_t clr_ret =
       touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, 0x00);
   if (clr_ret != ESP_OK) {
     s_gt911_i2c_errors++;
     ESP_LOGW(TAG, "Failed to clear GT911 status: %s", esp_err_to_name(clr_ret));
+  }
+
+  static int64_t last_invalid_log = 0;
+  static int64_t last_clamp_log = 0;
+  if (invalid_points > 0 && gt911_should_log(&last_invalid_log, 1000000)) {
+    ESP_LOGW(TAG,
+             "Dropped %" PRIu32 " invalid points (last raw=%u,%u margin=%d)",
+             invalid_points, last_invalid_x, last_invalid_y,
+             CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
+  }
+  if (clamped_points > 0 && gt911_should_log(&last_clamp_log, 1000000)) {
+    ESP_LOGI(TAG, "Clamped %" PRIu32 " points (last raw=%u,%u)",
+             clamped_points, last_clamped_x, last_clamped_y);
   }
 
   s_last_touch_down = (stored_points > 0);
@@ -1378,6 +1446,7 @@ static void gt911_irq_task(void *arg) {
   esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
   const int64_t debounce_us = 5000; // 5 ms anti-bounce
   int64_t last_error_log_us = 0;
+  uint32_t error_backoff_ms = 10;
 
   while (1) {
     uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_interval_ms));
@@ -1392,9 +1461,17 @@ static void gt911_irq_task(void *arg) {
 
     if (s_poll_mode) {
       esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
-      if (err != ESP_OK && (now - last_error_log_us) > 1000000) {
-        last_error_log_us = now;
-        ESP_LOGE(TAG, "GT911 poll read failed: %s", esp_err_to_name(err));
+      if (err != ESP_OK) {
+        if ((now - last_error_log_us) > 1000000) {
+          last_error_log_us = now;
+          ESP_LOGE(TAG, "GT911 poll read failed: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
+        if (error_backoff_ms < 200) {
+          error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
+        }
+      } else {
+        error_backoff_ms = 10;
       }
 
       if (now >= s_poll_mode_until_us) {
@@ -1413,10 +1490,18 @@ static void gt911_irq_task(void *arg) {
       // Fallback: If no IRQ is received during the wait window, poll once to
       // avoid losing touches when the interrupt line is noisy or missing.
       esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
-      if (err != ESP_OK && (now - last_error_log_us) > 1000000) {
-        last_error_log_us = now;
-        ESP_LOGE(TAG, "GT911 fallback poll read failed: %s",
-                 esp_err_to_name(err));
+      if (err != ESP_OK) {
+        if ((now - last_error_log_us) > 1000000) {
+          last_error_log_us = now;
+          ESP_LOGE(TAG, "GT911 fallback poll read failed: %s",
+                   esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
+        if (error_backoff_ms < 200) {
+          error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
+        }
+      } else {
+        error_backoff_ms = 10;
       }
       continue;
     }
@@ -1431,12 +1516,21 @@ static void gt911_irq_task(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(GT911_POST_IRQ_DELAY_MS));
 
     esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
-    if (err != ESP_OK && (now - last_error_log_us) > 1000000) {
-      last_error_log_us = now;
-      ESP_LOGE(TAG, "GT911 read failed: %s", esp_err_to_name(err));
-    } else if (s_gt911_irq_storm > 0 && (s_gt911_irq_storm % 50) == 0) {
-      ESP_LOGW(TAG, "IRQ storm detected (count=%" PRIu32 ")",
-               s_gt911_irq_storm);
+    if (err != ESP_OK) {
+      if ((now - last_error_log_us) > 1000000) {
+        last_error_log_us = now;
+        ESP_LOGE(TAG, "GT911 read failed: %s", esp_err_to_name(err));
+      }
+      vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
+      if (error_backoff_ms < 200) {
+        error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
+      }
+    } else {
+      error_backoff_ms = 10;
+      if (s_gt911_irq_storm > 0 && (s_gt911_irq_storm % 50) == 0) {
+        ESP_LOGW(TAG, "IRQ storm detected (count=%" PRIu32 ")",
+                 s_gt911_irq_storm);
+      }
     }
 
     gt911_enable_irq_guarded();
