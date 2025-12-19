@@ -210,7 +210,7 @@ static void reset_cal_points(lv_obj_t *overlay) {
     lv_obj_t *marker = lv_label_create(overlay);
     lv_label_set_text(marker, "✚");
     lv_obj_set_style_text_font(marker, UI_FONT_TITLE, 0);
-    lv_obj_set_style_text_color(marker, UI_COLOR_SECONDARY, 0);
+    lv_obj_set_style_text_color(marker, UI_COLOR_ACCENT, 0);
     lv_obj_set_style_bg_opa(marker, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(marker, 0, 0);
     lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
@@ -326,7 +326,9 @@ static void calibration_touch_cb(lv_event_t *e) {
     return;
 
   touch_sample_raw_t sample =
-      touch_transform_sample_raw_oriented(app_board_get_touch_handle(), true);
+      touch_transform_sample_raw_oriented(app_board_get_touch_handle(), false);
+  if (!sample.pressed && sample.raw_x == 0 && sample.raw_y == 0)
+    return;
   lv_point_t pt = {.x = (lv_coord_t)sample.raw_x, .y = (lv_coord_t)sample.raw_y};
 
   s_cal_points[s_active_cal_point].measured_raw = pt;
@@ -427,12 +429,8 @@ static void start_capture_cb(lv_event_t *e) {
     return;
   }
 
-  // Force full identity (no swap/mirror) during acquisition to avoid double
-  // orientation while collecting raw points
-  touch_transform_identity(&s_current_record.transform);
-  s_current_record.transform.swap_xy = false;
-  s_current_record.transform.mirror_x = false;
-  s_current_record.transform.mirror_y = false;
+  // Keep current orientation for UI usability; raw samples are taken without
+  // applying the active transform to avoid double-mapping.
   apply_config_to_driver(false);
   reset_cal_points(s_capture_layer);
   lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
