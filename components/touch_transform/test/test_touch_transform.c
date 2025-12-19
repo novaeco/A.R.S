@@ -35,6 +35,20 @@ TEST_CASE("orientation_swap_mirror", "[touch_transform]") {
   apply_and_check(&tf, 10, 5, 200, 200, -5, 10);
 }
 
+TEST_CASE("mirror both axes maps corners", "[touch_transform]") {
+  touch_transform_t tf;
+  touch_transform_identity(&tf);
+  tf.mirror_x = true;
+  tf.mirror_y = true;
+  tf.a13 = 1023.0f; // width - 1
+  tf.a23 = 599.0f;  // height - 1
+
+  apply_and_check(&tf, 1023, 599, 1024, 600, 0, 0);
+  apply_and_check(&tf, 0, 599, 1024, 600, 1023, 0);
+  apply_and_check(&tf, 1023, 0, 1024, 600, 0, 599);
+  apply_and_check(&tf, 0, 0, 1024, 600, 1023, 599);
+}
+
 TEST_CASE("affine_solver_noise", "[touch_transform]") {
   lv_point_t raw[5] = {{0, 0}, {100, 0}, {100, 100}, {0, 100}, {50, 50}};
   lv_point_t ref[5];

@@ -20,13 +20,13 @@ menu "Touch Configuration"
 
     config ARS_TOUCH_MIRROR_X
         bool "Mirror X Axis"
-        default n
+        default y
         help
             Invert the X coordinate (X = Max - X).
 
     config ARS_TOUCH_MIRROR_Y
         bool "Mirror Y Axis"
-        default n
+        default y
         help
             Invert the Y coordinate (Y = Max - Y).
 
