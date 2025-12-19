@@ -170,8 +170,8 @@ static void highlight_active_marker(void) {
       continue;
     lv_color_t color = (i == s_active_cal_point) ? UI_COLOR_ACCENT
                                                  : UI_COLOR_SECONDARY;
-    lv_obj_set_style_bg_color(s_cal_points[i].marker, color, 0);
-    lv_obj_set_style_border_color(s_cal_points[i].marker, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_cal_points[i].marker, color, 0);
+    lv_obj_set_style_border_color(s_cal_points[i].marker, color, 0);
   }
 }
 
@@ -198,22 +198,25 @@ static void reset_cal_points(lv_obj_t *overlay) {
       {.x = w / 2, .y = h / 2},
   };
 
-    for (int i = 0; i < CAL_POINT_COUNT; ++i) {
-      s_cal_points[i].target = targets[i];
-      s_cal_points[i].measured_raw.x = 0;
-      s_cal_points[i].measured_raw.y = 0;
-      s_cal_points[i].captured = false;
+  for (int i = 0; i < CAL_POINT_COUNT; ++i) {
+    s_cal_points[i].target = targets[i];
+    s_cal_points[i].measured_raw.x = 0;
+    s_cal_points[i].measured_raw.y = 0;
+    s_cal_points[i].captured = false;
     if (s_cal_points[i].marker) {
       lv_obj_del(s_cal_points[i].marker);
       s_cal_points[i].marker = NULL;
     }
-    lv_obj_t *marker = lv_obj_create(overlay);
-    lv_obj_set_size(marker, 26, 26);
-    lv_obj_set_style_radius(marker, 6, 0);
-    lv_obj_set_style_border_color(marker, lv_color_white(), 0);
-    lv_obj_set_style_border_width(marker, 2, 0);
+    lv_obj_t *marker = lv_label_create(overlay);
+    lv_label_set_text(marker, "✚");
+    lv_obj_set_style_text_font(marker, UI_FONT_TITLE, 0);
+    lv_obj_set_style_text_color(marker, UI_COLOR_SECONDARY, 0);
+    lv_obj_set_style_bg_opa(marker, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(marker, 0, 0);
     lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_pos(marker, targets[i].x - 13, targets[i].y - 13);
+    lv_obj_center(marker);
+    lv_obj_set_pos(marker, targets[i].x - lv_obj_get_width(marker) / 2,
+                   targets[i].y - lv_obj_get_height(marker) / 2);
     s_cal_points[i].marker = marker;
   }
   s_active_cal_point = 0;
@@ -309,7 +312,11 @@ static void finalize_calibration(void) {
 }
 
 static void calibration_touch_cb(lv_event_t *e) {
-  if (!e || lv_event_get_code(e) != LV_EVENT_PRESSED)
+  if (!e)
+    return;
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code != LV_EVENT_PRESSED && code != LV_EVENT_SHORT_CLICKED &&
+      code != LV_EVENT_CLICKED)
     return;
   if (!s_is_collecting || s_active_cal_point >= CAL_POINT_COUNT)
     return;
@@ -429,6 +436,7 @@ static void start_capture_cb(lv_event_t *e) {
   apply_config_to_driver(false);
   reset_cal_points(s_capture_layer);
   lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(s_capture_layer);
   lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
   s_is_collecting = true;
   s_active_cal_point = 0;
