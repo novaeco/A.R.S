@@ -178,6 +178,10 @@ static cJSON *load_json_from_file(const char *path) {
 
 esp_err_t data_manager_save_reptile(const reptile_t *reptile) {
   cJSON *root = cJSON_CreateObject();
+  if (!root) {
+    ESP_LOGE(TAG, "Failed to allocate reptile object (id=%s)", reptile->id);
+    return ESP_ERR_NO_MEM;
+  }
   cJSON_AddStringToObject(root, "id", reptile->id);
   cJSON_AddStringToObject(root, "name", reptile->name);
   cJSON_AddStringToObject(root, "species", reptile->species);
@@ -234,6 +238,10 @@ esp_err_t data_manager_delete_reptile(const char *id) {
 
 cJSON *data_manager_list_reptiles(void) {
   cJSON *arr = cJSON_CreateArray();
+  if (!arr) {
+    ESP_LOGE(TAG, "Failed to allocate reptiles array");
+    return NULL;
+  }
   if (!data_fs_lock(pdMS_TO_TICKS(2000))) {
     ESP_LOGE(TAG, "FS busy, cannot list reptiles");
     return arr;
@@ -253,6 +261,12 @@ cJSON *data_manager_list_reptiles(void) {
         reptile_t r;
         if (data_manager_load_reptile(id, &r) == ESP_OK) {
           cJSON *obj = cJSON_CreateObject();
+          if (!obj) {
+            ESP_LOGE(TAG, "Failed to allocate reptile entry for %s", entry->d_name);
+            closedir(d);
+            cJSON_Delete(arr);
+            return NULL;
+          }
           cJSON_AddStringToObject(obj, "id", r.id);
           cJSON_AddStringToObject(obj, "name", r.name);
           cJSON_AddItemToArray(arr, obj);
@@ -273,8 +287,17 @@ esp_err_t data_manager_add_event(const reptile_event_t *event) {
   if (root == NULL) {
     root = cJSON_CreateArray();
   }
+  if (!root) {
+    ESP_LOGE(TAG, "Failed to allocate events array for %s", event->reptile_id);
+    return ESP_ERR_NO_MEM;
+  }
 
   cJSON *evt_obj = cJSON_CreateObject();
+  if (!evt_obj) {
+    ESP_LOGE(TAG, "Failed to allocate event object for %s", event->id);
+    cJSON_Delete(root);
+    return ESP_ERR_NO_MEM;
+  }
   cJSON_AddStringToObject(evt_obj, "id", event->id);
   cJSON_AddStringToObject(evt_obj, "reptile_id", event->reptile_id);
   cJSON_AddNumberToObject(evt_obj, "type", event->type);
@@ -293,7 +316,11 @@ cJSON *data_manager_get_events(const char *reptile_id) {
   snprintf(path, sizeof(path), "/data/events/%s.json", reptile_id);
   cJSON *json = load_json_from_file(path);
   if (json == NULL) {
-    return cJSON_CreateArray();
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) {
+      ESP_LOGE(TAG, "Failed to allocate events array for %s", reptile_id);
+    }
+    return arr;
   }
   return json;
 }
@@ -307,8 +334,17 @@ esp_err_t data_manager_add_weight(const char *reptile_id, float weight,
   if (root == NULL) {
     root = cJSON_CreateArray();
   }
+  if (!root) {
+    ESP_LOGE(TAG, "Failed to allocate weights array for %s", reptile_id);
+    return ESP_ERR_NO_MEM;
+  }
 
   cJSON *w_obj = cJSON_CreateObject();
+  if (!w_obj) {
+    ESP_LOGE(TAG, "Failed to allocate weight entry for %s", reptile_id);
+    cJSON_Delete(root);
+    return ESP_ERR_NO_MEM;
+  }
   cJSON_AddNumberToObject(w_obj, "weight", weight);
   cJSON_AddNumberToObject(w_obj, "timestamp", (double)timestamp);
 
@@ -324,7 +360,11 @@ cJSON *data_manager_get_weights(const char *reptile_id) {
   snprintf(path, sizeof(path), "/data/weights/%s.json", reptile_id);
   cJSON *json = load_json_from_file(path);
   if (json == NULL) {
-    return cJSON_CreateArray();
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) {
+      ESP_LOGE(TAG, "Failed to allocate weights array for %s", reptile_id);
+    }
+    return arr;
   }
   return json;
 }
