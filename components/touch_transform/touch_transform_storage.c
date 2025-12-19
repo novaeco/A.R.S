@@ -1,6 +1,7 @@
 #include "touch_transform.h"
 #include "esp_crc.h"
 #include "esp_log.h"
+#include "esp_check.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "touch_orient.h"
@@ -14,6 +15,18 @@
 #define TOUCHCAL_SLOT_B "slotB"
 
 static const char *TAG = "touch_tf_store";
+static uint32_t calc_crc(const touch_transform_record_t *rec);
+
+static void touch_transform_set_defaults(touch_transform_record_t *rec) {
+  if (!rec)
+    return;
+  memset(rec, 0, sizeof(*rec));
+  touch_transform_identity(&rec->transform);
+  rec->magic = TOUCHCAL_MAGIC;
+  rec->version = TOUCHCAL_VERSION;
+  rec->generation = 0;
+  rec->crc32 = calc_crc(rec);
+}
 
 __attribute__((weak)) esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
   ESP_LOGW(TAG,
@@ -128,7 +141,13 @@ esp_err_t touch_transform_storage_load(touch_transform_record_t *out) {
 
   nvs_handle_t h;
   esp_err_t err = nvs_open(TOUCHCAL_NS, NVS_READONLY, &h);
+  if (err == ESP_ERR_NVS_NOT_INITIALIZED) {
+    ESP_LOGW(TAG, "NVS not initialized; initializing now");
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_flash_init());
+    err = nvs_open(TOUCHCAL_NS, NVS_READONLY, &h);
+  }
   if (err != ESP_OK) {
+    touch_transform_set_defaults(out);
     return err;
   }
 
@@ -143,6 +162,7 @@ esp_err_t touch_transform_storage_load(touch_transform_record_t *out) {
                &winner_key);
   if (!winner) {
     ESP_LOGW(TAG, "No valid touch transform slots found in NVS");
+    touch_transform_set_defaults(out);
     return ESP_ERR_NOT_FOUND;
   }
 

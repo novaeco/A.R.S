@@ -54,6 +54,12 @@
 #include "gt911.h"
 
 #define GT911_POLL_INTERVAL_MS 20
+#define GT911_RAW_MARGIN 64
+#define GT911_DEBUG_DUMP_INTERVAL_US 500000
+
+static inline uint16_t u16_le(const uint8_t *p) {
+  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
 
 static const char *TAG = "GT911";
 static TaskHandle_t s_gt911_irq_task = NULL;
@@ -65,6 +71,7 @@ static int64_t s_last_irq_us = 0;
 static int64_t s_spurious_block_until_us = 0;
 static int64_t s_last_empty_log_us = 0;
 static int64_t s_last_clamp_log_us = 0;
+static int64_t s_last_invalid_log_us = 0;
 static int s_gt911_int_gpio = -1;
 static uint16_t s_gt911_last_raw_x = 0;
 static uint16_t s_gt911_last_raw_y = 0;
@@ -75,6 +82,7 @@ static bool s_poll_mode = false;
 static int64_t s_poll_mode_until_us = 0;
 static uint32_t s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
 static portMUX_TYPE s_gt911_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_last_touch_down = false;
 
 #define GT911_EMPTY_BURST_LIMIT 10
 #define GT911_EMPTY_WINDOW_US 200000
@@ -99,6 +107,45 @@ static inline void gt911_enter_poll_mode(uint32_t interval_ms, int64_t duration_
 
 static uint16_t s_raw_max_x_seen = CONFIG_ARS_TOUCH_X_MAX;
 static uint16_t s_raw_max_y_seen = CONFIG_ARS_TOUCH_Y_MAX;
+static int64_t s_last_debug_dump_us = 0;
+
+#if CONFIG_GT911_DEBUG_DUMP
+static void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
+                                   size_t len) {
+  int64_t now = esp_timer_get_time();
+  if ((now - s_last_debug_dump_us) < GT911_DEBUG_DUMP_INTERVAL_US) {
+    return;
+  }
+  s_last_debug_dump_us = now;
+
+  char hex[3 * 64] = {0};
+  size_t hex_len = 0;
+  size_t capped_len = len > 21 ? 21 : len; // 21 bytes -> 63 chars
+  for (size_t i = 0; i < capped_len && hex_len + 3 < sizeof(hex); ++i) {
+    hex_len += snprintf(hex + hex_len, sizeof(hex) - hex_len, "%02X ", buf[i]);
+  }
+  ESP_LOGI(TAG, "GT911 dump status=0x%02X len=%u bytes: %s", status,
+           (unsigned int)len, hex);
+
+  if (len >= 8) {
+    uint8_t track_id = buf[0];
+    uint16_t raw_x = u16_le(&buf[1]);
+    uint16_t raw_y = u16_le(&buf[3]);
+    uint16_t strength = u16_le(&buf[5]);
+    ESP_LOGI(TAG,
+             "GT911 decode id=%u raw=(%u,%u) strength=%u touch_cnt=%u max=(%d,%d)",
+             track_id, raw_x, raw_y, strength, status & 0x0F,
+             CONFIG_ARS_TOUCH_X_MAX, CONFIG_ARS_TOUCH_Y_MAX);
+  }
+}
+#else
+static inline void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
+                                          size_t len) {
+  (void)status;
+  (void)buf;
+  (void)len;
+}
+#endif
 
 static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
                                                int offset, int scale,
@@ -538,6 +585,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     portENTER_CRITICAL(&tp->data.lock);
     tp->data.points = 0;
     portEXIT_CRITICAL(&tp->data.lock);
+    s_last_touch_down = false;
     return ESP_OK;
   }
 
@@ -565,6 +613,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     return err;
   }
 
+  gt911_debug_dump_frame(status, point_buf, read_len);
+
   // FIX: Track raw coordinates from first point BEFORE filtering
   uint16_t first_raw_x = 0;
   uint16_t first_raw_y = 0;
@@ -578,12 +628,27 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   uint16_t clamp_cal_y = 0;
   int64_t clamp_log_time_us = 0;
 
+  size_t stored_points = 0;
+
   portENTER_CRITICAL(&tp->data.lock);
-  tp->data.points = touch_cnt;
+  tp->data.points = 0;
   for (i = 0; i < touch_cnt; i++) {
     const uint8_t *p = &point_buf[i * 8];
-    uint16_t raw_x = ((uint16_t)p[2] << 8) | p[1];
-    uint16_t raw_y = ((uint16_t)p[4] << 8) | p[3];
+    uint16_t raw_x = u16_le(&p[1]);
+    uint16_t raw_y = u16_le(&p[3]);
+
+    bool plausible = raw_x <= (tp->config.x_max + GT911_RAW_MARGIN) &&
+                     raw_y <= (tp->config.y_max + GT911_RAW_MARGIN);
+    if (!plausible) {
+      int64_t now = esp_timer_get_time();
+      if ((now - s_last_invalid_log_us) > 500000) {
+        s_last_invalid_log_us = now;
+        ESP_LOGW(TAG,
+                 "Rejecting implausible GT911 point[%d] raw=(%u,%u) max=(%u,%u)",
+                 (int)i, raw_x, raw_y, tp->config.x_max, tp->config.y_max);
+      }
+      continue;
+    }
 
     bool clamped = false;
     uint16_t cal_x = gt911_apply_calibration(
@@ -606,7 +671,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     }
 
     // FIX: Store true raw values for first point before any filtering
-    if (i == 0) {
+    if (stored_points == 0) {
       first_raw_x = raw_x;
       first_raw_y = raw_y;
       first_cal_x = cal_x;
@@ -624,11 +689,13 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
       filt_y = (filt_y + cal_y) / 2;
     }
 
-    tp->data.coords[i].x = (uint16_t)filt_x;
-    tp->data.coords[i].y = (uint16_t)filt_y;
-    tp->data.coords[i].strength = ((uint16_t)p[6] << 8) | p[5];
+    tp->data.coords[stored_points].x = (uint16_t)filt_x;
+    tp->data.coords[stored_points].y = (uint16_t)filt_y;
+    tp->data.coords[stored_points].strength = ((uint16_t)p[6] << 8) | p[5];
+    stored_points++;
   }
-  if (touch_cnt > 0) {
+  tp->data.points = stored_points;
+  if (stored_points > 0) {
     // FIX: Store ACTUAL raw values from I2C, not filtered values
     s_gt911_last_raw_x = first_raw_x;
     s_gt911_last_raw_y = first_raw_y;
@@ -636,6 +703,9 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_empty_window_start_us = 0;
     s_gt911_irq_storm = 0;
     s_spurious_block_until_us = 0;
+  } else {
+    s_gt911_last_raw_x = 0;
+    s_gt911_last_raw_y = 0;
   }
   portEXIT_CRITICAL(&tp->data.lock);
 
@@ -648,9 +718,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   }
 
   // Safe logging outside critical section
-  if (touch_cnt > 0) {
+  if (stored_points > 0 && !s_last_touch_down) {
     ESP_LOGI(TAG, "Touch Detected: raw=(%u,%u) calibrated=(%u,%u) cnt=%d",
-             first_raw_x, first_raw_y, first_cal_x, first_cal_y, touch_cnt);
+             first_raw_x, first_raw_y, first_cal_x, first_cal_y,
+             (int)stored_points);
+  } else if (stored_points == 0 && s_last_touch_down) {
+    ESP_LOGI(TAG, "Touch released after read (cleared points)");
   }
 
   // FIX: Clear status AFTER reading point data to prevent data loss
@@ -660,6 +733,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     s_gt911_i2c_errors++;
     ESP_LOGW(TAG, "Failed to clear GT911 status: %s", esp_err_to_name(clr_ret));
   }
+
+  s_last_touch_down = (stored_points > 0);
 
   return ESP_OK;
 }
