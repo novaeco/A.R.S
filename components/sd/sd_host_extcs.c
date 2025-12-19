@@ -1215,7 +1215,12 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
   sd_extcs_seq_mark_state(s_extcs_state);
 
   // Ensure shared I2C bus primitives are ready before IO extender toggling
-  i2c_bus_shared_init();
+  if (i2c_bus_shared_init() != ESP_OK) {
+    ESP_LOGE(TAG, "SD: I2C shared bus not ready");
+    s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
+    sd_extcs_seq_mark_state(s_extcs_state);
+    return ESP_ERR_INVALID_STATE;
+  }
 
 #if CONFIG_ARS_SD_SDMMC_DEBUG_LOG
   esp_log_level_set("sdspi_host", ESP_LOG_DEBUG);

@@ -19,7 +19,7 @@ static esp_lcd_panel_handle_t g_panel_handle = NULL;
 static adc_oneshot_unit_handle_t s_adc_handle = NULL;
 static adc_cali_handle_t s_adc_cali_handle = NULL;
 static bool s_adc_cali_enabled = false;
-static float s_bat_divider = BOARD_BAT_DIVIDER;
+static float s_bat_divider = 1.0f;
 
 // BSP Components
 #include "gt911.h"
@@ -36,44 +36,63 @@ static float s_bat_divider = BOARD_BAT_DIVIDER;
 esp_err_t app_board_init(void) {
   ESP_LOGI(TAG, "Initializing Board via BSP...");
 
-  // 1. Initialize Shared Bus & IO Extension (Explicit Order)
-  i2c_bus_shared_init();          // 1) I2C0 + Mutex
-  IO_EXTENSION_Init();            // 2) IO Expander (CH32V003, Waveshare)
-  vTaskDelay(pdMS_TO_TICKS(100)); // Allow IO extenders to stabilize
+  esp_err_t err = i2c_bus_shared_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "I2C init failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  bool ioext_ok = false;
+  err = IO_EXTENSION_Init(); // IO Expander (CH32V003, Waveshare)
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "IO expander init failed: %s", esp_err_to_name(err));
+  } else {
+    ioext_ok = true;
+  }
+
+  if (ioext_ok) {
+    vTaskDelay(pdMS_TO_TICKS(50)); // Allow IO extender to settle
+  }
 
   // 3. Initialize Touch (GT911)
   // Note: touch_gt911_init internally re-checks bus/io but relies on shared
   // instances
-  g_tp_handle = touch_gt911_init();
-  if (g_tp_handle == NULL) {
-    ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
-    // We attempt to proceed, as IO Expander might still work if touch is just
-    // unresponsive
+  if (ioext_ok) {
+    g_tp_handle = touch_gt911_init();
+    if (g_tp_handle == NULL) {
+      ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
+    } else {
+      gt911_dump_config();
+
+      touch_orient_config_t orient_cfg;
+      esp_err_t orient_err = touch_orient_load(&orient_cfg);
+      if (orient_err != ESP_OK) {
+        ESP_LOGW(TAG, "touch_orient load failed: %s; using defaults",
+                 esp_err_to_name(orient_err));
+        touch_orient_get_defaults(&orient_cfg);
+      }
+
+      orient_err = touch_orient_apply(g_tp_handle, &orient_cfg);
+      if (orient_err != ESP_OK) {
+        ESP_LOGE(TAG, "touch_orient apply failed: %s",
+                 esp_err_to_name(orient_err));
+      }
+    }
   } else {
-    // ARS: Dump GT911 config for debugging touch issues
-    gt911_dump_config();
-
-    touch_orient_config_t orient_cfg;
-    esp_err_t orient_err = touch_orient_load(&orient_cfg);
-    if (orient_err != ESP_OK) {
-      ESP_LOGW(TAG, "touch_orient load failed: %s; using defaults",
-               esp_err_to_name(orient_err));
-      touch_orient_get_defaults(&orient_cfg);
-    }
-
-    orient_err = touch_orient_apply(g_tp_handle, &orient_cfg);
-    if (orient_err != ESP_OK) {
-      ESP_LOGE(TAG, "touch_orient apply failed: %s",
-               esp_err_to_name(orient_err));
-    }
+    ESP_LOGW(TAG, "Touch init skipped: IO expander unavailable");
   }
 
   // 2. CRITICAL: Enable LCD Power (VCOM / LCD_VDD) via IO Expander (IO_6)
   // This MUST happen before LCD Init, or pixels won't drive.
   // 2. CRITICAL: Enable LCD Power (VCOM / LCD_VDD) via IO Expander (IO_6)
   // This MUST happen before LCD Init, or pixels won't drive.
-  IO_EXTENSION_Output(IO_EXTENSION_IO_6, 1); // VCOM Enable
-  ESP_LOGI(TAG, "LCD VCOM/VDD Enabled (IO 6)");
+  if (ioext_ok) {
+    IO_EXTENSION_Output(IO_EXTENSION_IO_6, 1); // VCOM Enable
+    ESP_LOGI(TAG, "LCD VCOM/VDD Enabled (IO 6)");
+  } else {
+    ESP_LOGE(TAG, "LCD power enable skipped (IO expander offline)");
+    return ESP_ERR_INVALID_STATE;
+  }
 
   // Wait for power to stabilize
   vTaskDelay(pdMS_TO_TICKS(50));
@@ -98,9 +117,15 @@ esp_err_t app_board_init(void) {
 
   esp_err_t bl_ret = ESP_ERR_INVALID_STATE;
 #if CONFIG_ARS_BACKLIGHT_USE_IO_EXPANDER
-  IO_EXTENSION_Output(IO_EXTENSION_IO_2, 1);
-  bl_ret = ESP_OK; // Assume success if using IO expander
-  ESP_LOGI(TAG, "Backlight Enabled (IO 2)");
+  if (ioext_ok) {
+    bl_ret = IO_EXTENSION_Output(IO_EXTENSION_IO_2, 1);
+    if (bl_ret == ESP_OK) {
+      ESP_LOGI(TAG, "Backlight Enabled (IO 2)");
+    } else {
+      ESP_LOGW(TAG, "Backlight via IO expander failed: %s",
+               esp_err_to_name(bl_ret));
+    }
+  }
 #endif
 
   // Debug: Run Test Pattern (Color Bars) to verify display independently of
@@ -160,14 +185,19 @@ esp_err_t app_board_init(void) {
   adc_oneshot_unit_init_cfg_t init_config1 = {
       .unit_id = BOARD_BAT_ADC_UNIT,
   };
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &s_adc_handle));
-
-  adc_oneshot_chan_cfg_t config = {
-      .bitwidth = ADC_BITWIDTH_DEFAULT,
-      .atten = ADC_ATTEN_DB_12,
-  };
-  ESP_ERROR_CHECK(
-      adc_oneshot_config_channel(s_adc_handle, BOARD_BAT_ADC_CHAN, &config));
+  err = adc_oneshot_new_unit(&init_config1, &s_adc_handle);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "ADC init skipped: %s", esp_err_to_name(err));
+  } else {
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_12,
+    };
+    err = adc_oneshot_config_channel(s_adc_handle, BOARD_BAT_ADC_CHAN, &config);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "ADC channel config failed: %s", esp_err_to_name(err));
+    }
+  }
 
 #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
   adc_cali_line_fitting_config_t cali_config = {
@@ -175,12 +205,14 @@ esp_err_t app_board_init(void) {
       .atten = ADC_ATTEN_DB_12,
       .bitwidth = ADC_BITWIDTH_DEFAULT,
   };
-  if (adc_cali_create_scheme_line_fitting(&cali_config, &s_adc_cali_handle) ==
-      ESP_OK) {
-    s_adc_cali_enabled = true;
-    ESP_LOGI(TAG, "Battery ADC calibrated using line fitting scheme");
-  } else {
-    ESP_LOGW(TAG, "Battery ADC calibration not available; using raw values");
+  if (s_adc_handle) {
+    if (adc_cali_create_scheme_line_fitting(&cali_config, &s_adc_cali_handle) ==
+        ESP_OK) {
+      s_adc_cali_enabled = true;
+      ESP_LOGI(TAG, "Battery ADC calibrated using line fitting scheme");
+    } else {
+      ESP_LOGW(TAG, "Battery ADC calibration not available; using raw values");
+    }
   }
 #endif
 
@@ -191,7 +223,14 @@ esp_err_t app_board_init(void) {
   // ESP_LOGI(TAG, "Starting LVGL Port Init...");
   // if (lvgl_port_init(g_panel_handle, g_tp_handle) != ESP_OK) { ... }
 
-  ESP_LOGI(TAG, "Board Initialization Complete (SD pending)");
+  float div_den = (BOARD_BAT_DIV_DEN > 0) ? (float)BOARD_BAT_DIV_DEN : 1.0f;
+  s_bat_divider = (float)BOARD_BAT_DIV_NUM / div_den;
+  if (s_bat_divider < 0.1f) {
+    s_bat_divider = 1.0f;
+  }
+
+  ESP_LOGI(TAG, "Board Initialization Complete (SD pending) (bat_div=%.3f)",
+           s_bat_divider);
   return ESP_OK;
 }
 
@@ -260,8 +299,9 @@ void board_set_backlight_percent(uint8_t percent) {
   esp_err_t ret = ESP_ERR_INVALID_STATE;
 
 #if CONFIG_ARS_BACKLIGHT_USE_IO_EXPANDER
-  IO_EXTENSION_Pwm_Output(percent);
-  ret = ESP_OK;
+  if (IO_EXTENSION_Is_Initialized()) {
+    ret = IO_EXTENSION_Pwm_Output(percent);
+  }
 #endif
 
 #if CONFIG_ARS_BACKLIGHT_GPIO >= 0
@@ -363,7 +403,7 @@ void board_lcd_test_pattern(void) {
 
   // 4. Brief Delay to allow visual confirmation but NOT block boot
   // significantly
-  vTaskDelay(pdMS_TO_TICKS(500));
+  vTaskDelay(pdMS_TO_TICKS(200));
 
   free(frame_buf);
   ESP_LOGI(TAG, "Test Pattern Done. You should see RGBWB bands.");

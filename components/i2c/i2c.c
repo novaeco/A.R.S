@@ -26,6 +26,7 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 
 #define I2C_MUTEX_TIMEOUT_MS 200
 #define I2C_PROBE_TIMEOUT_MS 100
+#define I2C_XFER_TIMEOUT_MS 200
 
 // --- Utility Functions ---
 
@@ -86,31 +87,22 @@ esp_err_t DEV_I2C_Probe(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
 // --- Initialization ---
 
 esp_err_t DEV_I2C_Init_Bus(i2c_master_bus_handle_t *out_p_bus_handle) {
+  esp_err_t ret = i2c_bus_shared_init();
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
   if (s_bus_handle != NULL) {
-    if (out_p_bus_handle)
+    if (out_p_bus_handle) {
       *out_p_bus_handle = s_bus_handle;
+    }
     return ESP_OK;
   }
 
-  i2c_bus_shared_init();
-
-  // Config
-  i2c_master_bus_config_t i2c_bus_config = {
-      .clk_source = I2C_CLK_SRC_DEFAULT,
-      .i2c_port = ARS_I2C_PORT,
-      .scl_io_num = ARS_I2C_SCL,
-      .sda_io_num = ARS_I2C_SDA,
-      .glitch_ignore_cnt = 7, // Waveshare recommended
-      .flags.enable_internal_pullup = true,
-  };
-
-  ESP_LOGI(TAG, "Initializing Shared I2C Bus (Port %d, SCL:%d, SDA:%d)",
-           ARS_I2C_PORT, ARS_I2C_SCL, ARS_I2C_SDA);
-
-  esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &s_bus_handle);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "I2C New Master Bus Failed: %s", esp_err_to_name(ret));
-    return ret;
+  s_bus_handle = i2c_bus_shared_get_handle();
+  if (s_bus_handle == NULL) {
+    ESP_LOGE(TAG, "Shared I2C bus handle unavailable after init");
+    return ESP_ERR_INVALID_STATE;
   }
 
   if (out_p_bus_handle)
@@ -168,6 +160,15 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
   // easily without potentially removing/adding. However, for this project, the
   // critical change is to sanitize and ADD properly.
 
+  esp_err_t ret = DEV_I2C_Init_Bus(NULL);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
+  if (!i2c_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
+
   if (*dev_handle != NULL) {
     esp_err_t rm_ret = i2c_master_bus_rm_device(*dev_handle);
     if (rm_ret != ESP_OK) {
@@ -177,7 +178,9 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
     *dev_handle = NULL;
   }
 
-  return DEV_I2C_Add_Device(Addr, dev_handle);
+  ret = DEV_I2C_Add_Device(Addr, dev_handle);
+  i2c_unlock();
+  return ret;
 }
 
 // --- Data Transmission with Mutex ---
@@ -197,7 +200,7 @@ esp_err_t DEV_I2C_Write_Byte(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
     return ESP_ERR_TIMEOUT;
   esp_err_t ret =
       i2c_master_transmit(dev_handle, data, sizeof(data),
-                          pdMS_TO_TICKS(1000)); // ARS FIX: 1s timeout
+                          pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -208,7 +211,8 @@ esp_err_t DEV_I2C_Read_Byte(i2c_master_dev_handle_t dev_handle,
     return ESP_ERR_INVALID_ARG;
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret = i2c_master_receive(dev_handle, value, 1, pdMS_TO_TICKS(1000));
+  esp_err_t ret =
+      i2c_master_receive(dev_handle, value, 1, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -222,8 +226,9 @@ esp_err_t DEV_I2C_Read_Word(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
 
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret = i2c_master_transmit_receive(dev_handle, cmd_buf, 1, data, 2,
-                                              pdMS_TO_TICKS(1000));
+  esp_err_t ret =
+      i2c_master_transmit_receive(dev_handle, cmd_buf, 1, data, 2,
+                                  pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
 
   if (ret == ESP_OK && value) {
@@ -239,7 +244,7 @@ esp_err_t DEV_I2C_Write_Nbyte(i2c_master_dev_handle_t dev_handle,
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
   esp_err_t ret =
-      i2c_master_transmit(dev_handle, pdata, len, pdMS_TO_TICKS(1000));
+      i2c_master_transmit(dev_handle, pdata, len, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -250,8 +255,9 @@ esp_err_t DEV_I2C_Read_Nbyte(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
     return ESP_ERR_INVALID_ARG;
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret = i2c_master_transmit_receive(dev_handle, &Cmd, 1, pdata, len,
-                                              pdMS_TO_TICKS(1000));
+  esp_err_t ret =
+      i2c_master_transmit_receive(dev_handle, &Cmd, 1, pdata, len,
+                                  pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }

@@ -35,4 +35,11 @@ config ARS_BAT_DIV_DEN
     help
         Rapport du pont diviseur utilisé en entrée de l'ADC (num/den).
 
+config ARS_SKIP_TEST_PATTERN
+    bool "Ignorer le motif de test LCD au boot"
+    default y
+    help
+        Désactive l'affichage systématique du motif de test (barres RGBWB)
+        pour éviter une allocation PSRAM importante et accélérer le démarrage.
+
 endmenu

@@ -11,44 +11,63 @@ static const char *TAG = "i2c_bus_shared";
 SemaphoreHandle_t g_i2c_bus_mutex = NULL;
 static i2c_master_bus_handle_t s_shared_bus = NULL;
 
-void i2c_bus_shared_init(void) {
+esp_err_t i2c_bus_shared_init(void) {
   static bool initialized = false;
-  if (initialized) {
-    return;
+
+  if (initialized && s_shared_bus != NULL) {
+    return ESP_OK;
   }
-  initialized = true;
 
-  ESP_LOGI(TAG, "Init shared I2C bus 0");
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
 
-  // Create Global Mutex if not exists
   if (g_i2c_bus_mutex == NULL) {
     g_i2c_bus_mutex = xSemaphoreCreateRecursiveMutex();
-    assert(g_i2c_bus_mutex != NULL);
+    if (g_i2c_bus_mutex == NULL) {
+      ESP_LOGE(TAG, "Failed to allocate I2C mutex");
+      return ESP_ERR_NO_MEM;
+    }
   }
 
-  // Initialize the underlying I2C Master Bus (New Driver) using existing helper
-  // This ensures s_bus_handle in i2c.c is valid for GT911 and others
-  // and avoids "Driver already installed" errors if mixed.
-  i2c_master_bus_handle_t handle = NULL;
-  esp_err_t ret = DEV_I2C_Init_Bus(&handle);
-  s_shared_bus = handle;
+  if (s_shared_bus != NULL) {
+    initialized = true;
+    return ESP_OK;
+  }
 
+  i2c_master_bus_config_t i2c_bus_config = {
+      .clk_source = I2C_CLK_SRC_DEFAULT,
+      .i2c_port = ARS_I2C_PORT,
+      .scl_io_num = ARS_I2C_SCL,
+      .sda_io_num = ARS_I2C_SDA,
+      .glitch_ignore_cnt = 7,
+      .flags.enable_internal_pullup = true,
+  };
+
+  ESP_LOGI(TAG, "Init shared I2C bus 0 (SCL=%d SDA=%d)", ARS_I2C_SCL, ARS_I2C_SDA);
+
+  esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &s_shared_bus);
   if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to initialize shared I2C bus: %s", esp_err_to_name(ret));
-      // We don't abort here, but functionality will be degraded.
+    ESP_LOGE(TAG, "Failed to initialize shared I2C bus: %s",
+             esp_err_to_name(ret));
   } else {
-      ESP_LOGI(TAG, "Shared I2C bus initialized successfully");
+    initialized = true;
+    ESP_LOGI(TAG, "Shared I2C bus initialized successfully");
   }
+
+  return ret;
 }
 
 bool i2c_bus_shared_lock(TickType_t timeout_ticks) {
-  if (g_i2c_bus_mutex == NULL) {
-    // Ensure mutex exists even if init has not been called explicitly yet
-    i2c_bus_shared_init();
+  if (xPortInIsrContext()) {
+    return false;
   }
 
-  if (g_i2c_bus_mutex == NULL)
-    return false;
+  if (g_i2c_bus_mutex == NULL) {
+    if (i2c_bus_shared_init() != ESP_OK) {
+      return false;
+    }
+  }
 
   return xSemaphoreTakeRecursive(g_i2c_bus_mutex, timeout_ticks) == pdTRUE;
 }

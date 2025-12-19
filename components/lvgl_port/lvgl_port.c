@@ -17,6 +17,7 @@
 static const char *TAG = "lv_port";          // Tag for logging
 static SemaphoreHandle_t lvgl_mux = NULL;    // LVGL mutex for synchronization
 static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
+static esp_timer_handle_t s_lvgl_tick_timer = NULL;
 #if CONFIG_ARS_LVGL_DEBUG_SCREEN
 static lv_obj_t *s_debug_screen = NULL; // Debug screen object
 #endif
@@ -69,9 +70,16 @@ static esp_err_t tick_init(void) {
 
   const esp_timer_create_args_t lvgl_tick_timer_args = {
       .callback = &tick_increment, .name = "LVGL tick"};
-  esp_timer_handle_t lvgl_tick_timer = NULL;
-  ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
-  return esp_timer_start_periodic(lvgl_tick_timer, lvgl_tick_period_ms * 1000);
+  if (s_lvgl_tick_timer == NULL) {
+    esp_err_t err = esp_timer_create(&lvgl_tick_timer_args, &s_lvgl_tick_timer);
+    if (err != ESP_OK) {
+      return err;
+    }
+  }
+
+  esp_timer_stop(s_lvgl_tick_timer);
+  return esp_timer_start_periodic(s_lvgl_tick_timer,
+                                  lvgl_tick_period_ms * 1000);
 }
 
 // --- 1. Task Implementation (Fix B1) ---
@@ -172,15 +180,11 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   if (s_vsync.sem && s_vsync.wait_enabled && s_vsync.events_seen > 0) {
     xSemaphoreTake(s_vsync.sem, 0);
 
-    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(20)) != pdTRUE) {
       s_vsync.consecutive_timeouts++;
-      ESP_LOGW(TAG,
-               "VSYNC wait timeout (%u) — check RGB callbacks or PCLK timing",
+      ESP_LOGW(TAG, "VSYNC wait timeout — disabling wait (count=%u)",
                s_vsync.consecutive_timeouts);
-      if (s_vsync.consecutive_timeouts >= 3) {
-        ESP_LOGW(TAG, "VSYNC wait temporarily disabled after repeated timeouts");
-        s_vsync.wait_enabled = false;
-      }
+      s_vsync.wait_enabled = false;
     } else {
       s_vsync.consecutive_timeouts = 0;
     }
@@ -191,11 +195,18 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
 }
 
 static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
-  assert(panel_handle);
+  if (!panel_handle) {
+    ESP_LOGE(TAG, "Display init aborted: panel handle NULL");
+    return NULL;
+  }
   ESP_LOGI(TAG, "Initializing LVGL Display Driver...");
 
   // ARS: VSYNC Synchronization Semaphore
   s_vsync.sem = xSemaphoreCreateBinary();
+  if (!s_vsync.sem) {
+    ESP_LOGE(TAG, "Failed to allocate VSYNC semaphore");
+    return NULL;
+  }
   s_vsync.consecutive_timeouts = 0;
   s_vsync.wait_enabled = true;
   s_vsync.events_seen = 0;
@@ -203,44 +214,36 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   // Buffer Configuration
   int width = LVGL_PORT_H_RES;
   int lines = CONFIG_ARS_LVGL_BUF_LINES;
-  int lines_fallback = (lines / 2 > 10) ? lines / 2 : 10;
   int bpp = CONFIG_ARS_LVGL_COLOR_DEPTH;
   int byte_per_pixel = bpp / 8;
-
   size_t buffer_size = width * lines * byte_per_pixel;
 
   ESP_LOGI(TAG, "Allocating LVGL Buffers: %d lines (~%d KB)", lines,
            buffer_size / 1024);
 
-  uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
-#if CONFIG_SPIRAM
-  caps |= MALLOC_CAP_SPIRAM;
-#endif
+  uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
 
-  void *buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
+  void *buf1 = NULL;
   void *buf2 = NULL;
+  const int min_lines = 10;
 
-#if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
-  buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
-#endif
-
-  if (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
-    ESP_LOGW(TAG, "Allocation failed for %d lines, trying fallback %d lines",
-             lines, lines_fallback);
-    if (buf1) {
-      heap_caps_free(buf1);
-    }
-    if (buf2) {
-      heap_caps_free(buf2);
-    }
-
-    lines = lines_fallback;
+  while (lines >= min_lines && (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2))) {
     buffer_size = width * lines * byte_per_pixel;
-
     buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
     buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #endif
+    if (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
+      if (buf1) {
+        heap_caps_free(buf1);
+      }
+      if (buf2) {
+        heap_caps_free(buf2);
+      }
+      buf1 = buf2 = NULL;
+      lines /= 2;
+      continue;
+    }
   }
 
   if (!buf1) {
@@ -404,12 +407,14 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   static uint32_t s_last_diag_invalid = 0;
   static uint32_t s_last_diag_clamped = 0;
   static int64_t s_last_diag_log_us = 0;
+  static uint32_t s_last_diag_i2c_err = 0;
   gt911_stats_t stats = {0};
   gt911_get_stats(&stats);
 
   if ((now_us - s_last_diag_log_us) >= 500000 &&
       (stats.invalid_points != s_last_diag_invalid ||
-       stats.clamped_points != s_last_diag_clamped)) {
+       stats.clamped_points != s_last_diag_clamped ||
+       stats.i2c_errors != s_last_diag_i2c_err)) {
     s_last_diag_log_us = now_us;
     if (stats.invalid_points != s_last_diag_invalid) {
       ESP_LOGW("TOUCH_EVT",
@@ -425,6 +430,13 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
                stats.last_clamped_x, stats.last_clamped_y, data->point.x,
                data->point.y);
       s_last_diag_clamped = stats.clamped_points;
+    }
+    if (stats.i2c_errors != s_last_diag_i2c_err) {
+      ESP_LOGW("TOUCH_EVT",
+               "i2c_errors=%" PRIu32 " poll_timeouts=%" PRIu32 " (delta %" PRIu32 ")",
+               stats.i2c_errors, stats.poll_timeouts,
+               stats.i2c_errors - s_last_diag_i2c_err);
+      s_last_diag_i2c_err = stats.i2c_errors;
     }
   }
 
@@ -478,18 +490,33 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
   ESP_LOGI(TAG, "Initializing LVGL Port (AntigravitFix)");
 
   lv_init();
-  ESP_ERROR_CHECK(tick_init());
+  esp_err_t err = tick_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "LVGL tick init failed: %s", esp_err_to_name(err));
+    return err;
+  }
 
   lv_display_t *disp = display_init(lcd_handle);
-  assert(disp);
+  if (!disp) {
+    esp_timer_stop(s_lvgl_tick_timer);
+    return ESP_FAIL;
+  }
 
   if (tp_handle) {
     lv_indev_t *indev = indev_init(tp_handle);
-    assert(indev);
+    if (!indev) {
+      ESP_LOGE(TAG, "Failed to create LVGL input device");
+      esp_timer_stop(s_lvgl_tick_timer);
+      return ESP_FAIL;
+    }
   }
 
   lvgl_mux = xSemaphoreCreateRecursiveMutex();
-  assert(lvgl_mux);
+  if (!lvgl_mux) {
+    ESP_LOGE(TAG, "Failed to create LVGL mutex");
+    esp_timer_stop(s_lvgl_tick_timer);
+    return ESP_ERR_NO_MEM;
+  }
 
   BaseType_t core_id = CONFIG_ARS_LVGL_TASK_CORE;
   if (core_id > 1 || core_id < 0)
@@ -501,6 +528,8 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
 
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create LVGL task");
+    vSemaphoreDelete(lvgl_mux);
+    esp_timer_stop(s_lvgl_tick_timer);
     return ESP_FAIL;
   }
 

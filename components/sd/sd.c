@@ -4,6 +4,8 @@
 #include "sdkconfig.h"
 #include <dirent.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 
 static const char *TAG = "sd";
@@ -22,6 +24,9 @@ static void sd_set_state(sd_state_t new_state) {
 esp_err_t sd_card_init() {
   ESP_LOGI(TAG, "Initializing SD (ExtCS Mode)...");
 
+  sd_set_state(SD_STATE_UNINITIALIZED);
+  card = NULL;
+
   esp_err_t ret = sd_extcs_register_io_extender(IO_EXTENSION_Get_Handle());
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "SD IOEXT registration failed: %s", esp_err_to_name(ret));
@@ -29,8 +34,20 @@ esp_err_t sd_card_init() {
     return ret;
   }
 
-  ret = sd_extcs_mount_card(MOUNT_POINT, 5);
-  sd_extcs_state_t ext_state = sd_extcs_get_state();
+  const int max_attempts = 2;
+  sd_extcs_state_t ext_state = SD_EXTCS_STATE_UNINITIALIZED;
+
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    ret = sd_extcs_mount_card(MOUNT_POINT, 5);
+    ext_state = sd_extcs_get_state();
+    if (ret == ESP_OK || ext_state == SD_EXTCS_STATE_ABSENT) {
+      break;
+    }
+    ESP_LOGW(TAG, "SD mount attempt %d failed: %s (state=%s)", attempt + 1,
+             esp_err_to_name(ret), sd_extcs_state_str(ext_state));
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
   if (ret == ESP_OK) {
     card = sd_extcs_get_card_handle();
     sd_set_state(SD_STATE_INIT_OK);

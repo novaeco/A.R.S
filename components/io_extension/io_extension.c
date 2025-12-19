@@ -86,10 +86,11 @@ esp_err_t IO_EXTENSION_Init() {
     return ESP_OK;
   }
 
-  i2c_bus_shared_init();
-  if (!i2c_bus_shared_is_ready()) {
-    ESP_LOGE(TAG, "IOEXT init aborted: shared I2C bus not ready");
-    return ESP_ERR_INVALID_STATE;
+  esp_err_t bus_ret = i2c_bus_shared_init();
+  if (bus_ret != ESP_OK || !i2c_bus_shared_is_ready()) {
+    ESP_LOGE(TAG, "IOEXT init aborted: shared I2C bus not ready (%s)",
+             esp_err_to_name(bus_ret));
+    return bus_ret != ESP_OK ? bus_ret : ESP_ERR_INVALID_STATE;
   }
 
   // Set the I2C slave address for the IO_EXTENSION device

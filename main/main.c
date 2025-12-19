@@ -69,20 +69,24 @@ void app_main(void) {
   // weak stub.
   lvgl_port_set_ui_init_cb(ui_init);
 
-  // This initializes LCD, Touch, SD, and starts the LVGL task.
-  if (app_board_init() != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to init Board");
-    // If display fails, we might maintain standard execution for debug
+  // This initializes LCD and Touch.
+  esp_err_t board_ret = app_board_init();
+  if (board_ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to init Board: %s", esp_err_to_name(board_ret));
   } else {
     display_ok = app_board_get_panel_handle() != NULL;
     touch_ok = app_board_get_touch_handle() != NULL;
-    // Init LGL Port (Moved from board.c)
+  }
+
+  if (display_ok || touch_ok) {
     if (lvgl_port_init(app_board_get_panel_handle(),
                        app_board_get_touch_handle()) != ESP_OK) {
       ESP_LOGE(TAG, "Failed to init LVGL Port");
     } else {
       lvgl_ok = true;
     }
+  } else {
+    ESP_LOGW(TAG, "LVGL init skipped (display or touch missing)");
   }
 
   // 3. UI & Application Flow
@@ -93,12 +97,14 @@ void app_main(void) {
   // 4. Initialize SD Card (Async-like, after UI is up)
   // This ensures a missing SD card doesn't block the UI from showing
   // ARS: Swapped to dedicated Waveshare component fix
+  sd_state_t sd_state = SD_STATE_UNINITIALIZED;
   esp_err_t sd_ret = sd_card_init();
+  sd_state = sd_get_state();
   if (sd_ret != ESP_OK) {
     ESP_LOGW(TAG, "SD Card mounting failed or card not present (state=%s)",
-             sd_state_str(sd_get_state()));
+             sd_state_str(sd_state));
   } else {
-    ESP_LOGI(TAG, "SD Card state: %s", sd_state_str(sd_get_state()));
+    ESP_LOGI(TAG, "SD Card state: %s", sd_state_str(sd_state));
   }
 
   // 5. WiFi / Web Server Init
@@ -108,9 +114,10 @@ void app_main(void) {
 
   net_status_t net_status = net_get_status();
   bool wifi_provisioned = net_manager_is_provisioned();
+  bool wifi_connected = net_status.is_connected;
   const char *wifi_state = wifi_provisioned
-                               ? (net_status.is_connected ? "provisioned_connected"
-                                                          : "provisioned_not_connected")
+                               ? (wifi_connected ? "provisioned_connected"
+                                                 : "provisioned_not_connected")
                                : "not_provisioned";
 
   ESP_LOGI(TAG,
@@ -118,7 +125,7 @@ void app_main(void) {
            display_ok ? "ok" : "fail",
            touch_ok ? "ok" : "fail",
            lvgl_ok ? "ok" : "fail",
-           sd_state_str(sd_get_state()), wifi_state);
+           sd_state_str(sd_state), wifi_state);
 
   // --- Verification: Log Touch Coordinates for 10s ---
   // app_board_run_diagnostics(); // Removed to prevent blocking/interference
