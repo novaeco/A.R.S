@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "sdkconfig.h"
+#include "gt911.h"
 #include "touch.h"
 #include "touch_transform.h"
 #include <inttypes.h>
@@ -399,11 +400,39 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   }
 
   bool state_changed = data->state != prev_state;
+
+  static uint32_t s_last_diag_invalid = 0;
+  static uint32_t s_last_diag_clamped = 0;
+  static int64_t s_last_diag_log_us = 0;
+  gt911_stats_t stats = {0};
+  gt911_get_stats(&stats);
+
+  if ((now_us - s_last_diag_log_us) >= 500000 &&
+      (stats.invalid_points != s_last_diag_invalid ||
+       stats.clamped_points != s_last_diag_clamped)) {
+    s_last_diag_log_us = now_us;
+    if (stats.invalid_points != s_last_diag_invalid) {
+      ESP_LOGW("TOUCH_EVT",
+               "dropped=%" PRIu32 " last_invalid=(%u,%u) total_irqs=%" PRIu32,
+               stats.invalid_points - s_last_diag_invalid, stats.last_invalid_x,
+               stats.last_invalid_y, stats.irq_total);
+      s_last_diag_invalid = stats.invalid_points;
+    }
+    if (stats.clamped_points != s_last_diag_clamped) {
+      ESP_LOGI("TOUCH_EVT",
+               "clamped=%" PRIu32 " last_raw=(%u,%u) last_xy=(%d,%d)",
+               stats.clamped_points - s_last_diag_clamped,
+               stats.last_clamped_x, stats.last_clamped_y, data->point.x,
+               data->point.y);
+      s_last_diag_clamped = stats.clamped_points;
+    }
+  }
+
+#if CONFIG_TOUCH_DEBUG_LOG
   bool rate_allow =
       data->state == LV_INDEV_STATE_PRESSED &&
       ((now_us - s_last_touch_diag_us) >= 1000000);
   bool log_release = state_changed && prev_state == LV_INDEV_STATE_PRESSED;
-#if CONFIG_TOUCH_DEBUG_LOG
   if (state_changed || rate_allow || log_release) {
     s_last_touch_diag_us = now_us;
     s_touch_event_seq++;
