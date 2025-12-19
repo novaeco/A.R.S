@@ -1,9 +1,12 @@
 #include "touch_transform.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "gt911.h"
 #include <limits.h>
 #include <math.h>
 #include <string.h>
+
+static const char *TAG = "touch_transform";
 static touch_transform_t s_active_transform = {.a11 = 1.0f, .a22 = 1.0f};
 
 void touch_transform_identity(touch_transform_t *out) {
@@ -19,11 +22,20 @@ const touch_transform_t *touch_transform_get_active(void) {
 }
 
 void touch_transform_set_active(const touch_transform_t *tf) {
-  if (tf) {
-    s_active_transform = *tf;
-  } else {
+  if (!tf) {
+    ESP_LOGW(TAG, "Active transform reset to identity (null input)");
     touch_transform_identity(&s_active_transform);
+    return;
   }
+
+  if (touch_transform_validate(tf) != ESP_OK) {
+    ESP_LOGW(TAG,
+             "Invalid active transform (det or NaN), reverting to identity");
+    touch_transform_identity(&s_active_transform);
+    return;
+  }
+
+  s_active_transform = *tf;
 }
 
 static void apply_orientation(const touch_transform_t *tf, int32_t *x,

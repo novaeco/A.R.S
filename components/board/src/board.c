@@ -140,12 +140,19 @@ esp_err_t app_board_init(void) {
       }
     }
     if (err == ESP_OK) {
-      ESP_LOGI(TAG, "Touch transform present (gen=%" PRIu32 ") applying", rec.generation);
-      // Driver already has orientation applied; avoid double swap/mirror here
-      rec.transform.swap_xy = false;
-      rec.transform.mirror_x = false;
-      rec.transform.mirror_y = false;
-      touch_transform_set_active(&rec.transform);
+      if (touch_transform_validate(&rec.transform) == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Touch transform present (gen=%" PRIu32
+                 ") swap=%d mirX=%d mirY=%d applying",
+                 rec.generation, rec.transform.swap_xy, rec.transform.mirror_x,
+                 rec.transform.mirror_y);
+        touch_transform_set_active(&rec.transform);
+      } else {
+        ESP_LOGW(TAG, "Touch transform invalid; using identity");
+        touch_transform_t id;
+        touch_transform_identity(&id);
+        touch_transform_set_active(&id);
+      }
     } else {
       if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "Touch transform not found in NVS; using defaults");
