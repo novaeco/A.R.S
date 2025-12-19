@@ -1,4 +1,4 @@
-# components/lv_port/AGENTS — LVGL display/input port (Strict)
+# components/lvgl_port/AGENTS — LVGL display/input port (Strict)
 
 ## 1) Single-writer rule
 - LVGL APIs must be called from LVGL task context unless an existing lock/bridge is used.
@@ -16,3 +16,9 @@
 ## 4) Diagnostics
 - Allowed: first flush log, frame timing stats at low rate.
 - Forbidden: noisy per-pixel logs.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; LVGL task démarre même si display/touch optionnels manquent.
+- Logs: TAG lvgl_port publie init + premier flush et erreurs avec `esp_err_to_name` en peu de lignes.
+- Threading: toutes les APIs LVGL sont appelées depuis la tâche LVGL ou sous lock, `lv_disp_flush_ready()` appelé une seule fois.

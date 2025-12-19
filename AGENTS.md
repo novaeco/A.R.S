@@ -24,6 +24,14 @@ Your job is to implement requested fixes **safely**, **deterministically**, and 
   2) the closest subdirectory for the code you change (e.g. `components/sd/AGENTS.md`)
 - Subdirectory rules override root rules when stricter.
 
+### Mini-index (familles & emplacements)
+- Orchestration et boot : `main/AGENTS.md`
+- Standards composants & build : `components/AGENTS.md`
+- Affichage & interaction : `components/lvgl_port/AGENTS.md`, `components/rgb_lcd_port/AGENTS.md`, `components/ui/AGENTS.md`, `components/touch/AGENTS.md`, `components/touch_transform/AGENTS.md`, `components/touch_orient/AGENTS.md`
+- Stockage & données : `components/data_manager/AGENTS.md`, `components/reptile_storage/AGENTS.md`, `components/joltwallet__littlefs/AGENTS.md`
+- Réseau & services : `components/net/AGENTS.md`, `components/iot/AGENTS.md`, `components/web_server/AGENTS.md`, `components/core_service/AGENTS.md`
+- Bus et IO : `components/i2c/AGENTS.md`, `components/io_extension/AGENTS.md`, `components/gpio/AGENTS.md`, `components/sd/AGENTS.md`, `components/board/AGENTS.md`
+
 ## 3) Hard constraints (must not violate)
 ### 3.1 Forbidden re-introductions
 - Do **NOT** add back:
@@ -105,7 +113,7 @@ If you are used inside Google Antigravity or Codex:
 - `components/sd/AGENTS.md`: SD init/mount rules (must be followed for SD fixes)
 - `components/io_extension/AGENTS.md`: IO extender contract (CH32V003), pin/semantic mapping
 - `components/touch/AGENTS.md`: touch robustness rules
-- `components/lv_port/AGENTS.md`: LVGL port constraints
+- `components/lvgl_port/AGENTS.md`: LVGL port constraints
 - `components/net/AGENTS.md`: provisioning/wifi state rules
 - `components/data_manager/AGENTS.md`: storage integrity rules
 - `components/i2c/AGENTS.md`: shared I2C rules

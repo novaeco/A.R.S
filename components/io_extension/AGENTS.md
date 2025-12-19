@@ -26,3 +26,9 @@
 ## 5) Logging
 - On init: log detected IO extender and version if available.
 - On IO set failure: log pin semantic + error + bus address.
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; IO extension absente entraîne dégradation contrôlée (backlight/SD optionnels désactivés).
+- Logs: TAG io_extension mentionne init/détection et erreurs avec `esp_err_to_name` sur 1–3 lignes clés.
+- Threading: appels sérialisés via bus I2C partagé, retries bornés sans ISR.

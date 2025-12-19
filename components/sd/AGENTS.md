@@ -56,3 +56,9 @@ Diagnostics are allowed but must be non-invasive:
 - With SD inserted (FAT32):
   - mount succeeds
   - simple file read/write sanity passes (if repo includes a test)
+
+## Definition of Done
+- Build: `idf.py fullclean build` passe.
+- Boot: aucun panic/assert; absence ou échec SD se traduit par logs et poursuite du boot.
+- Logs: TAG sd indique init/mount et erreurs `esp_err_to_name` avec causes claires.
+- Threading: séquence SDSPI sérialisée (CS externe inclus), timeouts bornés, pas de blocage LVGL/boot.
