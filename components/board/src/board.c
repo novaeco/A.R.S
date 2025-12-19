@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs_flash.h"
 
 // ADC One-Shot & Calibration Includes
 #include "esp_adc/adc_cali.h"
