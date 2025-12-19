@@ -4,6 +4,7 @@
 #include "esp_lcd_touch.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include "lvgl.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +56,18 @@ esp_err_t touch_orient_save(const touch_orient_config_t *cfg);
  */
 esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
                              const touch_orient_config_t *cfg);
+
+/**
+ * @brief Return the last configuration applied at runtime.
+ */
+const touch_orient_config_t *touch_orient_get_active(void);
+
+/**
+ * @brief Apply orientation and clamp to a point.
+ */
+void touch_orient_map_point(const touch_orient_config_t *cfg, int32_t in_x,
+                            int32_t in_y, int32_t max_x, int32_t max_y,
+                            lv_point_t *out);
 
 /**
  * @brief Helper to populate config from Kconfig defaults

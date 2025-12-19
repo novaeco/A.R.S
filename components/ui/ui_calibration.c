@@ -5,6 +5,7 @@
 #include "nvs.h"
 #include "lvgl.h"
 #include "touch.h"
+#include "touch_orient.h"
 #include "touch_transform.h"
 #include "ui_helpers.h"
 #include "ui_screen_manager.h"
@@ -82,6 +83,19 @@ static void apply_config_to_driver(bool reset_scale) {
     tf.mirror_x = s_current_record.transform.mirror_x;
     tf.mirror_y = s_current_record.transform.mirror_y;
   }
+  touch_orient_config_t orient_cfg;
+  if (touch_orient_load(&orient_cfg) != ESP_OK) {
+    touch_orient_get_defaults(&orient_cfg);
+  }
+  orient_cfg.swap_xy = tf.swap_xy;
+  orient_cfg.mirror_x = tf.mirror_x;
+  orient_cfg.mirror_y = tf.mirror_y;
+  touch_orient_save(&orient_cfg);
+  touch_orient_apply(tp, &orient_cfg);
+
+  tf.swap_xy = false;
+  tf.mirror_x = false;
+  tf.mirror_y = false;
   touch_transform_set_active(&tf);
   ESP_LOGI(TAG,
            "Applied transform swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",

@@ -50,6 +50,10 @@ void touch_transform_identity(touch_transform_t *out);
 esp_err_t touch_transform_apply(const touch_transform_t *tf, int32_t raw_x,
                                 int32_t raw_y, int32_t max_x, int32_t max_y,
                                 lv_point_t *out);
+esp_err_t touch_transform_apply_ex(const touch_transform_t *tf, int32_t raw_x,
+                                   int32_t raw_y, int32_t max_x,
+                                   int32_t max_y, bool apply_orientation,
+                                   lv_point_t *out);
 
 esp_err_t touch_transform_validate(const touch_transform_t *tf);
 

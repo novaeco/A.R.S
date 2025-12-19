@@ -182,6 +182,13 @@ esp_err_t touch_transform_storage_load(touch_transform_record_t *out) {
   }
 
   *out = *winner;
+  if (touch_transform_validate(&out->transform) != ESP_OK) {
+    ESP_LOGW(TAG, "Loaded transform from %s invalid; falling back to defaults",
+             winner_key ? winner_key : "<none>");
+    touch_transform_set_defaults(out);
+    return ESP_ERR_INVALID_STATE;
+  }
+
   ESP_LOGI(TAG,
            "Loaded transform from %s gen=%" PRIu32
            " swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",
@@ -190,6 +197,7 @@ esp_err_t touch_transform_storage_load(touch_transform_record_t *out) {
            (double)winner->transform.a11, (double)winner->transform.a12,
            (double)winner->transform.a13, (double)winner->transform.a21,
            (double)winner->transform.a22, (double)winner->transform.a23);
+  sync_touch_orient_flags(&out->transform);
   return ESP_OK;
 }
 
@@ -210,6 +218,11 @@ static esp_err_t open_rw(nvs_handle_t *out) {
 esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
   if (!rec)
     return ESP_ERR_INVALID_ARG;
+
+  if (touch_transform_validate(&rec->transform) != ESP_OK) {
+    ESP_LOGE(TAG, "Rejecting invalid transform (det/bounds)");
+    return ESP_ERR_INVALID_STATE;
+  }
 
   nvs_handle_t h;
   esp_err_t err = open_rw(&h);

@@ -74,6 +74,9 @@ esp_err_t app_board_init(void) {
   // 3. Initialize Touch (GT911)
   // Note: touch_gt911_init internally re-checks bus/io but relies on shared
   // instances
+  touch_orient_config_t orient_cfg = {0};
+  bool orient_cfg_ready = false;
+
   if (ioext_ok) {
     g_tp_handle = touch_gt911_init();
     if (g_tp_handle == NULL) {
@@ -82,7 +85,6 @@ esp_err_t app_board_init(void) {
       board_orientation_t orient_defaults;
       board_orientation_get_defaults(&orient_defaults);
 
-      touch_orient_config_t orient_cfg;
       esp_err_t orient_err = touch_orient_load(&orient_cfg);
       if (orient_err != ESP_OK) {
         ESP_LOGW(TAG, "touch_orient load failed: %s; using defaults",
@@ -96,6 +98,7 @@ esp_err_t app_board_init(void) {
         ESP_LOGE(TAG, "touch_orient apply failed: %s",
                  esp_err_to_name(orient_err));
       }
+      orient_cfg_ready = true;
     }
   } else {
     ESP_LOGW(TAG, "Touch init skipped: IO expander unavailable");
@@ -153,9 +156,6 @@ esp_err_t app_board_init(void) {
 
   // 5. Touch Transform (load + migrate legacy if needed)
   if (g_tp_handle) {
-    board_orientation_t orient_defaults;
-    board_orientation_get_defaults(&orient_defaults);
-
     touch_transform_record_t rec = {0};
     esp_err_t err = touch_transform_storage_load(&rec);
     if (err == ESP_ERR_NOT_FOUND) {
@@ -170,14 +170,24 @@ esp_err_t app_board_init(void) {
                  ") swap=%d mirX=%d mirY=%d applying",
                  rec.generation, rec.transform.swap_xy, rec.transform.mirror_x,
                  rec.transform.mirror_y);
-        touch_transform_set_active(&rec.transform);
+        touch_transform_t apply_tf = rec.transform;
+        bool has_orient_flags = apply_tf.swap_xy || apply_tf.mirror_x ||
+                                apply_tf.mirror_y;
+        if (has_orient_flags && orient_cfg_ready) {
+          orient_cfg.swap_xy = apply_tf.swap_xy;
+          orient_cfg.mirror_x = apply_tf.mirror_x;
+          orient_cfg.mirror_y = apply_tf.mirror_y;
+          touch_orient_save(&orient_cfg);
+          touch_orient_apply(g_tp_handle, &orient_cfg);
+        }
+        apply_tf.swap_xy = false;
+        apply_tf.mirror_x = false;
+        apply_tf.mirror_y = false;
+        touch_transform_set_active(&apply_tf);
       } else {
         ESP_LOGW(TAG, "Touch transform invalid; using identity");
         touch_transform_t id;
         touch_transform_identity(&id);
-        id.swap_xy = orient_defaults.swap_xy;
-        id.mirror_x = orient_defaults.mirror_x;
-        id.mirror_y = orient_defaults.mirror_y;
         touch_transform_set_active(&id);
       }
     } else {
@@ -188,9 +198,6 @@ esp_err_t app_board_init(void) {
       }
       touch_transform_t id;
       touch_transform_identity(&id);
-      id.swap_xy = orient_defaults.swap_xy;
-      id.mirror_x = orient_defaults.mirror_x;
-      id.mirror_y = orient_defaults.mirror_y;
       touch_transform_set_active(&id);
     }
   }

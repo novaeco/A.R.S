@@ -2,6 +2,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "gt911.h"
+#include "touch_orient.h"
+#include "sdkconfig.h"
 #include <limits.h>
 #include <math.h>
 #include <string.h>
@@ -62,6 +64,12 @@ esp_err_t touch_transform_validate(const touch_transform_t *tf) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  if (fabsf(tf->a11) > 100.0f || fabsf(tf->a22) > 100.0f ||
+      fabsf(tf->a12) > 100.0f || fabsf(tf->a21) > 100.0f ||
+      fabsf(tf->a13) > 10000.0f || fabsf(tf->a23) > 10000.0f) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
   float det = tf->a11 * tf->a22 - tf->a12 * tf->a21;
   if (fabsf(det) < 1e-6f) {
     return ESP_ERR_INVALID_STATE;
@@ -69,15 +77,18 @@ esp_err_t touch_transform_validate(const touch_transform_t *tf) {
   return ESP_OK;
 }
 
-esp_err_t touch_transform_apply(const touch_transform_t *tf, int32_t raw_x,
-                                int32_t raw_y, int32_t max_x, int32_t max_y,
-                                lv_point_t *out) {
+esp_err_t touch_transform_apply_ex(const touch_transform_t *tf, int32_t raw_x,
+                                   int32_t raw_y, int32_t max_x,
+                                   int32_t max_y, bool apply_orientation,
+                                   lv_point_t *out) {
   if (!tf || !out)
     return ESP_ERR_INVALID_ARG;
 
   int32_t x = raw_x;
   int32_t y = raw_y;
-  apply_orientation(tf, &x, &y);
+  if (apply_orientation) {
+    apply_orientation(tf, &x, &y);
+  }
 
   float fx = (float)x;
   float fy = (float)y;
@@ -104,6 +115,12 @@ esp_err_t touch_transform_apply(const touch_transform_t *tf, int32_t raw_x,
   out->x = (lv_coord_t)lrintf(rx);
   out->y = (lv_coord_t)lrintf(ry);
   return ESP_OK;
+}
+
+esp_err_t touch_transform_apply(const touch_transform_t *tf, int32_t raw_x,
+                                int32_t raw_y, int32_t max_x, int32_t max_y,
+                                lv_point_t *out) {
+  return touch_transform_apply_ex(tf, raw_x, raw_y, max_x, max_y, true, out);
 }
 
 static float mat3_det(float a11, float a12, float a13, float a21, float a22,
@@ -301,11 +318,12 @@ touch_sample_raw_t touch_transform_sample_raw_oriented(
   sample.pressed = stats.last_raw_x || stats.last_raw_y;
 
   if (apply_orientation_hint) {
-    int32_t x = sample.raw_x;
-    int32_t y = sample.raw_y;
-    apply_orientation(touch_transform_get_active(), &x, &y);
-    sample.raw_x = (uint16_t)(x >= 0 ? x : 0);
-    sample.raw_y = (uint16_t)(y >= 0 ? y : 0);
+    lv_point_t oriented = {.x = sample.raw_x, .y = sample.raw_y};
+    touch_orient_map_point(touch_orient_get_active(), sample.raw_x,
+                           sample.raw_y, CONFIG_ARS_TOUCH_X_MAX,
+                           CONFIG_ARS_TOUCH_Y_MAX, &oriented);
+    sample.raw_x = (uint16_t)(oriented.x >= 0 ? oriented.x : 0);
+    sample.raw_y = (uint16_t)(oriented.y >= 0 ? oriented.y : 0);
   }
 
   return sample;

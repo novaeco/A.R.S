@@ -10,6 +10,17 @@ static const char *TAG = "touch_orient";
 #define NVS_NAMESPACE "touch"
 #define NVS_KEY "orient"
 
+static touch_orient_config_t s_active_cfg = {0};
+static bool s_active_cfg_set = false;
+
+static void set_active_cfg(const touch_orient_config_t *cfg) {
+  if (!cfg)
+    return;
+  s_active_cfg = *cfg;
+  s_active_cfg.crc32 = calculate_crc(&s_active_cfg);
+  s_active_cfg_set = true;
+}
+
 static uint32_t calculate_crc(const touch_orient_config_t *cfg) {
   // CRC over magic, version, and flags (skip crc32 field at the end)
   const uint8_t *data = (const uint8_t *)cfg;
@@ -179,6 +190,8 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
   if (!tp || !cfg)
     return ESP_ERR_INVALID_ARG;
 
+  set_active_cfg(cfg);
+
   esp_lcd_touch_set_swap_xy(tp, cfg->swap_xy);
   esp_lcd_touch_set_mirror_x(tp, cfg->mirror_x);
   esp_lcd_touch_set_mirror_y(tp, cfg->mirror_y);
@@ -201,6 +214,46 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
            cfg->swap_xy, cfg->mirror_x, cfg->mirror_y, (double)cal.scale_x,
            (double)cal.scale_y, cal.offset_x, cal.offset_y);
   return ESP_OK;
+}
+
+const touch_orient_config_t *touch_orient_get_active(void) {
+  if (!s_active_cfg_set) {
+    touch_orient_get_defaults(&s_active_cfg);
+    s_active_cfg_set = true;
+  }
+  return &s_active_cfg;
+}
+
+void touch_orient_map_point(const touch_orient_config_t *cfg, int32_t in_x,
+                            int32_t in_y, int32_t max_x, int32_t max_y,
+                            lv_point_t *out) {
+  if (!out)
+    return;
+  const touch_orient_config_t *use_cfg = cfg ? cfg : touch_orient_get_active();
+  int32_t x = in_x;
+  int32_t y = in_y;
+  if (use_cfg->swap_xy) {
+    int32_t tmp = x;
+    x = y;
+    y = tmp;
+  }
+  if (use_cfg->mirror_x && max_x > 0) {
+    x = (max_x - 1) - x;
+  }
+  if (use_cfg->mirror_y && max_y > 0) {
+    y = (max_y - 1) - y;
+  }
+  if (x < 0)
+    x = 0;
+  if (y < 0)
+    y = 0;
+  if (max_x > 0 && x > (max_x - 1))
+    x = max_x - 1;
+  if (max_y > 0 && y > (max_y - 1))
+    y = max_y - 1;
+
+  out->x = (lv_coord_t)x;
+  out->y = (lv_coord_t)y;
 }
 
 esp_err_t touch_orient_clear(void) {
