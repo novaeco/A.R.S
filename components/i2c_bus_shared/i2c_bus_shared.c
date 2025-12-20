@@ -1,4 +1,5 @@
 #include "i2c_bus_shared.h"
+#include "esp_check.h"
 #include "esp_log.h"
 
 static const char *TAG = "i2c_bus";
