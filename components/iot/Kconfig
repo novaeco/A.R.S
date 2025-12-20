@@ -1,0 +1,21 @@
+menu "IoT Configuration"
+    config IOT_WIFI_ENABLED
+        bool "Enable Wi-Fi and MQTT"
+        default n
+        help
+            Enable Wi-Fi connectivity and MQTT client.
+
+    config IOT_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+        depends on IOT_WIFI_ENABLED
+        help
+            SSID of the Wi-Fi network to connect to.
+
+    config IOT_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "mypassword"
+        depends on IOT_WIFI_ENABLED
+        help
+            Password of the Wi-Fi network.
+endmenu
