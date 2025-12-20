@@ -19,10 +19,6 @@ static lv_obj_t *ta_search;
 static lv_obj_t *list_animals;
 static lv_obj_t *kb; // Add keyboard reference for AZERTY setup
 
-typedef struct {
-  char *id_copy;
-} animal_btn_ctx_t;
-
 static char *ui_strdup(const char *src) {
   if (!src)
     return NULL;
@@ -36,21 +32,15 @@ static char *ui_strdup(const char *src) {
 
 static void animal_item_wrapper_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
-  animal_btn_ctx_t *ctx = (animal_btn_ctx_t *)lv_event_get_user_data(e);
-
-  if (!ctx)
+  const char *id = (const char *)lv_event_get_user_data(e);
+  if (!id)
     return;
 
   if (code == LV_EVENT_CLICKED) {
-    if (ctx->id_copy)
-      ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, ctx->id_copy, true);
+    ui_nav_navigate_ctx(UI_SCREEN_ANIMAL_DETAILS, id, true);
   } else if (code == LV_EVENT_DELETE) {
-    if (ctx->id_copy) {
-      ESP_LOGD(TAG, "Free animal list user_data for btn %s", ctx->id_copy);
-      free(ctx->id_copy);
-      ctx->id_copy = NULL;
-    }
-    free(ctx);
+    ESP_LOGD(TAG, "Free animal list user_data for btn %s", id);
+    free((void *)id);
   }
 }
 
@@ -87,21 +77,15 @@ static void load_animal_list_correct(const char *query) {
       }
     } else {
       for (size_t i = 0; i < count; i++) {
-        animal_btn_ctx_t *ctx = calloc(1, sizeof(animal_btn_ctx_t));
-        if (!ctx)
+        char *id_copy = ui_strdup(animals[i].id);
+        if (!id_copy)
           continue;
-
-        ctx->id_copy = ui_strdup(animals[i].id);
-        if (!ctx->id_copy) {
-          free(ctx);
-          continue;
-        }
         char label[256];
         snprintf(label, sizeof(label), "%s (%s)", animals[i].name,
                  animals[i].species);
 
         lv_obj_t *btn = lv_list_add_btn(list_animals, LV_SYMBOL_PASTE, label);
-        lv_obj_add_event_cb(btn, animal_item_wrapper_cb, LV_EVENT_ALL, ctx);
+        lv_obj_add_event_cb(btn, animal_item_wrapper_cb, LV_EVENT_ALL, id_copy);
       }
       core_free_animal_list(animals);
     }

@@ -94,15 +94,27 @@ static void back_event_cb(lv_event_t *e) {
   }
 }
 
+static lv_obj_t *get_mbox_from_event(lv_event_t *e) {
+  lv_obj_t *btn = lv_event_get_target(e);
+  if (!btn)
+    return NULL;
+  lv_obj_t *parent = lv_obj_get_parent(btn);
+  return parent ? lv_obj_get_parent(parent) : NULL;
+}
+
 static void delete_cancel_cb(lv_event_t *e) {
-  lv_obj_t *mbox = (lv_obj_t *)lv_event_get_user_data(e);
-  lv_obj_del(mbox);
+  lv_obj_t *mbox = get_mbox_from_event(e);
+  if (mbox) {
+    lv_obj_del(mbox);
+  }
 }
 
 static void delete_ok_cb(lv_event_t *e) {
-  lv_obj_t *mbox = (lv_obj_t *)lv_event_get_user_data(e);
+  lv_obj_t *mbox = get_mbox_from_event(e);
   core_delete_animal(current_animal_id);
-  lv_obj_del(mbox);
+  if (mbox) {
+    lv_obj_del(mbox);
+  }
   ui_nav_navigate(UI_SCREEN_ANIMALS, true);
 }
 
@@ -114,10 +126,10 @@ static void delete_btn_cb(lv_event_t *e) {
   // Custom Buttons for Delete
   lv_obj_t *btn_del = lv_msgbox_add_footer_button(mbox, "Supprimer");
   lv_obj_set_style_bg_color(btn_del, lv_palette_main(LV_PALETTE_RED), 0);
-  lv_obj_add_event_cb(btn_del, delete_ok_cb, LV_EVENT_CLICKED, mbox);
+  lv_obj_add_event_cb(btn_del, delete_ok_cb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t *btn_cancel = lv_msgbox_add_footer_button(mbox, "Annuler");
-  lv_obj_add_event_cb(btn_cancel, delete_cancel_cb, LV_EVENT_CLICKED, mbox);
+  lv_obj_add_event_cb(btn_cancel, delete_cancel_cb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_center(mbox);
 }
