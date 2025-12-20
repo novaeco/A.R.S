@@ -7,6 +7,7 @@
 #include "sd.h"
 #include "net_manager.h"
 #include "lvgl.h"
+#include <stdbool.h>
 
 static lv_timer_t *s_status_timer = NULL;
 static lv_obj_t *s_sd_label = NULL;
@@ -14,8 +15,17 @@ static lv_obj_t *s_wifi_label = NULL;
 static lv_obj_t *s_backlight_label = NULL;
 static lv_obj_t *s_pattern_area = NULL;
 
-static const lv_color_t pattern_colors[] = {UI_COLOR_PRIMARY, UI_COLOR_SUCCESS,
-                                            UI_COLOR_DANGER};
+static lv_color_t pattern_colors[3] = {0};
+
+static void pattern_colors_init(void) {
+  static bool initialized = false;
+  if (initialized)
+    return;
+  pattern_colors[0] = UI_COLOR_PRIMARY;
+  pattern_colors[1] = UI_COLOR_SUCCESS;
+  pattern_colors[2] = UI_COLOR_DANGER;
+  initialized = true;
+}
 
 static void update_backlight_label(uint8_t percent) {
   if (!s_backlight_label)
@@ -33,6 +43,7 @@ static void backlight_event_cb(lv_event_t *e) {
 }
 
 static void pattern_event_cb(lv_event_t *e) {
+  pattern_colors_init();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED || !s_pattern_area)
     return;
   static size_t idx = 0;
@@ -45,8 +56,11 @@ static void refresh_status_labels(void) {
   if (s_sd_label) {
     sd_state_t st = sd_get_state();
     switch (st) {
-    case SD_STATE_MOUNTED:
+    case SD_STATE_INIT_OK:
       lv_label_set_text(s_sd_label, "SD: montée");
+      break;
+    case SD_STATE_ABSENT:
+      lv_label_set_text(s_sd_label, "SD: absente");
       break;
     case SD_STATE_INIT_FAIL:
       lv_label_set_text(s_sd_label, "SD: init échouée");
@@ -56,7 +70,7 @@ static void refresh_status_labels(void) {
       lv_label_set_text(s_sd_label, "SD: montage échoué");
       break;
     default:
-      lv_label_set_text(s_sd_label, "SD: absente");
+      lv_label_set_text(s_sd_label, "SD: --");
       break;
     }
   }
@@ -70,9 +84,11 @@ static void refresh_status_labels(void) {
     case WIFI_PROV_STATE_CONNECTING:
       lv_label_set_text(s_wifi_label, "Wi-Fi: connexion");
       break;
-    case WIFI_PROV_STATE_PROVISIONING:
-    case WIFI_PROV_STATE_PROV_DONE:
-      lv_label_set_text(s_wifi_label, "Wi-Fi: provisionné");
+    case WIFI_PROV_STATE_CAPTIVE:
+      lv_label_set_text(s_wifi_label, "Wi-Fi: portail");
+      break;
+    case WIFI_PROV_STATE_WRONG_PASSWORD:
+      lv_label_set_text(s_wifi_label, "Wi-Fi: mot de passe");
       break;
     case WIFI_PROV_STATE_FAILED:
       lv_label_set_text(s_wifi_label, "Wi-Fi: échec");
@@ -147,6 +163,7 @@ lv_obj_t *ui_create_hardware_test_screen(void) {
   lv_label_set_text(pattern_title, "Rendu couleur / tearing");
   lv_obj_add_style(pattern_title, &ui_style_title, 0);
 
+  pattern_colors_init();
   s_pattern_area = lv_obj_create(pattern_card);
   lv_obj_set_size(s_pattern_area, LV_PCT(100), 160);
   lv_obj_set_style_bg_color(s_pattern_area, pattern_colors[0], 0);

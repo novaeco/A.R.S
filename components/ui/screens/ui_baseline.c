@@ -8,6 +8,8 @@
 #include "esp_err.h"
 #include "ui.h"
 #include "lvgl.h"
+#include <inttypes.h>
+#include <stdbool.h>
 
 static lv_timer_t *s_metrics_timer = NULL;
 static lv_obj_t *s_touch_label = NULL;
@@ -16,19 +18,30 @@ static lv_obj_t *s_wifi_label = NULL;
 static lv_obj_t *s_battery_label = NULL;
 static lv_obj_t *s_display_label = NULL;
 
-static lv_color_t tracker_colors[] = {UI_COLOR_PRIMARY, UI_COLOR_SUCCESS,
-                                      UI_COLOR_ALERT};
+static lv_color_t tracker_colors[3] = {0};
+
+static void tracker_colors_init(void) {
+  static bool initialized = false;
+  if (initialized)
+    return;
+  tracker_colors[0] = UI_COLOR_PRIMARY;
+  tracker_colors[1] = UI_COLOR_SUCCESS;
+  tracker_colors[2] = UI_COLOR_ALERT;
+  initialized = true;
+}
 
 static const char *sd_state_to_text(sd_state_t state) {
   switch (state) {
-  case SD_STATE_MOUNTED:
+  case SD_STATE_INIT_OK:
     return "SD: montée";
+  case SD_STATE_ABSENT:
+    return "SD: absente";
   case SD_STATE_INIT_FAIL:
     return "SD: init échouée";
   case SD_STATE_MOUNT_FAIL:
     return "SD: montage échoué";
   default:
-    return "SD: absente";
+    return "SD: --";
   }
 }
 
@@ -38,9 +51,10 @@ static const char *wifi_state_to_text(wifi_prov_state_t state) {
     return "Wi-Fi: connecté";
   case WIFI_PROV_STATE_CONNECTING:
     return "Wi-Fi: connexion...";
-  case WIFI_PROV_STATE_PROVISIONING:
-  case WIFI_PROV_STATE_PROV_DONE:
-    return "Wi-Fi: provisionné";
+  case WIFI_PROV_STATE_CAPTIVE:
+    return "Wi-Fi: portail";
+  case WIFI_PROV_STATE_WRONG_PASSWORD:
+    return "Wi-Fi: mot de passe";
   case WIFI_PROV_STATE_FAILED:
     return "Wi-Fi: échec";
   default:
@@ -52,7 +66,8 @@ static void update_touch_text(bool pressed, lv_point_t *pt) {
   if (!s_touch_label)
     return;
   if (pressed) {
-    lv_label_set_text_fmt(s_touch_label, "Touch: (%d,%d) press", pt->x, pt->y);
+    lv_label_set_text_fmt(s_touch_label, "Touch: (%" PRId32 ",%" PRId32 ") press",
+                          (int32_t)pt->x, (int32_t)pt->y);
   } else {
     lv_label_set_text(s_touch_label, "Touch: relâché");
   }
@@ -223,7 +238,7 @@ lv_obj_t *ui_create_baseline_screen(void) {
   lv_obj_set_style_bg_color(status_card, UI_COLOR_SURFACE, 0);
   lv_obj_set_style_pad_gap(status_card, UI_SPACE_SM, 0);
 
-  create_status_row(status_card, LV_SYMBOL_DISPLAY, &s_display_label);
+  create_status_row(status_card, LV_SYMBOL_EYE_OPEN, &s_display_label);
   create_status_row(status_card, LV_SYMBOL_IMAGE, &s_touch_label);
   create_status_row(status_card, LV_SYMBOL_SD_CARD, &s_sd_label);
   create_status_row(status_card, LV_SYMBOL_WIFI, &s_wifi_label);
@@ -233,6 +248,7 @@ lv_obj_t *ui_create_baseline_screen(void) {
   lv_obj_set_style_pad_gap(tracker, UI_SPACE_SM, 0);
   lv_obj_t *tracker_area = lv_obj_create(tracker);
   lv_obj_set_size(tracker_area, LV_PCT(100), 160);
+  tracker_colors_init();
   lv_obj_set_style_bg_color(tracker_area, tracker_colors[lv_tick_get() % 3], 0);
   lv_obj_set_style_bg_grad_color(tracker_area, UI_COLOR_SECONDARY, 0);
   lv_obj_set_style_bg_grad_dir(tracker_area, LV_GRAD_DIR_HOR, 0);
