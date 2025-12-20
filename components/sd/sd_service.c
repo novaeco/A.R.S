@@ -5,6 +5,7 @@
 #include "esp_vfs_fat.h"
 #include "io_extension.h"
 #include "board.h"
+#include "driver/spi_master.h"
 
 static const char *TAG = "sd_service";
 static sd_card_state_t s_state = SD_CARD_NOT_PRESENT;
@@ -14,7 +15,22 @@ static const char *s_mount_point = "/sdcard";
 sd_card_state_t sd_service_init(void)
 {
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = BOARD_SD_SPI_HOST;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = BOARD_SD_SPI_MOSI,
+        .miso_io_num = BOARD_SD_SPI_MISO,
+        .sclk_io_num = BOARD_SD_SPI_SCLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    if (spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init SPI bus for SD");
+        s_state = SD_CARD_ERROR;
+        return s_state;
+    }
 
     sdspi_device_config_t slot_config = {
         .host_id = host.slot,
@@ -24,7 +40,7 @@ sd_card_state_t sd_service_init(void)
         .gpio_int = -1,
     };
 
-    // CS controlled through IO extension; best-effort toggle.
+    // CS controlled through IO extension
     io_extension_set_output(BOARD_SD_CS_IO_EXT_PIN, true);
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -43,6 +59,9 @@ sd_card_state_t sd_service_init(void)
     } else {
         s_state = SD_CARD_ERROR;
         ESP_LOGW(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+    }
+    if (ret != ESP_OK) {
+        spi_bus_free(host.slot);
     }
     return s_state;
 }

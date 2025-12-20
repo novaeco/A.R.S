@@ -106,10 +106,15 @@ void ui_app_start(storage_context_t *ctx)
         ESP_LOGE(TAG, "LVGL display not ready");
         return;
     }
+    if (!lvgl_port_lock(500)) {
+        ESP_LOGE(TAG, "LVGL lock timeout");
+        return;
+    }
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0f1a1a), 0);
     show_animals_tab(scr);
     build_navigation(scr);
     lv_refr_now(disp);
+    lvgl_port_unlock();
     ESP_LOGI(TAG, "UI started");
 }
