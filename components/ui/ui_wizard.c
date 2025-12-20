@@ -75,7 +75,7 @@ static void wizard_finish(bool mark_setup_done) {
   }
   ui_wifi_set_result_cb(NULL);
   current_step = WIZARD_STEP_DONE;
-  ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
+  ui_nav_navigate(UI_SCREEN_BASELINE, false);
 }
 
 esp_err_t ui_wizard_mark_setup_done(void) { return save_setup_done(); }
