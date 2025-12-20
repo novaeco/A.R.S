@@ -516,7 +516,15 @@ static void save_and_finish_cb(lv_event_t *e) {
   esp_err_t err = touch_transform_storage_save(&s_current_record);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to save calibration: %s", esp_err_to_name(err));
-    ui_show_error("Echec enregistrement calibration");
+    ui_show_error("Echec enregistrement calibration (utilisation volatile)");
+    apply_config_to_driver(false);
+    err = ui_wizard_mark_setup_done();
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to persist setup_done flag: %s",
+               esp_err_to_name(err));
+    }
+    stop_touch_debug_timer();
+    ui_wizard_complete_from_calibration();
     return;
   }
 
@@ -758,10 +766,9 @@ bool ui_calibration_check_and_start(void) {
   }
 
   if (err != ESP_ERR_NVS_NOT_FOUND) {
-    ESP_LOGW(TAG, "Calibration missing or invalid (%s); applying defaults",
-             esp_err_to_name(err));
+    ESP_LOGW(TAG, "Calibration missing or invalid (%s)", esp_err_to_name(err));
   } else {
-    ESP_LOGI(TAG, "Calibration not found in NVS; applying defaults");
+    ESP_LOGI(TAG, "Calibration not found in NVS; launching UI calibration");
   }
 
   if (touch_transform_storage_migrate_old(&rec) == ESP_OK) {
@@ -770,24 +777,9 @@ bool ui_calibration_check_and_start(void) {
     return false;
   }
 
-  touch_transform_identity(&rec.transform);
-  touch_orient_config_t orient_cfg;
-  if (touch_orient_load(&orient_cfg) != ESP_OK) {
-    touch_orient_get_defaults(&orient_cfg);
-  }
-  rec.transform.swap_xy = orient_cfg.swap_xy;
-  rec.transform.mirror_x = orient_cfg.mirror_x;
-  rec.transform.mirror_y = orient_cfg.mirror_y;
-  rec.magic = TOUCH_TRANSFORM_MAGIC;
-  rec.version = TOUCH_TRANSFORM_VERSION;
-  rec.generation = 0;
-  rec.crc32 = 0;
-
-  ESP_LOGW(TAG,
-           "Calibration unavailable -> using default orientation and continuing "
-           "UI boot");
-  ui_calibration_apply(&rec);
-  return false;
+  ESP_LOGW(TAG, "No usable calibration -> starting calibration UI");
+  ui_calibration_start();
+  return true;
 }
 
 void ui_calibration_start(void) {
