@@ -1,10 +1,15 @@
 #include "iot_manager.h"
+#include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_https_ota.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/event_groups.h"
 #include "mqtt_client.h"
 #include "nvs_flash.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define DEFAULT_MQTT_URI "mqtt://test.mosquitto.org"
@@ -17,6 +22,7 @@ static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 static bool s_wifi_initialized = false;
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
+static bool s_ota_in_progress = false;
 
 static void mqtt_app_start(void);
 
@@ -171,7 +177,63 @@ esp_err_t iot_wifi_stop(void) {
   return ESP_OK;
 }
 
+static void iot_ota_task(void *param) {
+  char *url_copy = (char *)param;
+
+  esp_http_client_config_t http_cfg = {
+      .url = url_copy,
+      .crt_bundle_attach = esp_crt_bundle_attach,
+      .timeout_ms = 15000,
+  };
+
+  esp_https_ota_config_t ota_cfg = {
+      .http_config = &http_cfg,
+  };
+
+  ESP_LOGI(TAG, "OTA: lancement sur URL fournie");
+  esp_err_t err = esp_https_ota(&ota_cfg);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "OTA terminée avec succès, redémarrage imminent");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+  } else {
+    ESP_LOGE(TAG, "OTA échouée: %s", esp_err_to_name(err));
+  }
+
+  if (url_copy) {
+    size_t len = strlen(url_copy);
+    memset(url_copy, 0, len);
+    free(url_copy);
+  }
+
+  s_ota_in_progress = false;
+  vTaskDelete(NULL);
+}
+
 esp_err_t iot_ota_start(const char *url) {
-  ESP_LOGI(TAG, "Stub: Starting OTA from %s", url);
+  if (!url || strlen(url) < 8) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (s_ota_in_progress) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  size_t len = strlen(url) + 1;
+  char *url_copy = calloc(1, len);
+  if (!url_copy) {
+    return ESP_ERR_NO_MEM;
+  }
+  memcpy(url_copy, url, len);
+
+  BaseType_t task_created =
+      xTaskCreate(iot_ota_task, "iot_ota_task", 8192, url_copy, 5, NULL);
+  if (task_created != pdPASS) {
+    memset(url_copy, 0, len);
+    free(url_copy);
+    return ESP_FAIL;
+  }
+
+  s_ota_in_progress = true;
   return ESP_OK;
 }

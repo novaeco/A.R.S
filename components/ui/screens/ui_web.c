@@ -4,12 +4,14 @@
 #include "../ui_screen_manager.h"
 #include "../ui_theme.h"
 #include "lvgl.h"
+#include "iot_manager.h"
 #include "net_manager.h"
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
 
 static lv_obj_t *ta_result;
+static lv_obj_t *ta_ota_url;
 
 static void search_event_cb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
@@ -43,6 +45,37 @@ static void search_event_cb(lv_event_t *e) {
       lv_textarea_set_text(ta_result,
                            "ECHEC: Erreur requete HTTP.\nVerifier Internet.");
     }
+  }
+}
+
+static void ota_event_cb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED || !ta_ota_url || !ta_result)
+    return;
+
+  const char *url = lv_textarea_get_text(ta_ota_url);
+  if (!url || strlen(url) < 8) {
+    lv_textarea_set_text(ta_result, "ECHEC: URL OTA invalide.");
+    return;
+  }
+
+  if (!net_is_connected()) {
+    lv_textarea_set_text(ta_result,
+                         "ECHEC: Pas de connexion WiFi (OTA impossible).");
+    return;
+  }
+
+  ui_helper_show_spinner();
+  esp_err_t err = iot_ota_start(url);
+  ui_helper_hide_spinner();
+
+  if (err == ESP_OK) {
+    lv_textarea_set_text(
+        ta_result,
+        "OTA démarrée. L'appareil redémarrera automatiquement après flash.");
+  } else if (err == ESP_ERR_INVALID_STATE) {
+    lv_textarea_set_text(ta_result, "OTA déjà en cours, merci de patienter.");
+  } else {
+    lv_textarea_set_text(ta_result, "ECHEC: impossible de lancer l'OTA.");
   }
 }
 
@@ -107,7 +140,7 @@ lv_obj_t *ui_create_web_screen(void) {
   lbl = lv_label_create(cont);
   lv_label_set_text(lbl, "Mise a jour Firmware (OTA):");
 
-  lv_obj_t *ta_ota_url = lv_textarea_create(cont);
+  ta_ota_url = lv_textarea_create(cont);
   lv_textarea_set_one_line(ta_ota_url, true);
   lv_obj_set_width(ta_ota_url, LV_PCT(100));
   lv_textarea_set_placeholder_text(ta_ota_url, "http://.../firmware.bin");
@@ -119,8 +152,7 @@ lv_obj_t *ui_create_web_screen(void) {
                             LV_STATE_PRESSED);
   lv_obj_align(btn_ota, LV_ALIGN_CENTER, 0, 0);
 
-  // Reusing search cb for simulation
-  lv_obj_add_event_cb(btn_ota, search_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(btn_ota, ota_event_cb, LV_EVENT_CLICKED, NULL);
 
   lbl = lv_label_create(btn_ota);
   lv_label_set_text(lbl, "LANCER MISE A JOUR");
