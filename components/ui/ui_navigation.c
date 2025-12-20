@@ -9,6 +9,8 @@
 #include "screens/ui_animal_details.h"
 #include "screens/ui_animal_form.h"
 #include "screens/ui_reproduction.h"
+#include "screens/ui_baseline.h"
+#include "screens/ui_hardware_test.h"
 #include "screens/ui_web.h"
 #include "screens/ui_wifi.h"
 #include "ui.h"
@@ -85,7 +87,19 @@ static lv_obj_t *create_reproduction(void *ctx) {
   return ui_create_reproduction_screen((const char *)ctx);
 }
 
+static lv_obj_t *create_baseline(void *ctx) {
+  (void)ctx;
+  return ui_create_baseline_screen();
+}
+
+static lv_obj_t *create_hardware_test(void *ctx) {
+  (void)ctx;
+  return ui_create_hardware_test_screen();
+}
+
 static const ui_route_t routes[] = {
+    {UI_SCREEN_BASELINE, create_baseline, ui_baseline_on_enter,
+     ui_baseline_on_leave, true},
     {UI_SCREEN_DASHBOARD, create_dashboard, ui_dashboard_on_enter,
      ui_dashboard_on_leave, true},
     {UI_SCREEN_ANIMALS, create_animals, NULL, NULL, false},
@@ -98,6 +112,8 @@ static const ui_route_t routes[] = {
     {UI_SCREEN_ANIMAL_DETAILS, create_animal_details, NULL, NULL, false},
     {UI_SCREEN_ANIMAL_FORM, create_animal_form, NULL, NULL, false},
     {UI_SCREEN_REPRODUCTION, create_reproduction, NULL, NULL, false},
+    {UI_SCREEN_HARDWARE_TEST, create_hardware_test, ui_hardware_test_on_enter,
+     ui_hardware_test_on_leave, false},
 };
 
 static const ui_route_t *ui_nav_find_route(ui_screen_t id) {
@@ -136,11 +152,11 @@ void ui_nav_navigate_ctx(ui_screen_t screen, void *ctx, bool anim) {
 
   const ui_route_t *current_route = ui_nav_find_route(current_screen_id);
 
-  if (route->reset_stack) {
-    nav_stack_ptr = 0;
-  } else if (screen != current_screen_id && current_screen_id != UI_SCREEN_NONE) {
-    ui_nav_push(current_screen_id);
-  }
+  const ui_screen_t prev_screen = current_screen_id;
+  const int prev_stack_ptr = nav_stack_ptr;
+  const bool reset_stack = route->reset_stack;
+  const bool push_prev = (!reset_stack && screen != current_screen_id &&
+                          current_screen_id != UI_SCREEN_NONE);
 
   if (current_route && current_route->on_leave) {
     current_route->on_leave();
@@ -149,7 +165,27 @@ void ui_nav_navigate_ctx(ui_screen_t screen, void *ctx, bool anim) {
   lv_obj_t *scr = route->create(ctx);
   if (!scr) {
     ESP_LOGE(TAG, "Screen creation failed for %d", (int)screen);
+    nav_stack_ptr = prev_stack_ptr;
+    current_screen_id = UI_SCREEN_NONE;
+    static bool in_fallback = false;
+    if (in_fallback) {
+      ESP_LOGE(TAG, "Fallback already in progress; aborting navigation");
+      return;
+    }
+    in_fallback = true;
+    if (screen != UI_SCREEN_BASELINE) {
+      ui_nav_navigate(UI_SCREEN_BASELINE, false);
+    } else if (screen != UI_SCREEN_DASHBOARD) {
+      ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
+    }
+    in_fallback = false;
     return;
+  }
+
+  if (reset_stack) {
+    nav_stack_ptr = 0;
+  } else if (push_prev) {
+    ui_nav_push(prev_screen);
   }
 
   lv_scr_load_anim_t anim_type =

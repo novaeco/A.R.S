@@ -63,7 +63,7 @@ void ui_init(void) {
       ESP_LOGW(TAG, "Calibration invalid -> Calibration UI launched before dashboard");
       return;
     }
-    ui_nav_navigate(UI_SCREEN_DASHBOARD, false);
+    ui_nav_navigate(UI_SCREEN_BASELINE, false);
   } else {
     ESP_LOGI(TAG, "Setup pending -> starting wizard flow");
     ui_wizard_start();
