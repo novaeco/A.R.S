@@ -254,7 +254,7 @@ static esp_err_t encode_payload(const storage_context_t *ctx, cJSON **out_payloa
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
-    uint32_t crc = esp_rom_crc32(0, (const uint8_t *)json, strlen(json));
+    uint32_t crc = esp_rom_crc32_le(0, (const uint8_t *)json, strlen(json));
     *out_payload = root;
     *out_json = json;
     *out_crc = crc;
@@ -393,7 +393,7 @@ static esp_err_t load_from_nvs(storage_context_t *ctx)
         free(json);
         return err;
     }
-    uint32_t crc = esp_rom_crc32(0, (const uint8_t *)json, strlen(json));
+    uint32_t crc = esp_rom_crc32_le(0, (const uint8_t *)json, strlen(json));
     if (crc != stored_crc) {
         ESP_LOGW(TAG, "NVS CRC mismatch (expected %u got %u)", stored_crc, crc);
         free(json);
@@ -456,7 +456,7 @@ static esp_err_t load_from_sd(storage_context_t *ctx)
         cJSON_Delete(wrapper);
         return ESP_ERR_NO_MEM;
     }
-    uint32_t crc = esp_rom_crc32(0, (const uint8_t *)payload_str, strlen(payload_str));
+    uint32_t crc = esp_rom_crc32_le(0, (const uint8_t *)payload_str, strlen(payload_str));
     uint32_t expected = (uint32_t)cJSON_GetNumberValue(crc_item);
     if (crc != expected) {
         ESP_LOGW(TAG, "SD CRC mismatch (expected %u got %u)", expected, crc);
