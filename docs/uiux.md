@@ -3,11 +3,13 @@
 ## Ligne directrice
 - Style moderne et apaisé, teintes sombres organiques.
 - Lisibilité et espacement généreux pour tablette 1024×600.
-- Navigation fixe : top bar (heure/statuts) + barre basse (Dashboard, Animaux, Reproduction, Documents, Conformité, Paramètres).
+- Navigation fixe : top bar (heure + statuts Wi-Fi/SD) + barre basse (Dashboard, Animaux, Export, Echéances, Documents, Conformité, Paramètres).
 
 ## Écrans MVP
-- **Dashboard** : à compléter (widgets synthèse).
+- **Dashboard** : synthèse des compteurs (animaux, documents, événements).
 - **Animaux** : liste + timeline par animal + accès export.
+- **Export** : génération du dossier animal CSV sur SD (si montée).
+- **Echéances** : liste issue du timeline en attendant service dédié.
 - **Documents** : index des pièces (stub).
 - **Conformité** : checklist des règles et état OK/manquant.
 - **Paramètres** : placeholder pour profil élevage et juridiction.
