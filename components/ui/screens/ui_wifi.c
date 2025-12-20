@@ -43,6 +43,18 @@ typedef struct {
   wifi_prov_state_t state;
 } wifi_ui_update_t;
 
+static void update_forget_button_state(void) {
+  if (!btn_forget || !ta_ssid) {
+    return;
+  }
+  const char *ssid_text = lv_textarea_get_text(ta_ssid);
+  if (ssid_text && ssid_text[0] != '\0') {
+    lv_obj_clear_state(btn_forget, LV_STATE_DISABLED);
+  } else {
+    lv_obj_add_state(btn_forget, LV_STATE_DISABLED);
+  }
+}
+
 static void set_inputs_enabled(bool enabled) {
   if (enabled) {
     lv_obj_clear_state(ta_ssid, LV_STATE_DISABLED);
@@ -51,6 +63,7 @@ static void set_inputs_enabled(bool enabled) {
     if (btn_forget) {
       lv_obj_clear_state(btn_forget, LV_STATE_DISABLED);
     }
+    update_forget_button_state();
   } else {
     lv_obj_add_state(ta_ssid, LV_STATE_DISABLED);
     lv_obj_add_state(ta_pass, LV_STATE_DISABLED);
@@ -81,6 +94,28 @@ static void set_connecting_spinner(bool visible) {
   } else {
     lv_obj_add_flag(spn_connect, LV_OBJ_FLAG_HIDDEN);
   }
+}
+
+static void load_saved_credentials(void) {
+  if (!ta_ssid || !ta_pass) {
+    return;
+  }
+
+  char ssid[sizeof(((wifi_config_t *)0)->sta.ssid)] = {0};
+  char pass[sizeof(((wifi_config_t *)0)->sta.password)] = {0};
+  esp_err_t err = net_manager_get_credentials(ssid, sizeof(ssid), pass,
+                                              sizeof(pass));
+  if (err == ESP_OK) {
+    lv_textarea_set_text(ta_ssid, ssid);
+    lv_textarea_set_text(ta_pass, pass);
+  } else if (err != ESP_ERR_NOT_FOUND) {
+    ESP_LOGW(TAG, "Impossible de charger les identifiants Wi-Fi (%s)",
+             esp_err_to_name(err));
+    lv_textarea_set_text(ta_ssid, "");
+    lv_textarea_set_text(ta_pass, "");
+  }
+
+  update_forget_button_state();
 }
 
 static const char *reason_to_text(wifi_err_reason_t reason) {
@@ -363,6 +398,7 @@ static void event_forget_handler(lv_event_t *e) {
   set_status_label("Identifiants effac\u00e9s",
                    lv_palette_main(LV_PALETTE_GREY));
   s_waiting_for_connection = false;
+  update_forget_button_state();
 }
 
 static void ta_event_cb(lv_event_t *e) {
@@ -377,6 +413,8 @@ static void ta_event_cb(lv_event_t *e) {
     if (kb != NULL) {
       lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
     }
+  } else if (code == LV_EVENT_VALUE_CHANGED) {
+    update_forget_button_state();
   }
 }
 
@@ -550,6 +588,9 @@ void ui_wifi_on_enter(void) {
   }
   s_waiting_for_connection = false;
   ui_show_loading(false);
+
+  load_saved_credentials();
+
   wifi_ui_update_t *update = calloc(1, sizeof(wifi_ui_update_t));
   if (update) {
     update->has_state = true;

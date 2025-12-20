@@ -109,6 +109,26 @@ wifi_prov_state_t net_manager_get_prov_state(void);
 
 wifi_err_reason_t net_manager_get_last_reason(void);
 
+/**
+ * @brief Retrieve currently provisioned Wi-Fi credentials without logging
+ *        sensitive data.
+ *
+ * The function prefers NVS-stored credentials when available and falls back to
+ * the active Wi-Fi configuration (or Kconfig defaults) to keep the UI aligned
+ * with the actual connection state.
+ *
+ * @param ssid Buffer to receive SSID (may be NULL). Must be large enough for
+ *             32-byte SSID + terminator.
+ * @param ssid_len Length of @p ssid buffer.
+ * @param password Buffer to receive password (may be NULL). Must be large
+ *                 enough for 63-byte password + terminator.
+ * @param password_len Length of @p password buffer.
+ * @return esp_err_t ESP_OK when credentials were retrieved, ESP_ERR_NOT_FOUND
+ *                   if none are provisioned, or validation/storage errors.
+ */
+esp_err_t net_manager_get_credentials(char *ssid, size_t ssid_len,
+                                      char *password, size_t password_len);
+
 esp_err_t net_manager_forget_credentials(void);
 
 #ifdef __cplusplus
