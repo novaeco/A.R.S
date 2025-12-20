@@ -12,7 +12,6 @@
 #include "iot_manager.h"
 #include "lvgl_port.h" // For lock/unlock
 #include "ui.h"
-// #include "ui_calibration.h"
 #include "sd.h"
 #include "ui_wizard.h"
 #include <stdbool.h>
