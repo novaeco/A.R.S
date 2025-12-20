@@ -1,4 +1,5 @@
 #include "io_extension.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
