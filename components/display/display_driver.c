@@ -5,7 +5,12 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_types.h"
 #include "esp_check.h"
+#include "hal/color_types.h"
 #include <stdbool.h>
+
+#ifndef ESP_LCD_COLOR_FORMAT_RGB565
+#define ESP_LCD_COLOR_FORMAT_RGB565 COLOR_PIXEL_RGB565
+#endif
 
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel = NULL;
