@@ -1,5 +1,6 @@
 #include "board.h"
 #include "esp_log.h"
+#include "esp_check.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
