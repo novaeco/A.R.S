@@ -1,5 +1,7 @@
 # Calibration tactile GT911 (Waveshare ESP32-S3 Touch LCD 7B)
 
+> **Note** : l’interface de calibration UI est désactivée dans la branche actuelle. Le transform affine reste à l'identité par défaut ; ce document est conservé pour référence en cas de diagnostic ou de réactivation manuelle.
+
 ## Pipeline coordonnées
 1. **GT911 brut** : lecture I²C (aucun swap/mirror appliqué dans le driver), `raw_x/raw_y` conservés via `gt911_get_stats`.
 2. **Transform unique** (`touch_transform`)

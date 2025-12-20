@@ -6,7 +6,6 @@
 #include "net_manager.h"
 #include "screens/ui_wifi.h"
 #include "ui.h"
-#include "ui_calibration.h"
 #include "ui_helpers.h"
 #include "ui_navigation.h"
 #include "ui_screen_manager.h"
@@ -19,7 +18,6 @@ static void wizard_start_wifi_step(void);
 
 typedef enum {
   WIZARD_STEP_NONE = 0,
-  WIZARD_STEP_CALIBRATION,
   WIZARD_STEP_WIFI,
   WIZARD_STEP_SUCCESS,
   WIZARD_STEP_ERROR,
@@ -175,7 +173,7 @@ static void wizard_show_success(void) {
   current_step = WIZARD_STEP_SUCCESS;
   lv_obj_t *scr = wizard_create_result_screen(
       "Configuration termin\u00e9e",
-      "La calibration est termin\u00e9e. Vous pouvez utiliser le tableau de bord.",
+      "La configuration est termin\u00e9e. Vous pouvez utiliser le tableau de bord.",
       lv_palette_main(LV_PALETTE_GREEN), true, "Aller au dashboard",
       wizard_success_continue, NULL, NULL);
   ui_switch_screen(scr, LV_SCR_LOAD_ANIM_OVER_RIGHT);
@@ -219,23 +217,6 @@ static void wizard_start_wifi_step(void) {
   ui_nav_navigate(UI_SCREEN_WIFI, true);
 }
 
-void ui_wizard_next(void) {
-  ESP_LOGI(TAG, "Wizard next from step %d", current_step);
-  if (current_step == WIZARD_STEP_CALIBRATION) {
-    wizard_start_wifi_step();
-  }
-}
-
-void ui_wizard_complete_from_calibration(void) {
-  ESP_LOGI(TAG, "Calibration validated, completing wizard");
-  if (!net_manager_is_provisioned()) {
-    wizard_start_wifi_step();
-    return;
-  }
-
-  wizard_show_success();
-}
-
 bool ui_wizard_handle_wifi_cancel(void) {
   if (current_step != WIZARD_STEP_WIFI) {
     return false;
@@ -252,7 +233,7 @@ bool ui_wizard_is_running(void) {
 
 void ui_wizard_start(void) {
   ESP_LOGI(TAG, "Starting Setup Wizard");
-  current_step = WIZARD_STEP_CALIBRATION;
+  current_step = WIZARD_STEP_WIFI;
   last_wifi_reason = WIFI_REASON_UNSPECIFIED;
-  ui_calibration_start();
+  wizard_start_wifi_step();
 }
