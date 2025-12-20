@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "nvs.h"
+#include "touch_transform.h"
 #include "ui_navigation.h"
 #include "ui_screen_manager.h"
 #include "ui_theme.h"
@@ -44,6 +45,26 @@ static bool ui_is_setup_done(void) {
   return done == 1;
 }
 
+static bool ui_apply_calibration_if_present(void) {
+  touch_transform_record_t rec = {0};
+  esp_err_t err = touch_transform_storage_load(&rec);
+  if (err != ESP_OK) {
+    return false;
+  }
+
+  ESP_LOGI(TAG,
+           "Calibration found while setup flag unset -> applying and marking "
+           "done");
+  ui_calibration_apply(&rec);
+
+  err = ui_wizard_mark_setup_done();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to persist setup flag after calibration restore: %s",
+             esp_err_to_name(err));
+  }
+  return true;
+}
+
 void ui_init(void) {
   ESP_LOGI(TAG, "Initializing UI orchestration...");
 
@@ -57,7 +78,12 @@ void ui_init(void) {
   ui_screen_manager_init();
   ui_nav_init();
 
-  if (ui_is_setup_done()) {
+  bool setup_done = ui_is_setup_done();
+  if (!setup_done) {
+    setup_done = ui_apply_calibration_if_present();
+  }
+
+  if (setup_done) {
     ESP_LOGI(TAG, "Setup already completed -> checking calibration");
     if (ui_calibration_check_and_start()) {
       ESP_LOGW(TAG, "Calibration invalid -> Calibration UI launched before dashboard");

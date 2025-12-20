@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "nvs.h"
+#include "net_manager.h"
 #include "screens/ui_wifi.h"
 #include "ui.h"
 #include "ui_calibration.h"
@@ -174,8 +175,7 @@ static void wizard_show_success(void) {
   current_step = WIZARD_STEP_SUCCESS;
   lv_obj_t *scr = wizard_create_result_screen(
       "Configuration termin\u00e9e",
-      "La calibration est effectu\u00e9e et le Wi-Fi est connect\u00e9. Vous pouvez"
-      " utiliser le tableau de bord.",
+      "La calibration est termin\u00e9e. Vous pouvez utiliser le tableau de bord.",
       lv_palette_main(LV_PALETTE_GREEN), true, "Aller au dashboard",
       wizard_success_continue, NULL, NULL);
   ui_switch_screen(scr, LV_SCR_LOAD_ANIM_OVER_RIGHT);
@@ -228,7 +228,12 @@ void ui_wizard_next(void) {
 
 void ui_wizard_complete_from_calibration(void) {
   ESP_LOGI(TAG, "Calibration validated, completing wizard");
-  wizard_finish(true);
+  if (!net_manager_is_provisioned()) {
+    wizard_start_wifi_step();
+    return;
+  }
+
+  wizard_show_success();
 }
 
 bool ui_wizard_handle_wifi_cancel(void) {
