@@ -466,6 +466,66 @@ static bool net_has_nonempty_credentials(const wifi_config_t *cfg) {
   return cfg && cfg->sta.ssid[0] != '\0';
 }
 
+esp_err_t net_manager_get_credentials(char *ssid, size_t ssid_len,
+                                      char *password, size_t password_len) {
+  if ((!ssid || ssid_len == 0) && (!password || password_len == 0)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (ssid && ssid_len > 0) {
+    ssid[0] = '\0';
+  }
+  if (password && password_len > 0) {
+    password[0] = '\0';
+  }
+
+  esp_err_t err = ESP_ERR_NOT_FOUND;
+  bool found = false;
+
+  char ssid_buf[sizeof(((wifi_config_t *)0)->sta.ssid)] = {0};
+  char pass_buf[sizeof(((wifi_config_t *)0)->sta.password)] = {0};
+
+#if CONFIG_ARS_WIFI_USE_NVS
+  err = net_load_credentials_from_nvs(ssid_buf, sizeof(ssid_buf), pass_buf,
+                                      sizeof(pass_buf));
+  if (err == ESP_OK && ssid_buf[0] != '\0') {
+    found = true;
+  }
+#endif
+
+  if (!found) {
+    wifi_config_t current_cfg = {0};
+    if (esp_wifi_get_config(WIFI_IF_STA, &current_cfg) == ESP_OK &&
+        net_has_nonempty_credentials(&current_cfg)) {
+      strlcpy(ssid_buf, (const char *)current_cfg.sta.ssid,
+              sizeof(ssid_buf));
+      strlcpy(pass_buf, (const char *)current_cfg.sta.password,
+              sizeof(pass_buf));
+      err = ESP_OK;
+      found = true;
+    }
+  }
+
+  if (!found && strlen(CONFIG_ARS_WIFI_SSID) > 0) {
+    strlcpy(ssid_buf, CONFIG_ARS_WIFI_SSID, sizeof(ssid_buf));
+    strlcpy(pass_buf, CONFIG_ARS_WIFI_PASSWORD, sizeof(pass_buf));
+    err = ESP_OK;
+    found = true;
+  }
+
+  if (!found) {
+    return err;
+  }
+
+  if (ssid && ssid_len > 0) {
+    strlcpy(ssid, ssid_buf, ssid_len);
+  }
+  if (password && password_len > 0) {
+    strlcpy(password, pass_buf, password_len);
+  }
+  return ESP_OK;
+}
+
 esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
                                       bool persist) {
   if (!ssid || !password) {
