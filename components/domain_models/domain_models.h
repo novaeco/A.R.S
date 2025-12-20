@@ -2,7 +2,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "storage_core.h"
+#include "esp_err.h"
+
+typedef struct storage_context storage_context_t;
 
 typedef struct {
     char id[16];
@@ -51,5 +53,5 @@ typedef struct {
     char related_animal[16];
 } due_record;
 
-void domain_models_register_builtin(storage_context_t *ctx);
-const event_record *domain_models_get_timeline(size_t *count);
+esp_err_t domain_models_bootstrap_if_empty(storage_context_t *ctx);
+const event_record *domain_models_get_timeline(const storage_context_t *ctx, size_t *count);

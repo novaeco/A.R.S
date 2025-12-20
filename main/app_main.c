@@ -49,7 +49,11 @@ void app_main(void)
 
     storage_context_t storage_ctx = {0};
     ESP_ERROR_CHECK(storage_core_init(&storage_ctx));
-    domain_models_register_builtin(&storage_ctx);
+    esp_err_t load_err = storage_core_load(&storage_ctx);
+    if (load_err != ESP_OK) {
+        ESP_LOGW(TAG, "No previous snapshot: %s", esp_err_to_name(load_err));
+    }
+    domain_models_bootstrap_if_empty(&storage_ctx);
     compliance_rules_register_builtin(&storage_ctx);
 
     documents_service_init(&storage_ctx);
