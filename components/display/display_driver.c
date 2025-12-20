@@ -3,6 +3,7 @@
 #include "board.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lcd_types.h"
 #include "esp_check.h"
 #include <stdbool.h>
 
@@ -72,8 +73,8 @@ esp_err_t display_driver_init(void)
         .clk_src = LCD_CLK_SRC_PLL160M,
         .timings = timings,
         .data_width = 16,
-        .in_color_format = LCD_COLOR_FORMAT_RGB565,
-        .out_color_format = LCD_COLOR_FORMAT_RGB565,
+        .in_color_format = ESP_LCD_COLOR_FORMAT_RGB565,
+        .out_color_format = ESP_LCD_COLOR_FORMAT_RGB565,
         .hsync_gpio_num = BOARD_LCD_HSYNC,
         .vsync_gpio_num = BOARD_LCD_VSYNC,
         .de_gpio_num = BOARD_LCD_DE,
