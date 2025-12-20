@@ -3,7 +3,6 @@
 #include "driver/sdspi_host.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
-#include "io_extension.h"
 #include "board.h"
 #include "driver/spi_master.h"
 
@@ -34,14 +33,14 @@ sd_card_state_t sd_service_init(void)
 
     sdspi_device_config_t slot_config = {
         .host_id = host.slot,
-        .gpio_cs = -1,
+        .gpio_cs = BOARD_SD_DUMMY_CS,
         .gpio_cd = -1,
         .gpio_wp = -1,
         .gpio_int = -1,
     };
 
-    // CS controlled through IO extension
-    io_extension_set_output(BOARD_SD_CS_IO_EXT_PIN, true);
+    // Keep real CS asserted through IO expander (sole device on bus)
+    board_sd_cs_set(true);
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -59,6 +58,7 @@ sd_card_state_t sd_service_init(void)
     } else {
         s_state = SD_CARD_ERROR;
         ESP_LOGW(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+        board_sd_cs_set(false);
     }
     if (ret != ESP_OK) {
         spi_bus_free(host.slot);

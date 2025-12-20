@@ -1,48 +1,11 @@
 #pragma once
+
+#include "board_pins.h"
 #include "esp_err.h"
-#include "driver/spi_common.h"
-
-#define BOARD_I2C_SDA 8
-#define BOARD_I2C_SCL 9
-#define BOARD_I2C_PORT I2C_NUM_0
-
-#define BOARD_IO_EXT_ADDR 0x24
-
-#define BOARD_TOUCH_IRQ_IO_EXT_PIN 0
-#define BOARD_TOUCH_RST_IO_EXT_PIN 1
-
-#define BOARD_SD_CS_IO_EXT_PIN 2
-#define BOARD_SD_SPI_HOST SPI2_HOST
-#define BOARD_SD_SPI_MOSI 40
-#define BOARD_SD_SPI_MISO 41
-#define BOARD_SD_SPI_SCLK 42
-
-#define BOARD_DISPLAY_H_RES 1024
-#define BOARD_DISPLAY_V_RES 600
-#define BOARD_DISPLAY_PCLK_HZ 16000000
-
-#define BOARD_LCD_HSYNC 46
-#define BOARD_LCD_VSYNC 3
-#define BOARD_LCD_DE 4
-#define BOARD_LCD_PCLK 5
-#define BOARD_LCD_DISP_EN 6
-#define BOARD_LCD_BACKLIGHT 7
-
-#define BOARD_LCD_DATA0 10
-#define BOARD_LCD_DATA1 11
-#define BOARD_LCD_DATA2 12
-#define BOARD_LCD_DATA3 13
-#define BOARD_LCD_DATA4 14
-#define BOARD_LCD_DATA5 15
-#define BOARD_LCD_DATA6 16
-#define BOARD_LCD_DATA7 17
-#define BOARD_LCD_DATA8 18
-#define BOARD_LCD_DATA9 19
-#define BOARD_LCD_DATA10 20
-#define BOARD_LCD_DATA11 21
-#define BOARD_LCD_DATA12 22
-#define BOARD_LCD_DATA13 23
-#define BOARD_LCD_DATA14 24
-#define BOARD_LCD_DATA15 25
+#include <stdbool.h>
 
 esp_err_t board_init(void);
+esp_err_t board_backlight_set(bool on);
+esp_err_t board_lcd_power_set(bool on);
+esp_err_t board_touch_reset_pulse(void);
+esp_err_t board_sd_cs_set(bool asserted);
