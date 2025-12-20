@@ -1,0 +1,26 @@
+#pragma once
+
+#include "touch_orient.h"
+#include <stdbool.h>
+
+
+/**
+ * @brief Initialize the calibration UI if needed.
+ *        If calibration is missing, this launches the calibration screen.
+ *        If valid calibration exists, it applies it and returns false (meaning
+ * proceed to normal UI).
+ *
+ * @return true if calibration screen was started (wait for finish)
+ * @return false if calibration was applied or not needed (proceed to main UI)
+ */
+bool ui_calibration_check_and_start(void);
+
+/**
+ * @brief Manually force start the calibration process
+ */
+void ui_calibration_start(void);
+
+/**
+ * @brief Apply existing calibration data from NVS to the touch driver
+ */
+void ui_calibration_apply(const touch_orient_config_t *cfg);

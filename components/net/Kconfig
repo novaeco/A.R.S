@@ -1,0 +1,41 @@
+menu "Network Manager"
+
+config ARS_WIFI_USE_NVS
+    bool "Use NVS for WiFi credentials"
+    default y
+    help
+        If enabled, try to load WiFi credentials from NVS (namespace "net") first.
+
+config ARS_WIFI_SSID
+    string "Default WiFi SSID"
+    default ""
+    help
+        Optional Wi-Fi SSID used when no credentials are provisioned in NVS.
+
+config ARS_WIFI_PASSWORD
+    string "Default WiFi password"
+    default ""
+    help
+        Optional Wi-Fi password used when no credentials are provisioned in NVS.
+
+    config ARS_WIFI_AUTOCONNECT
+        bool "Auto Connect on Boot"
+        default y
+        help
+            Automatically try to connect to the configured Wi-Fi network on boot.
+
+config ARS_ENABLE_HTTP_CLIENT
+    bool "Activer le client HTTP/HTTPS utilitaire"
+    default n
+    help
+        Active les appels net_http_get (prévu pour HTTPS uniquement). Laisser
+        désactivé en production si non utilisé.
+
+config ARS_HTTP_CLIENT_ALLOW_INSECURE
+    bool "Autoriser les URLs HTTP non sécurisées"
+    depends on ARS_ENABLE_HTTP_CLIENT
+    default n
+    help
+        Si désactivé, seules les URLs https:// seront acceptées par net_http_get.
+
+endmenu
