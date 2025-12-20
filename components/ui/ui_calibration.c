@@ -757,15 +757,37 @@ bool ui_calibration_check_and_start(void) {
     return false;
   }
 
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    ESP_LOGI(TAG,
-             "Calibration not found in NVS; starting wizard with defaults");
-  } else {
-    ESP_LOGW(TAG, "Calibration missing or invalid (%s); starting wizard",
+  if (err != ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGW(TAG, "Calibration missing or invalid (%s); applying defaults",
              esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "Calibration not found in NVS; applying defaults");
   }
-  ui_calibration_start();
-  return true;
+
+  if (touch_transform_storage_migrate_old(&rec) == ESP_OK) {
+    ESP_LOGW(TAG, "Legacy touch orientation migrated; skipping calibration UI");
+    ui_calibration_apply(&rec);
+    return false;
+  }
+
+  touch_transform_identity(&rec.transform);
+  touch_orient_config_t orient_cfg;
+  if (touch_orient_load(&orient_cfg) != ESP_OK) {
+    touch_orient_get_defaults(&orient_cfg);
+  }
+  rec.transform.swap_xy = orient_cfg.swap_xy;
+  rec.transform.mirror_x = orient_cfg.mirror_x;
+  rec.transform.mirror_y = orient_cfg.mirror_y;
+  rec.magic = TOUCH_TRANSFORM_MAGIC;
+  rec.version = TOUCH_TRANSFORM_VERSION;
+  rec.generation = 0;
+  rec.crc32 = 0;
+
+  ESP_LOGW(TAG,
+           "Calibration unavailable -> using default orientation and continuing "
+           "UI boot");
+  ui_calibration_apply(&rec);
+  return false;
 }
 
 void ui_calibration_start(void) {
