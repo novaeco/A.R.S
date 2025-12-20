@@ -1,3 +1,3 @@
 idf_component_register(SRCS "i2c_bus_shared.c"
                     INCLUDE_DIRS "."
-                    REQUIRES esp_driver_i2c)
+                    REQUIRES driver esp_driver_i2c)
