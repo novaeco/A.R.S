@@ -1,6 +1,6 @@
-file(GLOB_RECURSE UI_SRCS "ui.c" "ui_calibration.c" "*.c")
+file(GLOB_RECURSE UI_SRCS "*.c")
 
 idf_component_register(SRCS ${UI_SRCS}
     INCLUDE_DIRS "." "screens"
-                    REQUIRES lvgl touch_orient touch_transform
+                    REQUIRES lvgl touch_orient
     PRIV_REQUIRES core_service reptile_storage iot net board lvgl_port sd)
