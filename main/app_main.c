@@ -3,8 +3,6 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "board.h"
-#include "i2c_bus_shared.h"
-#include "io_extension.h"
 #include "display_driver.h"
 #include "lvgl_port.h"
 #include "touch_gt911.h"
@@ -35,8 +33,6 @@ void app_main(void)
     init_nvs();
 
     ESP_ERROR_CHECK(board_init());
-    ESP_ERROR_CHECK(i2c_bus_shared_init());
-    ESP_ERROR_CHECK(io_extension_init());
 
     ESP_ERROR_CHECK(display_driver_init());
     ESP_ERROR_CHECK(lvgl_port_init());

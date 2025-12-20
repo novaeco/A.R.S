@@ -1,7 +1,6 @@
 #include "display_driver.h"
 #include "esp_log.h"
 #include "board.h"
-#include "driver/gpio.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_check.h"
@@ -81,7 +80,7 @@ esp_err_t display_driver_init(void)
         .data_gpio_nums = {
             0,
         },
-        .disp_gpio_num = BOARD_LCD_DISP_EN,
+        .disp_gpio_num = -1,
         .flags = {
             .fb_in_psram = 1,
             .double_fb = 0,
@@ -95,7 +94,7 @@ esp_err_t display_driver_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "panel init");
 
     ESP_LOGI(TAG, "RGB panel ready, enabling backlight");
-    ESP_RETURN_ON_ERROR(gpio_set_level(BOARD_LCD_BACKLIGHT, 1), TAG, "backlight");
+    ESP_RETURN_ON_ERROR(board_backlight_set(true), TAG, "backlight");
     return ESP_OK;
 }
 

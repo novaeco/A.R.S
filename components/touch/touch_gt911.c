@@ -1,10 +1,10 @@
 #include "touch_gt911.h"
 #include "i2c_bus_shared.h"
-#include "io_extension.h"
 #include "board.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -21,6 +21,13 @@
 #define GT911_MAX_POINTS 5
 
 static const char *TAG = "touch_gt911";
+static volatile bool s_irq_flag = false;
+
+static void IRAM_ATTR touch_irq_handler(void *arg)
+{
+    (void)arg;
+    s_irq_flag = true;
+}
 
 static esp_err_t gt911_write(uint16_t reg, const uint8_t *data, size_t len)
 {
@@ -85,14 +92,23 @@ static esp_err_t gt911_update_resolution(void)
 
 esp_err_t touch_gt911_init(void)
 {
-    ESP_LOGI(TAG, "GT911 init: reset via IO extension pins %d/%d", BOARD_TOUCH_RST_IO_EXT_PIN, BOARD_TOUCH_IRQ_IO_EXT_PIN);
+    ESP_LOGI(TAG, "GT911 init on shared I2C, IRQ GPIO%d, reset EXIO%d", BOARD_TOUCH_IRQ_GPIO, BOARD_TOUCH_RST_EXIO);
 
-    io_extension_set_output(BOARD_TOUCH_IRQ_IO_EXT_PIN, false);
-    io_extension_set_output(BOARD_TOUCH_RST_IO_EXT_PIN, false);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    io_extension_set_output(BOARD_TOUCH_RST_IO_EXT_PIN, true);
-    vTaskDelay(pdMS_TO_TICKS(60));
-    io_extension_set_output(BOARD_TOUCH_IRQ_IO_EXT_PIN, true);
+    gpio_config_t irq_cfg = {
+        .pin_bit_mask = 1ULL << BOARD_TOUCH_IRQ_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&irq_cfg), TAG, "irq gpio");
+    if (gpio_install_isr_service(0) != ESP_OK) {
+        // ISR service may already be installed elsewhere
+    }
+    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(BOARD_TOUCH_IRQ_GPIO, touch_irq_handler, NULL), TAG, "irq handler");
+    s_irq_flag = false;
+
+    ESP_RETURN_ON_ERROR(board_touch_reset_pulse(), TAG, "reset");
 
     uint8_t product[4] = {0};
     ESP_RETURN_ON_ERROR(gt911_read(GT911_REG_PRODUCT_ID, product, sizeof(product)), TAG, "product");
@@ -108,10 +124,11 @@ bool touch_gt911_read(touch_points_t *points)
     }
     memset(points, 0, sizeof(*points));
 
-    bool irq_level = true;
-    if (io_extension_get_input(BOARD_TOUCH_IRQ_IO_EXT_PIN, &irq_level) == ESP_OK && irq_level) {
+    bool irq_level = gpio_get_level(BOARD_TOUCH_IRQ_GPIO);
+    if (!s_irq_flag && irq_level) {
         return false;
     }
+    s_irq_flag = false;
 
     uint8_t status = 0;
     if (gt911_read(GT911_REG_STATUS, &status, 1) != ESP_OK) {

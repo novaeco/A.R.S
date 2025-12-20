@@ -1,3 +1,3 @@
 idf_component_register(SRCS "touch_gt911.c"
                     INCLUDE_DIRS "."
-                    REQUIRES driver i2c_bus_shared io_extension board)
+                    REQUIRES esp_driver_i2c esp_driver_gpio i2c_bus_shared board)
