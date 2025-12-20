@@ -41,7 +41,7 @@ static void show_animals_tab(lv_obj_t *parent)
     lv_obj_set_size(timeline, lv_pct(100), lv_pct(30));
     lv_obj_align(timeline, LV_ALIGN_BOTTOM_MID, 0, -10);
     size_t ev_count = 0;
-    const event_record *events = domain_models_get_timeline(&ev_count);
+    const event_record *events = domain_models_get_timeline(s_ctx, &ev_count);
     for (size_t i = 0; i < ev_count; ++i) {
         const event_record *e = &events[i];
         char line[128];
