@@ -13,6 +13,7 @@
  *
  ******************************************************************************/
 #include "io_extension.h" // Include IO_EXTENSION driver header for GPIO functions
+#include "esp_check.h"
 
 io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
 
