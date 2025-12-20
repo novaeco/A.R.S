@@ -28,6 +28,12 @@
 #define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS 20
 #endif
 
+#if defined(CONFIG_ARS_LVGL_USE_DOUBLE_BUF) && CONFIG_ARS_LVGL_USE_DOUBLE_BUF
+#define ARS_LVGL_USE_DOUBLE_BUF 1
+#else
+#define ARS_LVGL_USE_DOUBLE_BUF 0
+#endif
+
 static const char *TAG = "lv_port";          // Tag for logging
 static SemaphoreHandle_t lvgl_mux = NULL;    // LVGL mutex for synchronization
 static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
@@ -246,13 +252,13 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   void *buf2 = NULL;
   const int min_lines = 10;
 
-  while (lines >= min_lines && (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2))) {
+  while (lines >= min_lines && (!buf1 || (ARS_LVGL_USE_DOUBLE_BUF && !buf2))) {
     buffer_size = width * lines * byte_per_pixel;
     buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
-#if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
+#if ARS_LVGL_USE_DOUBLE_BUF
     buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
 #endif
-    if (!buf1 || (CONFIG_ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
+    if (!buf1 || (ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
       if (buf1) {
         heap_caps_free(buf1);
       }
@@ -271,7 +277,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     return NULL;
   }
 
-#if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
+#if ARS_LVGL_USE_DOUBLE_BUF
   if (!buf2) {
     ESP_LOGW(TAG, "Double buffer disabled dynamically (allocation failed).");
   }
