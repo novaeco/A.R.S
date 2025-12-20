@@ -493,11 +493,14 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
                        data->state == LV_INDEV_STATE_PRESSED);
 }
 
-static lv_indev_t *indev_init(esp_lcd_touch_handle_t tp) {
+static lv_indev_t *indev_init(lv_display_t *disp, esp_lcd_touch_handle_t tp) {
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, touchpad_read);
   lv_indev_set_user_data(indev, tp);
+  if (disp) {
+    lv_indev_set_display(indev, disp);
+  }
   return indev;
 }
 
@@ -525,7 +528,7 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
   board_orientation_apply_display(disp, &orient_defaults);
 
   if (tp_handle) {
-    lv_indev_t *indev = indev_init(tp_handle);
+    lv_indev_t *indev = indev_init(disp, tp_handle);
     if (!indev) {
       ESP_LOGE(TAG, "Failed to create LVGL input device");
       esp_timer_stop(s_lvgl_tick_timer);
