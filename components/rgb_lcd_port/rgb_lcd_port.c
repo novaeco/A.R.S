@@ -83,7 +83,6 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
                   },
           },
       .data_width = EXAMPLE_RGB_DATA_WIDTH, // Data width for RGB signals
-      .bits_per_pixel = 16,
       .num_fbs = EXAMPLE_LCD_RGB_BUFFER_NUMS, // Number of framebuffers for
                                               // double/triple buffering
       .bounce_buffer_size_px =
