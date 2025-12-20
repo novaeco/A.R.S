@@ -1,0 +1,246 @@
+#include "ui_calibration.h"
+#include "board.h"
+#include "esp_lcd_touch.h"
+#include "esp_log.h"
+#include "lvgl.h"
+#include "touch.h"
+#include "touch_orient.h"
+#include "ui.h"
+#include "ui_wizard.h"
+
+static const char *TAG = "ui_orient";
+
+static lv_obj_t *scr_orient = NULL;
+static lv_obj_t *label_coords = NULL;
+static lv_obj_t *btn_swap = NULL;
+static lv_obj_t *btn_mir_x = NULL;
+static lv_obj_t *btn_mir_y = NULL;
+static lv_timer_t *timer_update = NULL;
+
+static touch_orient_config_t current_cfg = {0};
+
+// -- Forward Declarations --
+static void save_and_finish(void);
+static void update_driver_flags(void);
+static void update_ui_buttons(void);
+
+// -- Helper: Apply flags to driver --
+static void update_driver_flags(void) {
+  esp_lcd_touch_handle_t tp = app_board_get_touch_handle();
+  if (!tp) {
+    ESP_LOGE(TAG, "Touch handle is NULL!");
+    return;
+  }
+
+  // Use the new module function to apply
+  touch_orient_apply(tp, &current_cfg);
+
+  // FORCE Identity Calibration (remove any scale/offset)
+  ars_touch_calibration_t identity = {
+      .scale_x = 1.0f,
+      .scale_y = 1.0f,
+      .offset_x = 0,
+      .offset_y = 0,
+  };
+  ars_touch_set_calibration(tp, &identity);
+}
+
+// -- NVS Operations --
+void ui_calibration_apply(const touch_orient_config_t *cfg) {
+  if (cfg) {
+    current_cfg = *cfg;
+    ESP_LOGI(TAG, "Applying config: Swap=%d, MirX=%d, MirY=%d",
+             current_cfg.swap_xy, current_cfg.mirror_x, current_cfg.mirror_y);
+  } else {
+    ESP_LOGW(TAG, "Apply called with NULL, using defaults");
+    touch_orient_get_defaults(&current_cfg);
+  }
+
+  update_driver_flags();
+}
+
+// -- UI Logic --
+
+static void btn_event_handler(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t *btn = lv_event_get_target(e);
+
+  if (code == LV_EVENT_CLICKED) {
+    if (btn == btn_swap) {
+      current_cfg.swap_xy = !current_cfg.swap_xy;
+    } else if (btn == btn_mir_x) {
+      current_cfg.mirror_x = !current_cfg.mirror_x;
+    } else if (btn == btn_mir_y) {
+      current_cfg.mirror_y = !current_cfg.mirror_y;
+    }
+    update_driver_flags(); // Apply immediately so user feels the change
+    update_ui_buttons();
+  }
+}
+
+static void save_event_handler(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    save_and_finish();
+  }
+}
+
+static void update_task(lv_timer_t *const t) {
+  (void)t;
+  lv_indev_t *indev = lv_indev_get_act();
+  if (!indev)
+    return;
+
+  lv_point_t p;
+  lv_indev_get_point(indev, &p);
+
+  lv_label_set_text_fmt(label_coords, "X: %ld\nY: %ld", (long)p.x, (long)p.y);
+}
+
+static void create_corner_marker(lv_obj_t *parent, lv_align_t align) {
+  lv_obj_t *marker = lv_obj_create(parent);
+  lv_obj_set_size(marker, 40, 40);
+  lv_obj_set_style_bg_color(marker, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_set_style_radius(marker, 20, 0); // Circle
+
+  // Crosshair inside
+  lv_obj_t *h = lv_obj_create(marker);
+  lv_obj_set_size(h, 30, 2);
+  lv_obj_center(h);
+  lv_obj_set_style_bg_color(h, lv_color_white(), 0);
+
+  lv_obj_t *v = lv_obj_create(marker);
+  lv_obj_set_size(v, 2, 30);
+  lv_obj_center(v);
+  lv_obj_set_style_bg_color(v, lv_color_white(), 0);
+
+  lv_obj_align(marker, align, 0, 0);
+  lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
+}
+
+static void update_ui_buttons(void) {
+  if (btn_swap)
+    lv_label_set_text_fmt(lv_obj_get_child(btn_swap, 0), "Swap XY: %d",
+                          current_cfg.swap_xy);
+  if (btn_mir_x)
+    lv_label_set_text_fmt(lv_obj_get_child(btn_mir_x, 0), "Mirror X: %d",
+                          current_cfg.mirror_x);
+  if (btn_mir_y)
+    lv_label_set_text_fmt(lv_obj_get_child(btn_mir_y, 0), "Mirror Y: %d",
+                          current_cfg.mirror_y);
+}
+
+void ui_calibration_start(void) {
+  ESP_LOGI(TAG, "Starting Touch Orientation Assistant");
+
+  // Load current state (defaults or NVS) to start with
+  ui_calibration_apply(&current_cfg);
+
+  scr_orient = lv_obj_create(NULL);
+  // FIX: Force non-white background and ensure opacity
+  lv_obj_set_style_bg_color(scr_orient, lv_color_hex(0x101820), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(scr_orient, LV_OPA_COVER, LV_PART_MAIN);
+
+  // Debug Label (Requested by User)
+  lv_obj_t *label_debug = lv_label_create(scr_orient);
+  lv_label_set_text(label_debug, "Wizard Touch – touchez l’écran");
+  lv_obj_set_style_text_color(label_debug, lv_color_hex(0xFFFFFF),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_font(label_debug, LV_FONT_DEFAULT, LV_PART_MAIN);
+  lv_obj_align(label_debug, LV_ALIGN_CENTER, 0, -120); // Top center
+
+  // 1. Crosshairs at corners and center
+  create_corner_marker(scr_orient, LV_ALIGN_TOP_LEFT);
+  create_corner_marker(scr_orient, LV_ALIGN_TOP_RIGHT);
+  create_corner_marker(scr_orient, LV_ALIGN_BOTTOM_LEFT);
+  create_corner_marker(scr_orient, LV_ALIGN_BOTTOM_RIGHT);
+  create_corner_marker(scr_orient, LV_ALIGN_CENTER); // Center
+
+  // 2. Info Label (Coords)
+  label_coords = lv_label_create(scr_orient);
+  lv_obj_set_style_text_color(label_coords, lv_color_white(), 0);
+  lv_obj_set_style_text_font(label_coords, &lv_font_montserrat_20, 0);
+  lv_obj_align(label_coords, LV_ALIGN_CENTER, 0, -50);
+  lv_label_set_text(label_coords, "X: --\nY: --");
+
+  // 3. Controls Layout (Flex container at bottom)
+  lv_obj_t *cont = lv_obj_create(scr_orient);
+  lv_obj_set_size(cont, LV_PCT(90), 100);
+  lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+
+  // Swap Button
+  btn_swap = lv_button_create(cont);
+  lv_obj_add_event_cb(btn_swap, btn_event_handler, LV_EVENT_CLICKED, NULL);
+  lv_label_create(btn_swap); // Label child
+
+  // Mir X
+  btn_mir_x = lv_button_create(cont);
+  lv_obj_add_event_cb(btn_mir_x, btn_event_handler, LV_EVENT_CLICKED, NULL);
+  lv_label_create(btn_mir_x); // Label child
+
+  // Mir Y
+  btn_mir_y = lv_button_create(cont);
+  lv_obj_add_event_cb(btn_mir_y, btn_event_handler, LV_EVENT_CLICKED, NULL);
+  lv_label_create(btn_mir_y); // Label child
+
+  // Save Button
+  lv_obj_t *btn_save = lv_button_create(cont);
+  lv_obj_set_style_bg_color(btn_save, lv_palette_main(LV_PALETTE_GREEN), 0);
+  lv_obj_t *lbl = lv_label_create(btn_save);
+  lv_label_set_text(lbl, "SAVE");
+  lv_obj_add_event_cb(btn_save, save_event_handler, LV_EVENT_CLICKED, NULL);
+
+  update_ui_buttons();
+
+  // Timer for updating coordinates
+  timer_update = lv_timer_create(update_task, 50, NULL);
+
+  lv_screen_load(scr_orient);
+}
+
+static void save_and_finish(void) {
+  // Save to NVS
+  esp_err_t err = touch_orient_save(&current_cfg);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save to NVS");
+  }
+
+  // Cleanup
+  if (timer_update) {
+    lv_timer_del(timer_update);
+    timer_update = NULL;
+  }
+  if (scr_orient) {
+    lv_obj_del(scr_orient);
+    scr_orient = NULL;
+  }
+
+  // Proceed
+  ui_wizard_next();
+}
+
+bool ui_calibration_check_and_start(void) {
+  // Check NVS
+  touch_orient_config_t cfg;
+  esp_err_t err = touch_orient_load(&cfg);
+
+  if (err == ESP_OK) {
+    // Valid config exists (re-saved by load if it was missing), apply it
+    ui_calibration_apply(&cfg);
+    return false;
+  } else {
+    // Should generally not happen with auto-seed, but if it does (e.g. fatal
+    // NVS err):
+    ESP_LOGE(TAG, "Failed to load/seed config: %s", esp_err_to_name(err));
+    // Fallback to defaults but maybe show wizard if critical?
+    // For now, assume if auto-seed failed, saving probably will too, but let's
+    // try wizard.
+    ui_calibration_start();
+    return true;
+  }
+}

@@ -1,3 +1,5 @@
-idf_component_register(SRCS "sd_service.c"
-                    INCLUDE_DIRS "."
-                    REQUIRES esp_driver_spi esp_driver_sdspi fatfs sdmmc board)
+idf_component_register(SRCS "sd.c" "sd_host_extcs.c"
+                        INCLUDE_DIRS "."
+                        REQUIRES fatfs vfs sdmmc esp_driver_sdspi esp_driver_spi io_extension driver
+                        PRIV_REQUIRES esp_timer
+                    )

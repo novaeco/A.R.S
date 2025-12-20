@@ -1,0 +1,109 @@
+menu "SD Card Configuration"
+
+    choice ARS_SD_CS_MODE
+        prompt "SD SPI CS Mode"
+        default ARS_SD_CS_MODE_IO_EXPANDER
+        help
+            Select the Chip Select (CS) mode for the SD Card.
+            - GPIO: Native ESP32 GPIO control.
+            - IO_EXPANDER: Controlled via CH32V003 IO Expander (Waveshare).
+
+        config ARS_SD_CS_MODE_GPIO
+            bool "Native GPIO"
+        
+        config ARS_SD_CS_MODE_IO_EXPANDER
+            bool "IO Expander (CH32V003, Waveshare)"
+    endchoice
+
+    config ARS_SD_CS_GPIO
+        int "SD CS GPIO Pin"
+        depends on ARS_SD_CS_MODE_GPIO
+        default -1
+        help
+            GPIO pin for SD Card CS when using Native GPIO mode.
+
+    config ARS_SD_CS_EXIO
+        int "SD CS IO Expander Pin (EXIO)"
+        depends on ARS_SD_CS_MODE_IO_EXPANDER
+        default 4
+        help
+            EXIO pin index on CH32V003 IO expander (0-7). Waveshare 7B uses
+            EXIO4.
+
+    config ARS_SD_MOSI
+        int "SD SPI MOSI GPIO"
+        default 11
+
+    config ARS_SD_MISO
+        int "SD SPI MISO GPIO"
+        default 13
+
+    config ARS_SD_SCK
+        int "SD SPI SCK GPIO"
+        default 12
+
+    config ARS_SD_EXTCS_INIT_FREQ_KHZ
+        int "SDSPI init frequency (kHz)"
+        default 200
+        range 100 1000
+        help
+            SPI clock during CMD0/CMD8/ACMD41 when using external CS.
+            Use conservative values (100-400kHz) for noisy boards or slow CS paths.
+
+    config ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
+        int "Dummy bytes before CMD0 (ExtCS)"
+        default 20
+        range 10 64
+        help
+            Number of 0xFF bytes clocked with CS high before issuing CMD0 in
+            external CS mode. Increase for cards that need >80 clocks before
+            entering SPI mode.
+
+    config ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US
+        int "CS settle delay before first CMD0 (ExtCS, us)"
+        default 180
+        range 0 1000
+        help
+            Extra settling delay (microseconds) applied immediately after
+            driving CS low during the CMD0 pre-sequence. Use this to let the
+            IO extender output stabilize before the first transaction if MISO
+            occasionally reads stuck-high.
+
+    config ARS_SD_EXTCS_TARGET_FREQ_KHZ
+        int "SDSPI target frequency after init (kHz)"
+        default 20000
+        range 1000 40000
+        help
+            Target SPI clock after OCR is stable. Driver will clamp to card max.
+
+    config ARS_SD_EXTCS_TIMING_LOG
+        bool "Enable ExtCS SDSPI timing log"
+        default n
+        help
+            Print detailed timing for every SDSPI transaction and current
+            clock setting while using the External CS path. Disable for
+            production to reduce log noise.
+
+    config ARS_SD_EXTCS_DEBUG_CMD0
+        bool "Verbose CMD0 debug dump"
+        default n
+        help
+            Log raw response windows and per-try diagnostics for CMD0 entry
+            (external CS mode). Enable only during hardware bring-up.
+
+    config ARS_SD_EXTCS_MISO_HEALTH_CHECK
+        bool "Enable MISO health diagnostics around CMD0"
+        default n
+        help
+            When enabled, sample MISO with CS high/low before CMD0 to detect
+            stuck CS lines or floating MISO. Logs warnings but does not block
+            init.
+
+    config ARS_SD_SDMMC_DEBUG_LOG
+        bool "Enable SDMMC/SDSPI debug logs"
+        default n
+        help
+            Raise log level for sdmmc/sdspi components to DEBUG for deeper
+            diagnostics during bring-up. Disable in production.
+
+endmenu

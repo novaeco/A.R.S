@@ -1,3 +1,6 @@
-idf_component_register(SRCS "ui_app.c"
-                    INCLUDE_DIRS "."
-                    REQUIRES lvgl lvgl_port domain_models compliance_rules documents export_share storage_core esp_timer)
+file(GLOB_RECURSE UI_SRCS "ui.c" "ui_calibration.c" "*.c")
+
+idf_component_register(SRCS ${UI_SRCS}
+    INCLUDE_DIRS "." "screens"
+                    REQUIRES lvgl touch_orient touch_transform
+    PRIV_REQUIRES core_service reptile_storage iot net board lvgl_port)
