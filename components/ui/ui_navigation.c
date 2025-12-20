@@ -17,7 +17,7 @@
 
 static const char *TAG = "UI_NAV";
 
-typedef lv_obj_t *(*ui_screen_create_cb_t)(void *ctx);
+typedef lv_obj_t *(*ui_screen_create_cb_t)(const void *ctx);
 typedef void (*ui_screen_simple_cb_t)(void);
 
 typedef struct {
@@ -33,55 +33,55 @@ static ui_screen_t nav_stack[MAX_NAV_STACK];
 static int nav_stack_ptr = 0;
 static ui_screen_t current_screen_id = UI_SCREEN_NONE;
 
-static lv_obj_t *create_dashboard(void *ctx) {
+static lv_obj_t *create_dashboard(const void *ctx) {
   (void)ctx;
   return ui_create_dashboard();
 }
 
-static lv_obj_t *create_animals(void *ctx) {
+static lv_obj_t *create_animals(const void *ctx) {
   (void)ctx;
   return ui_create_animal_list_screen();
 }
 
-static lv_obj_t *create_settings(void *ctx) {
+static lv_obj_t *create_settings(const void *ctx) {
   (void)ctx;
   return ui_create_settings_screen();
 }
 
-static lv_obj_t *create_wifi(void *ctx) {
+static lv_obj_t *create_wifi(const void *ctx) {
   (void)ctx;
   return ui_create_screen_wifi();
 }
 
-static lv_obj_t *create_documents(void *ctx) {
+static lv_obj_t *create_documents(const void *ctx) {
   (void)ctx;
   return ui_create_documents_screen();
 }
 
-static lv_obj_t *create_web(void *ctx) {
+static lv_obj_t *create_web(const void *ctx) {
   (void)ctx;
   return ui_create_web_screen();
 }
 
-static lv_obj_t *create_logs(void *ctx) {
+static lv_obj_t *create_logs(const void *ctx) {
   (void)ctx;
   return ui_create_logs_screen();
 }
 
-static lv_obj_t *create_alerts(void *ctx) {
+static lv_obj_t *create_alerts(const void *ctx) {
   (void)ctx;
   return ui_create_alerts_screen();
 }
 
-static lv_obj_t *create_animal_details(void *ctx) {
+static lv_obj_t *create_animal_details(const void *ctx) {
   return ui_create_animal_details_screen((const char *)ctx);
 }
 
-static lv_obj_t *create_animal_form(void *ctx) {
+static lv_obj_t *create_animal_form(const void *ctx) {
   return ui_create_animal_form_screen((const char *)ctx);
 }
 
-static lv_obj_t *create_reproduction(void *ctx) {
+static lv_obj_t *create_reproduction(const void *ctx) {
   return ui_create_reproduction_screen((const char *)ctx);
 }
 
@@ -127,7 +127,7 @@ void ui_nav_init(void) {
   current_screen_id = UI_SCREEN_NONE;
 }
 
-void ui_nav_navigate_ctx(ui_screen_t screen, void *ctx, bool anim) {
+void ui_nav_navigate_ctx(ui_screen_t screen, const void *ctx, bool anim) {
   const ui_route_t *route = ui_nav_find_route(screen);
   if (!route || !route->create) {
     ESP_LOGW(TAG, "Unknown screen %d", (int)screen);
