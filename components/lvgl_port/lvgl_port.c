@@ -308,6 +308,20 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   if (!tp)
     return;
 
+  static int64_t last_read_err_us = 0;
+  int64_t now_us = esp_timer_get_time();
+  esp_err_t read_ret = esp_lcd_touch_read_data(tp);
+  if (read_ret != ESP_OK) {
+    if ((now_us - last_read_err_us) > 500000) {
+      ESP_LOGW(TAG, "Touch read failed: %s", esp_err_to_name(read_ret));
+      last_read_err_us = now_us;
+    }
+    data->state = LV_INDEV_STATE_RELEASED;
+    data->point.x = 0;
+    data->point.y = 0;
+    return;
+  }
+
   uint8_t touchpad_cnt = 0;
   esp_lcd_touch_point_data_t touch_points[1] = {0};
   static int16_t last_x = -1;
@@ -325,8 +339,6 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   int16_t raw_y = raw_sample.raw_y;
   // ARS: Apply Calibration
   lv_indev_state_t prev_state = last_state;
-
-  int64_t now_us = esp_timer_get_time();
   bool stable_pressed = pressed && touchpad_cnt > 0;
 
   lv_point_t oriented_point = {.x = raw_x, .y = raw_y};
