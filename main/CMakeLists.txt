@@ -1,3 +1,8 @@
-idf_component_register(SRCS "app_main.c"
-                    INCLUDE_DIRS "."
-                    REQUIRES board touch touch_transform display lvgl_port sd storage_core domain_models compliance_rules documents export_share ui)
+if(NOT BOOTLOADER_BUILD)
+    idf_component_register(SRCS "main.c"
+                        INCLUDE_DIRS "."
+                        REQUIRES lvgl board data_manager ui iot lvgl_port net web_server sd)
+
+    add_compile_definitions(LV_CONF_INCLUDE_SIMPLE)
+
+endif()

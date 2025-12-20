@@ -1,0 +1,5 @@
+dependencies:
+  lvgl/lvgl: ^9.0
+  joltwallet/littlefs: ^1.14
+  espressif/cjson: ^1.7
+  espressif/esp_lvgl_port: ^2.7
