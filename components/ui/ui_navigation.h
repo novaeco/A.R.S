@@ -21,5 +21,5 @@ typedef enum {
 // Navigation API
 void ui_nav_init(void);
 void ui_nav_navigate(ui_screen_t screen, bool anim);
-void ui_nav_navigate_ctx(ui_screen_t screen, void *ctx, bool anim);
+void ui_nav_navigate_ctx(ui_screen_t screen, const void *ctx, bool anim);
 void ui_nav_go_back(void);
