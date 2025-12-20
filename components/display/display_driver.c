@@ -53,7 +53,7 @@ esp_err_t display_driver_init(void)
     int data_pins[16];
     fill_data_pins(data_pins);
 
-    lcd_rgb_timing_t timings = {
+    esp_lcd_rgb_timing_t timings = {
         .pclk_hz = BOARD_DISPLAY_PCLK_HZ,
         .h_res = BOARD_DISPLAY_H_RES,
         .v_res = BOARD_DISPLAY_V_RES,
@@ -72,7 +72,8 @@ esp_err_t display_driver_init(void)
         .clk_src = LCD_CLK_SRC_PLL160M,
         .timings = timings,
         .data_width = 16,
-        .bits_per_pixel = 16,
+        .in_color_format = LCD_COLOR_FORMAT_RGB565,
+        .out_color_format = LCD_COLOR_FORMAT_RGB565,
         .hsync_gpio_num = BOARD_LCD_HSYNC,
         .vsync_gpio_num = BOARD_LCD_VSYNC,
         .de_gpio_num = BOARD_LCD_DE,

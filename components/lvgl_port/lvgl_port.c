@@ -37,13 +37,13 @@ static void lvgl_loop(void *arg)
     }
 }
 
-static bool lvgl_touch_read_cb(lv_indev_t *drv, lv_indev_data_t *data)
+static void lvgl_touch_read_cb(lv_indev_t *drv, lv_indev_data_t *data)
 {
     (void)drv;
     touch_points_t points = {0};
     if (!touch_gt911_read(&points) || points.count == 0) {
         data->state = LV_INDEV_STATE_RELEASED;
-        return false;
+        return;
     }
 
     uint16_t tx = 0;
@@ -52,7 +52,6 @@ static bool lvgl_touch_read_cb(lv_indev_t *drv, lv_indev_data_t *data)
     data->point.x = tx;
     data->point.y = ty;
     data->state = LV_INDEV_STATE_PRESSED;
-    return false;
 }
 
 esp_err_t lvgl_port_init(void)
@@ -83,11 +82,14 @@ esp_err_t lvgl_port_init(void)
     lv_display_set_buffers(s_disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
     display_driver_register_callbacks(s_disp);
 
-    lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = lvgl_touch_read_cb;
-    s_touch_indev = lv_indev_drv_register(&indev_drv);
+    lv_indev_t *indev = lv_indev_create();
+    if (!indev) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_display(indev, s_disp);
+    lv_indev_set_read_cb(indev, lvgl_touch_read_cb);
+    s_touch_indev = indev;
 
     BaseType_t res = xTaskCreatePinnedToCore(lv_tick_task, "lv_tick", 2048, NULL, 5, NULL, 0);
     if (res != pdPASS) {
