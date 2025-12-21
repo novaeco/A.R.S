@@ -58,7 +58,7 @@ menu "LVGL Port Configuration"
             Buffer size = H_RES * LINES * (DEPTH/8).
             Example: 1024 * 60 * 2 = ~120KB.
 
-    config ARS_VSYNC_WAIT_ENABLE
+    config ARS_LCD_VSYNC_WAIT_ENABLE
         bool "Enable RGB VSYNC wait integration"
         default n
         help
@@ -68,7 +68,7 @@ menu "LVGL Port Configuration"
 
     config ARS_LCD_WAIT_VSYNC
         bool "Wait for RGB VSYNC before releasing LVGL flush"
-        depends on ARS_VSYNC_WAIT_ENABLE
+        depends on ARS_LCD_VSYNC_WAIT_ENABLE
         default y
         help
             When enabled, the LVGL flush waits for the next RGB VSYNC event
@@ -89,5 +89,12 @@ menu "LVGL Port Configuration"
         default n
         help
             If enabled, shows a simple LVGL debug screen instead of the main UI.
+
+    config ARS_UI_HEARTBEAT
+        bool "Afficher un heartbeat LVGL minimal"
+        default n
+        help
+            Ajoute un compteur discret (coin écran) qui s'incrémente chaque
+            seconde pour valider le mode DIRECT.
 
 endmenu

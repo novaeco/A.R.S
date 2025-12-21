@@ -22,13 +22,7 @@
  *================.........*/
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc/lv_mem_free`*/
-#define LV_MEM_CUSTOM 1
-#if LV_MEM_CUSTOM
-#define LV_MEM_CUSTOM_INCLUDE "esp_heap_caps.h"
-#define LV_MEM_CUSTOM_ALLOC heap_caps_malloc
-#define LV_MEM_CUSTOM_FREE heap_caps_free
-#define LV_MEM_CUSTOM_REALLOC heap_caps_realloc
-#endif
+#define LV_MEM_CUSTOM 0
 
 /*====================
    HAL SETTINGS

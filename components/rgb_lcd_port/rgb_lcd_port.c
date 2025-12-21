@@ -18,7 +18,7 @@
 #include "sdkconfig.h"
 #include <stdbool.h>
 
-#if defined(CONFIG_ARS_VSYNC_WAIT_ENABLE) && CONFIG_ARS_VSYNC_WAIT_ENABLE
+#if defined(CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE) && CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
 #elif defined(CONFIG_ARS_LCD_WAIT_VSYNC)
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
@@ -33,6 +33,9 @@ const char *TAG = "rgb_lcd";
 // Handle for the RGB LCD panel
 static esp_lcd_panel_handle_t panel_handle =
     NULL; // Declare a handle for the LCD panel
+static void *s_framebuffers[EXAMPLE_LCD_RGB_BUFFER_NUMS] = {0};
+static size_t s_framebuffer_count = 0;
+static size_t s_stride_bytes = 0;
 
 // Frame buffer complete event callback function
 IRAM_ATTR static bool rgb_lcd_on_vsync_event(esp_lcd_panel_handle_t panel,
@@ -80,8 +83,10 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
               .vsync_front_porch = 12,
               .flags =
                   {
-                      .pclk_active_neg =
-                          1, // PCLK on Falling Edge (Vital for ST7262)
+                      .pclk_active_neg = BOARD_LCD_PCLK_ACTIVE_NEG,
+                      .hsync_idle_low = BOARD_LCD_HSYNC_IDLE_LOW,
+                      .vsync_idle_low = BOARD_LCD_VSYNC_IDLE_LOW,
+                      .de_idle_high = BOARD_LCD_DE_IDLE_HIGH,
                   },
           },
       .data_width = EXAMPLE_RGB_DATA_WIDTH, // Data width for RGB signals
@@ -126,10 +131,13 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   };
 
   ESP_LOGI(TAG,
-           "RGB panel config: %dx%d pclk=%dHz data_width=%d fb=%d bounce_lines=%d",
+           "RGB panel config: %dx%d pclk=%dHz data_width=%d fb=%d bounce_lines=%d "
+           "polarity[pclk_neg=%d h_idle_low=%d v_idle_low=%d de_idle_high=%d]",
            EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES, EXAMPLE_LCD_PIXEL_CLOCK_HZ,
            EXAMPLE_RGB_DATA_WIDTH, EXAMPLE_LCD_RGB_BUFFER_NUMS,
-           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES, BOARD_LCD_PCLK_ACTIVE_NEG,
+           BOARD_LCD_HSYNC_IDLE_LOW, BOARD_LCD_VSYNC_IDLE_LOW,
+           BOARD_LCD_DE_IDLE_HIGH);
 
   // Create and register the RGB LCD panel driver with the configuration above
   ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panel_config, &panel_handle));
@@ -190,4 +198,47 @@ void waveshare_rgb_lcd_bl_on() {
  */
 void waveshare_rgb_lcd_bl_off() {
   IO_EXTENSION_Output(IO_EXTENSION_IO_2, 0); // Backlight OFF configuration
+}
+
+esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,
+                                       size_t *stride_bytes) {
+  if (!panel_handle) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (s_framebuffer_count == 0) {
+    s_stride_bytes = EXAMPLE_LCD_H_RES * (EXAMPLE_LCD_BIT_PER_PIXEL / 8);
+    for (size_t i = 0; i < EXAMPLE_LCD_RGB_BUFFER_NUMS; i++) {
+      void *fb = NULL;
+      esp_err_t fb_ret =
+          esp_lcd_rgb_panel_get_frame_buffer(panel_handle, i, &fb);
+      if (fb_ret != ESP_OK || fb == NULL) {
+        ESP_LOGW(TAG, "Framebuffer %d unavailable: %s", (int)i,
+                 esp_err_to_name(fb_ret));
+        break;
+      }
+      s_framebuffers[i] = fb;
+      s_framebuffer_count++;
+    }
+
+    if (s_framebuffer_count > 0) {
+      ESP_LOGI(TAG, "RGB framebuffers ready: %d stride=%d bytes", (int)s_framebuffer_count,
+               (int)s_stride_bytes);
+    }
+  }
+
+  if (s_framebuffer_count == 0) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  if (buffers) {
+    *buffers = s_framebuffers;
+  }
+  if (buffer_count) {
+    *buffer_count = s_framebuffer_count;
+  }
+  if (stride_bytes) {
+    *stride_bytes = s_stride_bytes;
+  }
+  return ESP_OK;
 }

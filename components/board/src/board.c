@@ -427,18 +427,7 @@ esp_err_t board_get_battery_level(uint8_t *percent, uint16_t *voltage_mv) {
   return ESP_FAIL;
 }
 
-// 3. Flattened Test Pattern (Optimized)
-void board_lcd_test_pattern(void) {
-  if (!g_panel_handle) {
-    ESP_LOGE(TAG, "Test Pattern skipped: Panel handle is NULL");
-    return;
-  }
-
-#if CONFIG_ARS_SKIP_TEST_PATTERN
-  ESP_LOGI(TAG, "Skipping Test Pattern (CONFIG_ARS_SKIP_TEST_PATTERN)");
-  return;
-#endif
-
+static void board_lcd_draw_test_pattern(void) {
   ESP_LOGI(TAG, "Running Direct LCD Test Pattern...");
 
   // 1. Allocate buffer (Try PSRAM)
@@ -461,21 +450,49 @@ void board_lcd_test_pattern(void) {
     int x_end = (b == bands - 1) ? 1024 : (x_start + band_width);
 
     for (int y = 0; y < 600; y++) {
-      // Simple memset for speed per row
       for (int x = x_start; x < x_end; x++) {
         frame_buf[y * 1024 + x] = color;
       }
     }
   }
 
-  // 3. Flush to panel
   ESP_LOGI(TAG, "Drawing Test Pattern...");
   esp_lcd_panel_draw_bitmap(g_panel_handle, 0, 0, 1024, 600, frame_buf);
-
-  // 4. Brief Delay to allow visual confirmation but NOT block boot
-  // significantly
-  vTaskDelay(pdMS_TO_TICKS(200));
-
   free(frame_buf);
-  ESP_LOGI(TAG, "Test Pattern Done. You should see RGBWB bands.");
+  ESP_LOGI(TAG, "Test Pattern queued. You should see RGBWB bands.");
+}
+
+#if CONFIG_ARS_LCD_BOOT_TEST_PATTERN
+static void board_lcd_test_pattern_task(void *arg) {
+  if (g_panel_handle) {
+    board_lcd_draw_test_pattern();
+  }
+  vTaskDelay(pdMS_TO_TICKS(CONFIG_ARS_LCD_BOOT_TEST_PATTERN_MS));
+  ESP_LOGI(TAG, "Test Pattern window elapsed (%d ms)",
+           CONFIG_ARS_LCD_BOOT_TEST_PATTERN_MS);
+  vTaskDelete(NULL);
+}
+#endif
+
+// 3. Flattened Test Pattern (Optimized)
+void board_lcd_test_pattern(void) {
+  if (!g_panel_handle) {
+    ESP_LOGE(TAG, "Test Pattern skipped: Panel handle is NULL");
+    return;
+  }
+
+#if CONFIG_ARS_SKIP_TEST_PATTERN
+  ESP_LOGI(TAG, "Skipping Test Pattern (CONFIG_ARS_SKIP_TEST_PATTERN)");
+  return;
+#endif
+
+#if CONFIG_ARS_LCD_BOOT_TEST_PATTERN
+  if (xTaskCreate(board_lcd_test_pattern_task, "lcd_test", 4096, NULL, 5,
+                  NULL) != pdPASS) {
+    ESP_LOGW(TAG, "Test pattern task creation failed, running inline");
+    board_lcd_draw_test_pattern();
+  }
+#else
+  board_lcd_draw_test_pattern();
+#endif
 }
