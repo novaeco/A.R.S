@@ -93,6 +93,8 @@ static uint32_t s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
 static portMUX_TYPE s_gt911_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_last_touch_down = false;
 static portMUX_TYPE s_gt911_error_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_gt911_use_ioext_reset = false;
+static uint8_t s_gt911_ioext_reset_pin = IO_EXTENSION_IO_1;
 
 typedef struct {
   uint32_t i2c_errors;
@@ -280,6 +282,7 @@ static esp_err_t esp_lcd_touch_gt911_get_button_state(esp_lcd_touch_handle_t tp,
 static esp_err_t esp_lcd_touch_gt911_del(esp_lcd_touch_handle_t tp);
 static void gt911_irq_task(void *arg);
 static void gt911_gpio_isr_handler(void *arg);
+static esp_err_t gt911_reset_via_ioext(void);
 
 /* I2C read/write */
 static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
@@ -547,7 +550,10 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     if (s_gt911_consecutive_errors > GT911_I2C_RESET_THRESHOLD) {
       ESP_LOGE(TAG, "Too many I2C errors (%" PRIu32 "), resetting GT911...",
                s_gt911_consecutive_errors);
-      touch_gt911_reset(tp);
+      esp_err_t reset_ret = touch_gt911_reset(tp);
+      if (reset_ret != ESP_OK) {
+        ESP_LOGE(TAG, "GT911 reset failed: %s", esp_err_to_name(reset_ret));
+      }
       s_gt911_consecutive_errors = 0;
     }
     return err;
@@ -908,6 +914,33 @@ static esp_err_t esp_lcd_touch_gt911_del(esp_lcd_touch_handle_t tp) {
   return ESP_OK;
 }
 
+static esp_err_t gt911_reset_via_ioext(void) {
+  if (!s_gt911_use_ioext_reset) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  if (!IO_EXTENSION_Is_Initialized()) {
+    ESP_LOGE(TAG, "IO extension not ready for GT911 reset");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  esp_err_t ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 0);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "IOEXT touch reset low failed: %s", esp_err_to_name(ret));
+    return ret;
+  }
+  vTaskDelay(pdMS_TO_TICKS(20));
+
+  ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 1);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "IOEXT touch reset high failed: %s", esp_err_to_name(ret));
+    return ret;
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(60));
+  return ESP_OK;
+}
+
 // Cleanup and Self-Healing removed as the I2C bus is now persistent
 // (Singleton/Shared) and recovery is non-destructive.
 
@@ -942,6 +975,9 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     ESP_LOGE(TAG, "IO extension init failed: %s", esp_err_to_name(ioext_ret));
     return NULL;
   }
+
+  s_gt911_use_ioext_reset = true;
+  s_gt911_ioext_reset_pin = IO_EXTENSION_IO_1;
 
   // 2. Perform Robust Reset Sequence (Waveshare specific)
   const int int_pin = EXAMPLE_PIN_NUM_TOUCH_INT;
@@ -1129,17 +1165,78 @@ touch_gt911_point_t touch_gt911_read_point(uint8_t max_touch_cnt) {
 static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp) {
   assert(tp != NULL);
 
-  if (tp->config.rst_gpio_num != GPIO_NUM_NC) {
-    ESP_RETURN_ON_ERROR(
-        gpio_set_level(tp->config.rst_gpio_num, tp->config.levels.reset), TAG,
-        "GPIO set level error!");
-    vTaskDelay(pdMS_TO_TICKS(10));
-    ESP_RETURN_ON_ERROR(
-        gpio_set_level(tp->config.rst_gpio_num, !tp->config.levels.reset), TAG,
-        "GPIO set level error!");
-    vTaskDelay(pdMS_TO_TICKS(10));
+  gpio_num_t int_gpio = tp->config.int_gpio_num;
+  bool int_configured = int_gpio != GPIO_NUM_NC;
+  esp_err_t ret = ESP_OK;
+
+  if (int_configured) {
+    gpio_intr_disable(int_gpio);
+    const gpio_config_t int_out_cfg = {
+        .pin_bit_mask = BIT64(int_gpio),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = 1,
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&int_out_cfg);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "INT reconfig (output-low) failed: %s",
+               esp_err_to_name(ret));
+      goto restore_int;
+    }
+
+    ret = gpio_set_level(int_gpio, 0);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to drive INT low: %s", esp_err_to_name(ret));
+      goto restore_int;
+    }
   }
-  return ESP_OK;
+
+  if (tp->config.rst_gpio_num != GPIO_NUM_NC) {
+    ret = gpio_set_level(tp->config.rst_gpio_num, tp->config.levels.reset);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "GPIO reset low failed: %s", esp_err_to_name(ret));
+      goto restore_int;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    ret =
+        gpio_set_level(tp->config.rst_gpio_num, !tp->config.levels.reset);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "GPIO reset high failed: %s", esp_err_to_name(ret));
+      goto restore_int;
+    }
+    vTaskDelay(pdMS_TO_TICKS(60));
+  } else {
+    ret = gt911_reset_via_ioext();
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+      ESP_LOGW(TAG, "GT911 reset requested but no reset line available");
+    } else if (ret != ESP_OK) {
+      goto restore_int;
+    }
+  }
+
+restore_int:
+  if (int_configured) {
+    const gpio_config_t int_in_cfg = {
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = 1,
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_NEGEDGE,
+        .pin_bit_mask = BIT64(int_gpio)};
+    esp_err_t cfg_ret = gpio_config(&int_in_cfg);
+    if (cfg_ret != ESP_OK) {
+      ESP_LOGE(TAG, "INT restore failed: %s", esp_err_to_name(cfg_ret));
+      if (ret == ESP_OK) {
+        ret = cfg_ret;
+      }
+    } else {
+      gpio_intr_enable(int_gpio);
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+  }
+
+  return ret;
 }
 
 static esp_err_t touch_gt911_read_cfg(esp_lcd_touch_handle_t tp) {
