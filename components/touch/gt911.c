@@ -78,6 +78,8 @@ static volatile uint32_t s_gt911_clamped_points = 0;
 static int64_t s_last_irq_us = 0;
 static int64_t s_spurious_block_until_us = 0;
 static int64_t s_next_ioext_reset_after_us = 0;
+static int64_t s_gt911_next_recover_us = 0;
+static uint32_t s_gt911_recover_backoff_ms = 50;
 static int s_gt911_int_gpio = -1;
 static uint16_t s_gt911_last_raw_x = 0;
 static uint16_t s_gt911_last_raw_y = 0;
@@ -188,6 +190,38 @@ static inline void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
   (void)len;
 }
 #endif
+
+static inline void gt911_reset_backoff(void) {
+  s_gt911_recover_backoff_ms = 50;
+  s_gt911_next_recover_us = 0;
+}
+
+static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
+                                  esp_err_t err) {
+  s_gt911_consecutive_errors++;
+  const int64_t now = esp_timer_get_time();
+  if (s_gt911_consecutive_errors <= GT911_I2C_RESET_THRESHOLD ||
+      now < s_gt911_next_recover_us) {
+    return;
+  }
+
+  ESP_LOGW(TAG, "GT911 recovery (%s): %s (backoff %u ms)", stage,
+           esp_err_to_name(err), s_gt911_recover_backoff_ms);
+  i2c_bus_shared_recover();
+  esp_err_t reset_ret = touch_gt911_reset(tp);
+  if (reset_ret != ESP_OK) {
+    ESP_LOGE(TAG, "GT911 reset failed after recovery: %s",
+             esp_err_to_name(reset_ret));
+  }
+
+  uint32_t next = s_gt911_recover_backoff_ms << 1;
+  if (next > 1000) {
+    next = 1000;
+  }
+  s_gt911_recover_backoff_ms = next;
+  s_gt911_next_recover_us = now + (int64_t)s_gt911_recover_backoff_ms * 1000;
+  s_gt911_consecutive_errors = 0;
+}
 
 static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
                                                int offset, int scale,
@@ -546,17 +580,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
 
   err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, &status, 1);
   if (err != ESP_OK) {
-    s_gt911_consecutive_errors++;
     s_gt911_i2c_errors++;
-    if (s_gt911_consecutive_errors > GT911_I2C_RESET_THRESHOLD) {
-      ESP_LOGE(TAG, "Too many I2C errors (%" PRIu32 "), resetting GT911...",
-               s_gt911_consecutive_errors);
-      esp_err_t reset_ret = touch_gt911_reset(tp);
-      if (reset_ret != ESP_OK) {
-        ESP_LOGE(TAG, "GT911 reset failed: %s", esp_err_to_name(reset_ret));
-      }
-      s_gt911_consecutive_errors = 0;
-    }
+    gt911_try_recover_bus(tp, "status", err);
     return err;
   }
 
@@ -564,6 +589,7 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     ESP_LOGI(TAG, "I2C recovered after %" PRIu32 " errors",
              s_gt911_consecutive_errors);
     s_gt911_consecutive_errors = 0;
+    gt911_reset_backoff();
   }
 
   const bool data_ready = (status & 0x80) != 0;
@@ -632,11 +658,11 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
                              read_len);
   if (err != ESP_OK) {
     s_gt911_i2c_errors++;
-    s_gt911_consecutive_errors++;
     static int64_t last_err_log = 0;
     if (gt911_should_log(&last_err_log, 1000000)) {
       ESP_LOGW(TAG, "I2C read points error: %s", esp_err_to_name(err));
     }
+    gt911_try_recover_bus(tp, "points", err);
     return err;
   }
 

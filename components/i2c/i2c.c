@@ -278,20 +278,5 @@ esp_err_t DEV_I2C_BusReset(void) {
   // However, if the bus is ACTUALLY stuck (SDA Low), we might need bit-banging.
   // We can try to cycle clocks only if we are sure no transaction is live.
 
-  if (i2c_lock()) {
-    // Non-destructive reset using IDF driver
-    ESP_LOGI(TAG, "Triggering i2c_master_bus_reset...");
-    esp_err_t ret = i2c_master_bus_reset(s_bus_handle);
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Bus Reset Failed: %s", esp_err_to_name(ret));
-    } else {
-      ESP_LOGI(TAG, "Bus Reset Successful");
-    }
-
-    i2c_unlock();
-    return ret;
-  } else {
-    ESP_LOGE(TAG, "Bus Locked by another task, cannot reset.");
-    return ESP_ERR_TIMEOUT;
-  }
+  return i2c_bus_shared_recover();
 }

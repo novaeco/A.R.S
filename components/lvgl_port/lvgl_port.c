@@ -248,9 +248,12 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
     }
   }
 
+  const bool wait_vsync = s_direct_mode && s_vsync.sem && s_vsync.wait_supported &&
+                          s_vsync.wait_enabled;
+
   // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear. Timeout is
   // small (configurable) to avoid blocking if the callback is missing.
-  if (s_vsync.sem && s_vsync.wait_supported && s_vsync.wait_enabled) {
+  if (wait_vsync) {
     xSemaphoreTake(s_vsync.sem, 0);
 
     if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)) !=
@@ -297,6 +300,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
       s_vsync.wait_enabled = false;
       s_vsync.wait_supported = false;
     }
+    s_vsync.wait_enabled = s_vsync.wait_enabled && s_vsync.wait_supported;
   } else {
     ESP_LOGI(TAG, "VSYNC wait disabled by configuration");
   }

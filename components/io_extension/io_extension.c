@@ -27,28 +27,42 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
  * output).
  */
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <rom/ets_sys.h>
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "i2c_bus_shared.h"
 
 static const char *TAG = "io_ext";
 static bool s_ioext_initialized = false;
-static SemaphoreHandle_t s_ioext_mutex = NULL;
+static uint32_t s_ioext_error_streak = 0;
+static int64_t s_ioext_next_recover_us = 0;
+static int64_t s_ioext_last_busy_log_us = 0;
 
-static bool ioext_lock(void) {
-  if (!s_ioext_mutex) {
-    s_ioext_mutex = xSemaphoreCreateMutex();
-  }
-  if (!s_ioext_mutex)
+static bool ioext_take_bus(TickType_t wait_ticks, const char *ctx) {
+  if (!DEV_I2C_TakeLock(wait_ticks)) {
+    int64_t now = esp_timer_get_time();
+    if ((now - s_ioext_last_busy_log_us) > 200000) { // 200 ms
+      ESP_LOGW(TAG, "%s: I2C bus busy", ctx);
+      s_ioext_last_busy_log_us = now;
+    }
     return false;
-  return xSemaphoreTake(s_ioext_mutex, pdMS_TO_TICKS(200)) == pdTRUE;
+  }
+  return true;
 }
 
-static void ioext_unlock(void) {
-  if (s_ioext_mutex)
-    xSemaphoreGive(s_ioext_mutex);
+static void ioext_on_error(const char *ctx, esp_err_t err) {
+  s_ioext_error_streak++;
+  int64_t now = esp_timer_get_time();
+  if (s_ioext_error_streak >= 3 && now >= s_ioext_next_recover_us) {
+    ESP_LOGW(TAG, "%s: attempting bus recovery after %u errors (%s)", ctx,
+             (unsigned)s_ioext_error_streak, esp_err_to_name(err));
+    i2c_bus_shared_recover();
+    s_ioext_next_recover_us = now + 500000; // 500ms backoff
+    s_ioext_error_streak = 0;
+  }
 }
+
+static void ioext_on_success(void) { s_ioext_error_streak = 0; }
 
 /**
  * @brief Set the IO mode for the specified pins.
@@ -64,15 +78,18 @@ void IO_EXTENSION_IO_Mode(uint8_t pin) {
                      pin}; // Prepare the data to write to the mode register
   // Write the 8-bit value to the IO mode register
   esp_err_t ret = ESP_OK;
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "IO_Mode Failed: mutex unavailable");
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "IO_Mode")) {
+    ESP_LOGW(TAG, "IO_Mode skipped: bus busy");
     return;
   }
 
   ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
-  ioext_unlock();
+  DEV_I2C_GiveLock();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IO_Mode Failed: %s", esp_err_to_name(ret));
+    ioext_on_error("IO_Mode", ret);
+  } else {
+    ioext_on_success();
   }
 }
 
@@ -104,19 +121,21 @@ esp_err_t IO_EXTENSION_Init() {
   // PROBE: Try to write Mode register to check if device ACK
   uint8_t data[2] = {IO_EXTENSION_Mode, 0xff}; // Set all to output
   ret = ESP_OK;
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "IOEXT PROBE FAIL: mutex unavailable");
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "IOEXT PROBE")) {
+    ESP_LOGW(TAG, "IOEXT PROBE skipped: bus busy");
     return ESP_ERR_TIMEOUT;
   }
 
   ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
-  ioext_unlock();
+  DEV_I2C_GiveLock();
 
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT PROBE FAIL addr=0x%02X err=%s", IO_EXTENSION_ADDR,
              esp_err_to_name(ret));
+    ioext_on_error("IOEXT PROBE", ret);
     return ret;
   }
+  ioext_on_success();
   ESP_LOGI(TAG, "IOEXT PROBE OK addr=0x%02X", IO_EXTENSION_ADDR);
 
   // Initialize control flags for IO output enable and open-drain output mode
@@ -144,17 +163,8 @@ esp_err_t IO_EXTENSION_Output(uint8_t pin, uint8_t value) {
 esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
                                             uint8_t *latched_level,
                                             uint8_t *input_level) {
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "Output Failed: mutex unavailable");
-    return ESP_ERR_TIMEOUT;
-  }
-
-  // Serialize I2C access for the whole write+readback window to avoid collisions
-  // with other users (e.g., touch) while SD is driving CS.
-  bool bus_locked = DEV_I2C_TakeLock(pdMS_TO_TICKS(200));
-  if (!bus_locked) {
-    ESP_LOGE(TAG, "Output Failed: i2c bus lock timeout");
-    ioext_unlock();
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "Output")) {
+    ESP_LOGW(TAG, "Output skipped: bus busy");
     return ESP_ERR_TIMEOUT;
   }
 
@@ -196,11 +206,11 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
   }
 
   DEV_I2C_GiveLock();
-
-  ioext_unlock();
-
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Output Failed: %s", esp_err_to_name(ret));
+    ioext_on_error("Output", ret);
+  } else {
+    ioext_on_success();
   }
   return ret;
 }
@@ -211,14 +221,8 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
     return ESP_ERR_INVALID_ARG;
   }
 
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "Read latch Failed: mutex unavailable");
-    return ESP_ERR_TIMEOUT;
-  }
-
-  if (!DEV_I2C_TakeLock(pdMS_TO_TICKS(200))) {
-    ESP_LOGE(TAG, "Read latch Failed: i2c bus lock timeout");
-    ioext_unlock();
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "Read latch")) {
+    ESP_LOGW(TAG, "Read latch skipped: bus busy");
     return ESP_ERR_TIMEOUT;
   }
 
@@ -229,12 +233,15 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
 
   DEV_I2C_GiveLock();
 
-  ioext_unlock();
-
   if (ret == ESP_OK) {
     *latched_level = (out_reg >> pin) & 0x1;
   } else {
     ESP_LOGE(TAG, "Read latch Failed: %s", esp_err_to_name(ret));
+    ioext_on_error("Read latch", ret);
+  }
+
+  if (ret == ESP_OK) {
+    ioext_on_success();
   }
 
   return ret;
@@ -253,14 +260,20 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
 uint8_t IO_EXTENSION_Input(uint8_t pin) {
   uint8_t value = 0;
 
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "Input Failed: mutex unavailable");
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "Input")) {
+    ESP_LOGW(TAG, "Input skipped: bus busy");
     return 0;
   }
 
-  // Read the value of the input pins
-  DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_INPUT_ADDR, &value, 1);
-  ioext_unlock();
+  esp_err_t ret = DEV_I2C_Read_Nbyte(IO_EXTENSION.addr,
+                                     IO_EXTENSION_IO_INPUT_ADDR, &value, 1);
+  DEV_I2C_GiveLock();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Input Failed: %s", esp_err_to_name(ret));
+    ioext_on_error("Input", ret);
+    return 0;
+  }
+  ioext_on_success();
   // Return the value of the specific pin(s) by masking with the provided bit
   // mask
   return ((value & (1 << pin)) > 0);
@@ -286,12 +299,17 @@ esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value) {
   // Calculate the duty cycle based on the resolution (12 bits)
   data[1] = Value * (255 / 100.0);
   // Write the 8-bit value to the PWM output register
-  if (!ioext_lock()) {
-    ESP_LOGE(TAG, "PWM Failed: mutex unavailable");
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "PWM")) {
+    ESP_LOGW(TAG, "PWM skipped: bus busy");
     return ESP_ERR_TIMEOUT;
   }
   esp_err_t ret = DEV_I2C_Write_Nbyte(IO_EXTENSION.addr, data, 2);
-  ioext_unlock();
+  DEV_I2C_GiveLock();
+  if (ret != ESP_OK) {
+    ioext_on_error("PWM", ret);
+  } else {
+    ioext_on_success();
+  }
   return ret;
 }
 
@@ -305,7 +323,18 @@ esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value) {
 uint16_t IO_EXTENSION_Adc_Input() {
   uint16_t value = 0;
   // Read the ADC input value from the IO_EXTENSION device
-  DEV_I2C_Read_Word(IO_EXTENSION.addr, IO_EXTENSION_ADC_ADDR, &value);
+  if (!ioext_take_bus(pdMS_TO_TICKS(200), "ADC")) {
+    ESP_LOGW(TAG, "ADC read skipped: bus busy");
+    return 0;
+  }
+  esp_err_t ret =
+      DEV_I2C_Read_Word(IO_EXTENSION.addr, IO_EXTENSION_ADC_ADDR, &value);
+  DEV_I2C_GiveLock();
+  if (ret != ESP_OK) {
+    ioext_on_error("ADC", ret);
+    return 0;
+  }
+  ioext_on_success();
   return value;
 }
 
