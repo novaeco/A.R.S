@@ -152,6 +152,11 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
   // Serialize I2C access for the whole write+readback window to avoid collisions
   // with other users (e.g., touch) while SD is driving CS.
   bool bus_locked = DEV_I2C_TakeLock(pdMS_TO_TICKS(200));
+  if (!bus_locked) {
+    ESP_LOGE(TAG, "Output Failed: i2c bus lock timeout");
+    ioext_unlock();
+    return ESP_ERR_TIMEOUT;
+  }
 
   // Update the output value based on the pin and value
   if (value == 1)
@@ -190,9 +195,7 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
     }
   }
 
-  if (bus_locked) {
-    DEV_I2C_GiveLock();
-  }
+  DEV_I2C_GiveLock();
 
   ioext_unlock();
 
@@ -213,16 +216,18 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
     return ESP_ERR_TIMEOUT;
   }
 
-  bool bus_locked = DEV_I2C_TakeLock(pdMS_TO_TICKS(200));
+  if (!DEV_I2C_TakeLock(pdMS_TO_TICKS(200))) {
+    ESP_LOGE(TAG, "Read latch Failed: i2c bus lock timeout");
+    ioext_unlock();
+    return ESP_ERR_TIMEOUT;
+  }
 
   uint8_t out_reg = 0;
   esp_err_t ret =
       DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
                          &out_reg, 1);
 
-  if (bus_locked) {
-    DEV_I2C_GiveLock();
-  }
+  DEV_I2C_GiveLock();
 
   ioext_unlock();
 
