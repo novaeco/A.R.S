@@ -275,9 +275,9 @@ static esp_err_t api_animals_post_handler(httpd_req_t *req) {
     snprintf(new_animal.id, sizeof(new_animal.id), "%08lx-%08lx",
              (unsigned long)r1, (unsigned long)r2);
 
-    strncpy(new_animal.name, name->valuestring, sizeof(new_animal.name) - 1);
-    strncpy(new_animal.species, species->valuestring,
-            sizeof(new_animal.species) - 1);
+    strlcpy(new_animal.name, name->valuestring, sizeof(new_animal.name));
+    strlcpy(new_animal.species, species->valuestring,
+            sizeof(new_animal.species));
     new_animal.sex = SEX_UNKNOWN;
 
     if (core_save_animal(&new_animal) == ESP_OK) {

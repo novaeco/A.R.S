@@ -44,7 +44,7 @@ menu "SD Card Configuration"
 
     config ARS_SD_EXTCS_INIT_FREQ_KHZ
         int "SDSPI init frequency (kHz)"
-        default 200
+        default 100
         range 100 1000
         help
             SPI clock during CMD0/CMD8/ACMD41 when using external CS.

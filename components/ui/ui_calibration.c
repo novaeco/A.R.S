@@ -558,37 +558,6 @@ static void save_and_finish_cb(lv_event_t *e) {
   ui_wizard_complete_from_calibration();
 }
 
-static lv_obj_t *create_toggle_row(lv_obj_t *parent, const char *label_txt,
-                                   cal_flag_id_t flag, bool initial_state,
-                                   lv_obj_t **out_switch) {
-  lv_obj_t *row = lv_obj_create(parent);
-  lv_obj_set_style_bg_opa(row, LV_OPA_20, 0);
-  lv_obj_set_style_bg_color(row, UI_COLOR_SURFACE, 0);
-  lv_obj_set_style_border_width(row, 0, 0);
-  lv_obj_set_style_pad_all(row, UI_SPACE_MD, 0);
-  lv_obj_set_style_radius(row, UI_RADIUS_MD, 0);
-  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_width(row, LV_PCT(100));
-
-  lv_obj_t *lbl = lv_label_create(row);
-  lv_label_set_text(lbl, label_txt);
-  lv_obj_add_style(lbl, &ui_style_text_body, 0);
-  lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-
-  lv_obj_t *sw = lv_switch_create(row);
-  if (initial_state) {
-    lv_obj_add_state(sw, LV_STATE_CHECKED);
-  }
-  lv_obj_add_event_cb(sw, on_toggle_event, LV_EVENT_VALUE_CHANGED,
-                      (void *)(uintptr_t)flag);
-  if (out_switch) {
-    *out_switch = sw;
-  }
-  return row;
-}
-
 static void build_screen(void) {
   lv_obj_t *scr = lv_obj_create(NULL);
   ui_theme_apply(scr);

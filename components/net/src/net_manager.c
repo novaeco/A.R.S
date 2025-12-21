@@ -557,9 +557,9 @@ static bool net_try_load_credentials(wifi_config_t *wifi_cfg) {
 
   if (strlen(CONFIG_ARS_WIFI_SSID) > 0) {
     ESP_LOGI(TAG, "Using WiFi credentials from Kconfig (CONFIG_ARS_WIFI_SSID)");
-    strncpy((char *)wifi_cfg->sta.ssid, CONFIG_ARS_WIFI_SSID,
+    strlcpy((char *)wifi_cfg->sta.ssid, CONFIG_ARS_WIFI_SSID,
             sizeof(wifi_cfg->sta.ssid));
-    strncpy((char *)wifi_cfg->sta.password, CONFIG_ARS_WIFI_PASSWORD,
+    strlcpy((char *)wifi_cfg->sta.password, CONFIG_ARS_WIFI_PASSWORD,
             sizeof(wifi_cfg->sta.password));
     return true;
   }

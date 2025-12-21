@@ -30,11 +30,11 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
-#define CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ 200
+#define CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ 100
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
-#define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 10000
+#define CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ 20000
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_RECOVERY_FREQ_KHZ
@@ -1229,9 +1229,9 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
 #else
   // Reduce benign warnings such as "command not supported" while keeping real
   // failures visible during normal operation.
-  esp_log_level_set("sdspi_host", ESP_LOG_WARN);
-  esp_log_level_set("sdmmc_common", ESP_LOG_WARN);
-  esp_log_level_set("sdmmc_cmd", ESP_LOG_WARN);
+  esp_log_level_set("sdspi_host", ESP_LOG_ERROR);
+  esp_log_level_set("sdmmc_common", ESP_LOG_ERROR);
+  esp_log_level_set("sdmmc_cmd", ESP_LOG_ERROR);
 #endif
 
   // 1. IO Init (Safe-Fail)
