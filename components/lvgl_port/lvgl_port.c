@@ -245,14 +245,20 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   int byte_per_pixel = bpp / 8;
   size_t buffer_size = width * lines * byte_per_pixel;
 
-  ESP_LOGI(TAG, "Allocating LVGL Buffers: %d lines (~%d KB)", lines,
-           buffer_size / 1024);
-
-  uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+  const bool psram_available =
+      heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0 ? true : false;
+  uint32_t caps_primary = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+  if (psram_available) {
+    caps_primary = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
+  }
+  uint32_t caps_fallback = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+  uint32_t caps = caps_primary;
 
   void *buf1 = NULL;
   void *buf2 = NULL;
-  const int min_lines = 10;
+  const int min_lines = 20;
+  const int requested_lines = lines;
+  bool caps_switched = false;
 
   while (lines >= min_lines && (!buf1 || (ARS_LVGL_USE_DOUBLE_BUF && !buf2))) {
     buffer_size = width * lines * byte_per_pixel;
@@ -268,16 +274,31 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
         heap_caps_free(buf2);
       }
       buf1 = buf2 = NULL;
+
+      if (psram_available && !caps_switched && (caps & MALLOC_CAP_SPIRAM)) {
+        caps = caps_fallback;
+        caps_switched = true;
+        continue;
+      }
+
       lines /= 2;
       continue;
     }
   }
 
   if (!buf1) {
+    const char *attempted_mem = (caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
     ESP_LOGE(TAG,
-             "Critical: Failed to allocate LVGL buffer even with fallback.");
+             "Critical: Failed to allocate LVGL buffer (req=%d lines, min=%d, "
+             "mem=%s)",
+             requested_lines, min_lines, attempted_mem);
     return NULL;
   }
+
+  const char *mem_type = (caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
+  ESP_LOGI(TAG,
+           "LVGL buffers allocated: %d lines (requested %d) (~%d KB each) in %s",
+           lines, requested_lines, (int)(buffer_size / 1024), mem_type);
 
 #if ARS_LVGL_USE_DOUBLE_BUF
   if (!buf2) {
@@ -379,10 +400,13 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
 
   if (stable_pressed) {
     // Pipeline: raw -> orientation (swap/mirror/clamp) -> calibration -> LVGL
+    const bool orient_applied = touch_orient_driver_applied();
     const touch_orient_config_t *orient = touch_orient_get_active();
     lv_point_t oriented = {.x = raw_x, .y = raw_y};
-    touch_orient_map_point(orient, raw_x, raw_y, LVGL_PORT_H_RES,
-                           LVGL_PORT_V_RES, &oriented);
+    if (!orient_applied) {
+      touch_orient_map_point(orient, raw_x, raw_y, LVGL_PORT_H_RES,
+                             LVGL_PORT_V_RES, &oriented);
+    }
 
     oriented_point = oriented;
     mapped_point = oriented;

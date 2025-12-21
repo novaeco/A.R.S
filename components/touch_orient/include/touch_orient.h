@@ -61,6 +61,7 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
  * @brief Return the last configuration applied at runtime.
  */
 const touch_orient_config_t *touch_orient_get_active(void);
+bool touch_orient_driver_applied(void);
 
 /**
  * @brief Apply orientation and clamp to a point.

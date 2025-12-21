@@ -125,6 +125,12 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
           },
   };
 
+  ESP_LOGI(TAG,
+           "RGB panel config: %dx%d pclk=%dHz data_width=%d fb=%d bounce_lines=%d",
+           EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES, EXAMPLE_LCD_PIXEL_CLOCK_HZ,
+           EXAMPLE_RGB_DATA_WIDTH, EXAMPLE_LCD_RGB_BUFFER_NUMS,
+           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+
   // Create and register the RGB LCD panel driver with the configuration above
   ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panel_config, &panel_handle));
 
