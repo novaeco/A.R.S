@@ -99,6 +99,8 @@ static portMUX_TYPE s_gt911_error_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_gt911_use_ioext_reset = false;
 static uint8_t s_gt911_ioext_reset_pin = IO_EXTENSION_IO_1;
 
+static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp);
+
 typedef struct {
   uint32_t i2c_errors;
   uint32_t poll_timeouts;
@@ -328,8 +330,6 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
 /* GT911 resolution programming */
 static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp);
 
-/* GT911 reset */
-static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp);
 /* Read status and config register */
 static esp_err_t touch_gt911_read_cfg(esp_lcd_touch_handle_t tp);
 
