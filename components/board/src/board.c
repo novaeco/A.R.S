@@ -133,6 +133,24 @@ esp_err_t app_board_init(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  // Deterministic LCD reset (IO_3) to avoid stuck-black screen after power
+  // sequencing. Active-low pulse with short settle times.
+  if (ioext_ok) {
+    esp_err_t rst_ret = IO_EXTENSION_Output(IO_EXTENSION_IO_3, 0);
+    if (rst_ret != ESP_OK) {
+      ESP_LOGE(TAG, "LCD reset assert failed: %s", esp_err_to_name(rst_ret));
+      return rst_ret;
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    rst_ret = IO_EXTENSION_Output(IO_EXTENSION_IO_3, 1);
+    if (rst_ret != ESP_OK) {
+      ESP_LOGE(TAG, "LCD reset release failed: %s", esp_err_to_name(rst_ret));
+      return rst_ret;
+    }
+    ESP_LOGI(TAG, "LCD reset pulse completed (IO 3)");
+  }
+
   // Wait for power to stabilize
   vTaskDelay(pdMS_TO_TICKS(50));
 
