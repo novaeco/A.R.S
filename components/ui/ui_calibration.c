@@ -211,6 +211,9 @@ static void stop_capture_layer(void) {
   if (s_capture_layer) {
     lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "CAL: overlay OFF (clickable=%d hidden=%d)",
+             lv_obj_has_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE),
+             lv_obj_has_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN));
   }
   stop_auto_timer();
 }
@@ -365,6 +368,10 @@ static void calibration_touch_cb(lv_event_t *e) {
   if (!sample.pressed && sample.raw_x == 0 && sample.raw_y == 0)
     return;
   lv_point_t pt = {.x = (lv_coord_t)sample.raw_x, .y = (lv_coord_t)sample.raw_y};
+  ESP_LOGI(TAG,
+           "CAL: overlay pressed evt=%d raw=(%d,%d) point=%d/%d collecting=%d",
+           code, (int)sample.raw_x, (int)sample.raw_y, s_active_cal_point + 1,
+           CAL_POINT_COUNT, s_is_collecting);
 
   s_cal_points[s_active_cal_point].measured_raw = pt;
   s_cal_points[s_active_cal_point].captured = true;
@@ -433,6 +440,7 @@ static void on_toggle_event(lv_event_t *e) {
 static void auto_detect_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
+  ESP_LOGI(TAG, "BTN: Auto-orienter pressed");
   touch_sample_raw_t sample =
       touch_transform_sample_raw_oriented(app_board_get_touch_handle(), true);
   s_auto_probe.origin.x = sample.raw_x;
@@ -453,6 +461,8 @@ static void reset_defaults_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
 
+  ESP_LOGI(TAG, "BTN: Par defaut pressed");
+
   touch_transform_identity(&s_current_record.transform);
   stop_capture_layer();
   apply_config_to_driver(false);
@@ -466,6 +476,8 @@ static void reset_defaults_cb(lv_event_t *e) {
 static void start_capture_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
+
+  ESP_LOGI(TAG, "BTN: Calibrer pressed");
 
   if (!s_capture_layer) {
     ui_show_error("Calque de capture absent");
@@ -484,6 +496,9 @@ static void start_capture_cb(lv_event_t *e) {
   lv_obj_clear_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(s_capture_layer);
   lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE);
+  ESP_LOGI(TAG, "CAL: overlay ON (clickable=%d hidden=%d)",
+           lv_obj_has_flag(s_capture_layer, LV_OBJ_FLAG_CLICKABLE),
+           lv_obj_has_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN));
   s_is_collecting = true;
   s_active_cal_point = 0;
   highlight_active_marker();
@@ -497,6 +512,8 @@ static void start_capture_cb(lv_event_t *e) {
 static void save_and_finish_cb(lv_event_t *e) {
   if (!e || lv_event_get_code(e) != LV_EVENT_CLICKED)
     return;
+
+  ESP_LOGI(TAG, "BTN: Enregistrer pressed");
 
   if (s_is_collecting) {
     ui_show_error("Terminez la capture avant d'enregistrer.");
@@ -723,7 +740,7 @@ static void build_screen(void) {
   lv_obj_set_style_border_width(overlay, 0, 0);
   lv_obj_add_event_cb(overlay, calibration_touch_cb, LV_EVENT_PRESSED, NULL);
   s_capture_layer = overlay;
-  lv_obj_add_flag(s_capture_layer, LV_OBJ_FLAG_HIDDEN);
+  stop_capture_layer();
   reset_cal_points(overlay);
 
   if (s_touch_dbg_timer) {
