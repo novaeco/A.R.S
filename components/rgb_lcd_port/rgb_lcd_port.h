@@ -26,6 +26,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include <stddef.h>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to your
@@ -38,7 +39,7 @@
 #define EXAMPLE_LCD_H_RES BOARD_LCD_HRES ///< Horizontal resolution in pixels
 #define EXAMPLE_LCD_V_RES BOARD_LCD_VRES ///< Vertical resolution in pixels
 #define EXAMPLE_LCD_PIXEL_CLOCK_HZ                                            \
-  BOARD_LCD_PCLK_HZ ///< Pixel clock frequency in Hz (18MHz for stable 1024x600 ST7262)
+  BOARD_LCD_PCLK_HZ ///< Pixel clock frequency in Hz (configurable, 51.2 MHz recommandé 1024x600@60Hz)
 
 /**
  * @brief Color and Pixel Configuration
@@ -104,6 +105,16 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init();
  * @brief Get the handle of the initialized RGB LCD panel.
  */
 esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_get_handle(void);
+
+/**
+ * @brief Récupère les framebuffers alloués par le driver RGB
+ *
+ * @param[out] buffers tableau interne des pointeurs de buffers
+ * @param[out] buffer_count nombre de buffers valides
+ * @param[out] stride_bytes taille en octets d'une ligne
+ */
+esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,
+                                       size_t *stride_bytes);
 
 void waveshare_rgb_lcd_bl_on();
 void waveshare_rgb_lcd_bl_off();

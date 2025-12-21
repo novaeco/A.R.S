@@ -1,7 +1,6 @@
 #include "lvgl_port.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -14,9 +13,10 @@
 #include "touch_orient.h"
 #include "touch_transform.h"
 #include "board_orientation.h"
+#include "rgb_lcd_port.h"
 #include <inttypes.h>
 
-#if defined(CONFIG_ARS_VSYNC_WAIT_ENABLE) && CONFIG_ARS_VSYNC_WAIT_ENABLE
+#if defined(CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE) && CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
 #elif defined(CONFIG_ARS_LCD_WAIT_VSYNC)
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
@@ -30,19 +30,21 @@
 #define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS 20
 #endif
 
-#if defined(CONFIG_ARS_LVGL_USE_DOUBLE_BUF) && CONFIG_ARS_LVGL_USE_DOUBLE_BUF
-#define ARS_LVGL_USE_DOUBLE_BUF 1
-#else
-#define ARS_LVGL_USE_DOUBLE_BUF 0
-#endif
-
 static const char *TAG = "lv_port";          // Tag for logging
 static SemaphoreHandle_t lvgl_mux = NULL;    // LVGL mutex for synchronization
 static TaskHandle_t lvgl_task_handle = NULL; // Handle for the LVGL task
 static esp_timer_handle_t s_lvgl_tick_timer = NULL;
+#if CONFIG_ARS_UI_HEARTBEAT
+static lv_obj_t *s_heartbeat_label = NULL;
+static lv_timer_t *s_heartbeat_timer = NULL;
+#endif
 #if CONFIG_ARS_LVGL_DEBUG_SCREEN
 static lv_obj_t *s_debug_screen = NULL; // Debug screen object
 #endif
+
+static void **s_rgb_framebuffers = NULL;
+static size_t s_rgb_framebuffer_count = 0;
+static size_t s_rgb_stride_bytes = 0;
 
 typedef void (*lvgl_port_ui_init_cb_t)(void);
 
@@ -72,6 +74,30 @@ static void lv_port_create_debug_screen(void) {
   // Load the screen
   lv_disp_load_scr(s_debug_screen);
   ESP_LOGI(TAG, "Debug screen created and loaded");
+}
+#endif
+
+#if CONFIG_ARS_UI_HEARTBEAT
+static void lv_port_heartbeat_timer_cb(lv_timer_t *timer) {
+  LV_UNUSED(timer);
+  static uint32_t beat = 0;
+  if (s_heartbeat_label) {
+    lv_label_set_text_fmt(s_heartbeat_label, "HB %u", (unsigned)beat++);
+  }
+}
+
+static void lv_port_create_heartbeat(void) {
+  if (s_heartbeat_label || !lv_display_get_default()) {
+    return;
+  }
+  s_heartbeat_label = lv_label_create(lv_screen_active());
+  lv_obj_set_style_text_color(s_heartbeat_label, lv_color_hex(0x00FF00),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_font(s_heartbeat_label, LV_FONT_DEFAULT, LV_PART_MAIN);
+  lv_obj_align(s_heartbeat_label, LV_ALIGN_TOP_LEFT, 4, 4);
+  lv_label_set_text(s_heartbeat_label, "HB 0");
+  s_heartbeat_timer = lv_timer_create(lv_port_heartbeat_timer_cb, 1000, NULL);
+  ESP_LOGI(TAG, "Heartbeat UI enabled");
 }
 #endif
 
@@ -121,6 +147,9 @@ static void lvgl_port_task(void *arg) {
     } else {
       ESP_LOGW(TAG, "ui_init() not linked; UI will not start");
     }
+#if CONFIG_ARS_UI_HEARTBEAT
+    lv_port_create_heartbeat();
+#endif
     lvgl_port_unlock();
   }
 
@@ -164,6 +193,17 @@ IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   return high_task_awoken == pdTRUE;
 }
 
+static int framebuffer_index_for_ptr(const uint8_t *ptr) {
+  if (!ptr || !s_rgb_framebuffers)
+    return -1;
+  for (size_t i = 0; i < s_rgb_framebuffer_count; i++) {
+    if (ptr == s_rgb_framebuffers[i]) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
 static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                            uint8_t *px_map) {
   esp_lcd_panel_handle_t panel_handle =
@@ -174,25 +214,26 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   const int offsety1 = area->y1;
   const int offsety2 = area->y2;
 
-  // Draw bitmap to LCD panel (PSRAM buffer copy or DMA setup)
-  // Debug Trace:
   static bool s_first_flush = true;
+  int fb_idx = framebuffer_index_for_ptr(px_map);
   if (s_first_flush) {
-    ESP_LOGI(TAG, "LVGL First Flush: (%d,%d) -> (%d,%d)", offsetx1, offsety1,
-             offsetx2, offsety2);
+    ESP_LOGI(TAG,
+             "LVGL First Flush (DIRECT): area(%d,%d)-(%d,%d) fb_idx=%d fb_cnt=%d",
+             offsetx1, offsety1, offsetx2, offsety2, fb_idx,
+             (int)s_rgb_framebuffer_count);
     s_first_flush = false;
   }
-  // ESP_LOGD(TAG, "Flush: (%d,%d) -> (%d,%d)", offsetx1, offsety1, offsetx2,
-  // offsety2);
 
-  esp_err_t draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1,
-                                                offsety1, offsetx2 + 1,
-                                                offsety2 + 1, px_map);
-
-  if (draw_ret != ESP_OK) {
-    ESP_LOGE(TAG, "panel_draw_bitmap failed: %s", esp_err_to_name(draw_ret));
-    lv_display_flush_ready(disp);
-    return;
+  esp_err_t draw_ret = ESP_OK;
+  if (panel_handle) {
+    draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1,
+                                         offsetx2 + 1, offsety2 + 1, px_map);
+    if (draw_ret != ESP_OK) {
+      ESP_LOGE(TAG, "panel_draw_bitmap failed: %s",
+               esp_err_to_name(draw_ret));
+      lv_display_flush_ready(disp);
+      return;
+    }
   }
 
   // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear. Timeout is
@@ -238,88 +279,33 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     ESP_LOGI(TAG, "VSYNC wait disabled by configuration");
   }
 
-  // Buffer Configuration
-  int width = LVGL_PORT_H_RES;
-  int lines = CONFIG_ARS_LVGL_BUF_LINES;
-  int bpp = CONFIG_ARS_LVGL_COLOR_DEPTH;
-  int byte_per_pixel = bpp / 8;
-  size_t buffer_size = width * lines * byte_per_pixel;
-
-  const bool psram_available =
-      heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0 ? true : false;
-  uint32_t caps_primary = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
-  if (psram_available) {
-    caps_primary = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
-  }
-  uint32_t caps_fallback = MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
-  uint32_t caps = caps_primary;
-
-  void *buf1 = NULL;
-  void *buf2 = NULL;
-  const int min_lines = 20;
-  const int requested_lines = lines;
-  bool caps_switched = false;
-
-  while (lines >= min_lines && (!buf1 || (ARS_LVGL_USE_DOUBLE_BUF && !buf2))) {
-    buffer_size = width * lines * byte_per_pixel;
-    buf1 = heap_caps_aligned_alloc(64, buffer_size, caps);
-#if ARS_LVGL_USE_DOUBLE_BUF
-    buf2 = heap_caps_aligned_alloc(64, buffer_size, caps);
-#endif
-    if (!buf1 || (ARS_LVGL_USE_DOUBLE_BUF && !buf2)) {
-      if (buf1) {
-        heap_caps_free(buf1);
-      }
-      if (buf2) {
-        heap_caps_free(buf2);
-      }
-      buf1 = buf2 = NULL;
-
-      if (psram_available && !caps_switched && (caps & MALLOC_CAP_SPIRAM)) {
-        caps = caps_fallback;
-        caps_switched = true;
-        continue;
-      }
-
-      lines /= 2;
-      continue;
-    }
-  }
-
-  if (!buf1) {
-    const char *attempted_mem = (caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
-    ESP_LOGE(TAG,
-             "Critical: Failed to allocate LVGL buffer (req=%d lines, min=%d, "
-             "mem=%s)",
-             requested_lines, min_lines, attempted_mem);
+  esp_err_t fb_ret = rgb_lcd_port_get_framebuffers(&s_rgb_framebuffers,
+                                                  &s_rgb_framebuffer_count,
+                                                  &s_rgb_stride_bytes);
+  if (fb_ret != ESP_OK || s_rgb_framebuffer_count == 0 ||
+      s_rgb_framebuffers == NULL) {
+    ESP_LOGE(TAG, "RGB framebuffers unavailable: %s", esp_err_to_name(fb_ret));
     return NULL;
   }
 
-  const char *mem_type = (caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
-  ESP_LOGI(TAG,
-           "LVGL buffers allocated: %d lines (requested %d) (~%d KB each) in %s",
-           lines, requested_lines, (int)(buffer_size / 1024), mem_type);
-
-#if ARS_LVGL_USE_DOUBLE_BUF
-  if (!buf2) {
-    ESP_LOGW(TAG, "Double buffer disabled dynamically (allocation failed).");
-  }
-#endif
-
+  size_t frame_bytes = s_rgb_stride_bytes * LVGL_PORT_V_RES;
   lv_display_t *disp = lv_display_create(LVGL_PORT_H_RES, LVGL_PORT_V_RES);
   if (!disp) {
     ESP_LOGE(TAG, "Failed to create LVGL display instance");
-    heap_caps_free(buf1);
-    if (buf2) {
-      heap_caps_free(buf2);
-    }
     return NULL;
   }
 
   lv_display_set_flush_cb(disp, flush_callback);
-  lv_display_set_buffers(disp, buf1, buf2, buffer_size,
-                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp, s_rgb_framebuffers[0],
+                         (s_rgb_framebuffer_count > 1) ? s_rgb_framebuffers[1]
+                                                       : NULL,
+                         frame_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
   lv_display_set_user_data(disp, panel_handle);
+
+  ESP_LOGI(TAG,
+           "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
+           (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
+           (int)frame_bytes);
 
   return disp;
 }

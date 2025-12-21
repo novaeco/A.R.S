@@ -1,5 +1,37 @@
 menu "BSP / Board"
 
+config ARS_LCD_PCLK_HZ
+    int "Fréquence pixel clock (Hz)"
+    default 51200000
+    help
+        Fréquence du pclk pour le panneau RGB 1024x600. Valeur recommandée
+        pour 60 Hz avec timings 1344x635 : ~51.2 MHz. Ajustable pour A/B test.
+
+config ARS_LCD_PCLK_ACTIVE_NEG
+    bool "PCLK actif sur front descendant"
+    default y
+    help
+        Active l'horloge pixel sur front descendant (recommandé ST7262). Permet
+        d'inverser pour diagnostic.
+
+config ARS_LCD_HSYNC_IDLE_LOW
+    bool "HSYNC idle bas"
+    default n
+    help
+        Niveau idle pour HSYNC. Off = idle haut (comportement actuel).
+
+config ARS_LCD_VSYNC_IDLE_LOW
+    bool "VSYNC idle bas"
+    default n
+    help
+        Niveau idle pour VSYNC. Off = idle haut (comportement actuel).
+
+config ARS_LCD_DE_IDLE_HIGH
+    bool "DE idle haut"
+    default n
+    help
+        Niveau idle pour DE. Off = idle bas (comportement actuel).
+
 config ARS_BACKLIGHT_USE_IO_EXPANDER
     bool "Piloter le rétroéclairage via l'IO expander"
     default y
@@ -41,6 +73,24 @@ config ARS_SKIP_TEST_PATTERN
     help
         Désactive l'affichage systématique du motif de test (barres RGBWB)
         pour éviter une allocation PSRAM importante et accélérer le démarrage.
+
+config ARS_LCD_BOOT_TEST_PATTERN
+    bool "Afficher le motif de test LCD au boot (~2s)"
+    default n
+    help
+        Force l'affichage d'un motif de test (barres RGBWB) pendant environ
+        2 secondes au démarrage, même si LVGL n'est pas initialisé. Ignoré si
+        ARS_SKIP_TEST_PATTERN est actif.
+
+config ARS_LCD_BOOT_TEST_PATTERN_MS
+    int "Durée du motif de test (ms)"
+    depends on ARS_LCD_BOOT_TEST_PATTERN
+    range 200 5000
+    default 2000
+    help
+        Durée indicative pendant laquelle le motif de test reste affiché avant
+        de poursuivre le flux normal. Exécuté dans une tâche dédiée pour ne pas
+        bloquer le boot.
 
 choice ARS_DISPLAY_ROTATION
     prompt "Rotation de l'affichage (LVGL)"
