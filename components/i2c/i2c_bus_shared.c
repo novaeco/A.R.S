@@ -1,6 +1,8 @@
 #include "i2c_bus_shared.h"
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "i2c.h" // Access DEV_I2C_Init_Bus
@@ -96,4 +98,69 @@ void i2c_bus_shared_deinit(void) {
     vSemaphoreDelete(g_i2c_bus_mutex);
     g_i2c_bus_mutex = NULL;
   }
+}
+
+esp_err_t i2c_bus_shared_recover(void) {
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const TickType_t lock_timeout = pdMS_TO_TICKS(200);
+  if (!i2c_bus_shared_lock(lock_timeout)) {
+    ESP_LOGW(TAG, "Bus recovery skipped: mutex busy");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t ret = ESP_FAIL;
+  bool manual_toggle_needed = false;
+
+  if (s_shared_bus) {
+    ret = i2c_master_bus_reset(s_shared_bus);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "Bus reset failed: %s", esp_err_to_name(ret));
+      manual_toggle_needed = true;
+    }
+  } else {
+    manual_toggle_needed = true;
+  }
+
+  if (manual_toggle_needed) {
+    ESP_LOGW(TAG, "Toggling SCL to free bus (SCL=%d SDA=%d)", ARS_I2C_SCL,
+             ARS_I2C_SDA);
+    gpio_config_t cfg = {
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pull_up_en = true,
+        .pull_down_en = false,
+        .pin_bit_mask = (1ULL << ARS_I2C_SCL) | (1ULL << ARS_I2C_SDA),
+    };
+    gpio_config(&cfg);
+
+    gpio_set_level(ARS_I2C_SDA, 1);
+    for (int i = 0; i < 9; i++) {
+      gpio_set_level(ARS_I2C_SCL, 0);
+      esp_rom_delay_us(10);
+      gpio_set_level(ARS_I2C_SCL, 1);
+      esp_rom_delay_us(10);
+    }
+    gpio_set_level(ARS_I2C_SDA, 1);
+
+    if (s_shared_bus != NULL) {
+      esp_err_t del_ret = i2c_del_master_bus(s_shared_bus);
+      if (del_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to delete shared bus during recovery: %s",
+                 esp_err_to_name(del_ret));
+      }
+      s_shared_bus = NULL;
+    }
+    ret = i2c_bus_shared_init();
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Bus re-init after toggle failed: %s", esp_err_to_name(ret));
+    }
+  }
+
+  i2c_bus_shared_unlock();
+  if (ret == ESP_OK) {
+    ESP_LOGI(TAG, "I2C bus recovery complete");
+  }
+  return ret;
 }

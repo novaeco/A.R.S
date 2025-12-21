@@ -49,6 +49,14 @@ i2c_master_bus_handle_t i2c_bus_shared_get_handle(void);
  */
 bool i2c_bus_shared_is_ready(void);
 
+/**
+ * @brief Attempt to recover a stuck I2C bus by toggling SCL and reinitializing
+ *        the master if needed.
+ *
+ * Safe to call from task context only (not ISR). Uses the shared mutex.
+ */
+esp_err_t i2c_bus_shared_recover(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -69,7 +69,7 @@ config ARS_BAT_DIV_DEN
 
 config ARS_SKIP_TEST_PATTERN
     bool "Ignorer le motif de test LCD au boot"
-    default y
+    default n
     help
         Désactive l'affichage systématique du motif de test (barres RGBWB)
         pour éviter une allocation PSRAM importante et accélérer le démarrage.
