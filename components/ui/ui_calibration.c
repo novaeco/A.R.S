@@ -771,10 +771,37 @@ bool ui_calibration_check_and_start(void) {
 void ui_calibration_start(void) {
   ESP_LOGI(TAG, "Starting Calibration UI");
 
-  if (touch_transform_storage_load(&s_current_record) != ESP_OK) {
+  const bool loaded = (touch_transform_storage_load(&s_current_record) == ESP_OK);
+  if (!loaded) {
     touch_transform_identity(&s_current_record.transform);
     s_current_record.magic = TOUCH_TRANSFORM_MAGIC;
     s_current_record.version = TOUCH_TRANSFORM_VERSION;
+  }
+
+  // IMPORTANT: Keep the logical orientation (swap/mirror) consistent with the
+  // active touch driver state.
+  //
+  // Rationale:
+  // - Board init may have already applied a rotation-derived orientation and
+  //   persisted it (touch_orient).
+  // - The calibration UI may start with an identity transform record (e.g. when
+  //   no calibration record exists yet).
+  // - If we apply an identity record with swap/mirror cleared, we would
+  //   inadvertently overwrite the correct orientation and make the UI unusable.
+  const touch_orient_config_t *active_orient = touch_orient_get_active();
+  if (active_orient) {
+    const bool mismatch = (s_current_record.transform.swap_xy != active_orient->swap_xy) ||
+                          (s_current_record.transform.mirror_x != active_orient->mirror_x) ||
+                          (s_current_record.transform.mirror_y != active_orient->mirror_y);
+    if (mismatch) {
+      ESP_LOGI(TAG,
+               "Seeding calibration orientation from active driver: swap=%d mirX=%d mirY=%d (loaded=%d)",
+               (int)active_orient->swap_xy, (int)active_orient->mirror_x,
+               (int)active_orient->mirror_y, (int)loaded);
+      s_current_record.transform.swap_xy = active_orient->swap_xy;
+      s_current_record.transform.mirror_x = active_orient->mirror_x;
+      s_current_record.transform.mirror_y = active_orient->mirror_y;
+    }
   }
   s_has_valid_solution = touch_transform_validate(&s_current_record.transform) == ESP_OK;
   apply_config_to_driver(false);
