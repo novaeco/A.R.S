@@ -67,7 +67,7 @@ static void lv_port_create_debug_screen(void) {
 
   // Debug Label
   lv_obj_t *label = lv_label_create(s_debug_screen);
-  lv_label_set_text(label, "LVGL Port OK - AntigravitFix");
+  lv_label_set_text(label, "LVGL DIRECT OK");
   lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
   lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
   lv_obj_center(label);
@@ -205,6 +205,8 @@ static int framebuffer_index_for_ptr(const uint8_t *ptr) {
   return -1;
 }
 
+static bool s_direct_mode = false;
+
 static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                            uint8_t *px_map) {
   esp_lcd_panel_handle_t panel_handle =
@@ -216,24 +218,33 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   const int offsety2 = area->y2;
 
   static bool s_first_flush = true;
+  const bool first_flush = s_first_flush;
+  const int64_t flush_start_us = esp_timer_get_time();
   int fb_idx = framebuffer_index_for_ptr(px_map);
   if (s_first_flush) {
     ESP_LOGI(TAG,
-             "LVGL First Flush (DIRECT): area(%d,%d)-(%d,%d) fb_idx=%d fb_cnt=%d",
-             offsetx1, offsety1, offsetx2, offsety2, fb_idx,
-             (int)s_rgb_framebuffer_count);
+             "LVGL First Flush (%s): area(%d,%d)-(%d,%d) fb_idx=%d fb_cnt=%d",
+             s_direct_mode ? "direct" : "fallback", offsetx1, offsety1, offsetx2,
+             offsety2, fb_idx, (int)s_rgb_framebuffer_count);
     s_first_flush = false;
   }
 
-  esp_err_t draw_ret = ESP_OK;
-  if (panel_handle) {
-    draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1,
-                                         offsetx2 + 1, offsety2 + 1, px_map);
-    if (draw_ret != ESP_OK) {
-      ESP_LOGE(TAG, "panel_draw_bitmap failed: %s",
-               esp_err_to_name(draw_ret));
-      lv_display_flush_ready(disp);
-      return;
+  if (s_direct_mode && fb_idx < 0) {
+    ESP_LOGW(TAG, "Flush buffer not tracked (addr=%p) while in DIRECT mode",
+             px_map);
+  }
+
+  if (!s_direct_mode) {
+    esp_err_t draw_ret = ESP_OK;
+    if (panel_handle) {
+      draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1,
+                                           offsetx2 + 1, offsety2 + 1, px_map);
+      if (draw_ret != ESP_OK) {
+        ESP_LOGE(TAG, "panel_draw_bitmap failed: %s",
+                 esp_err_to_name(draw_ret));
+        lv_display_flush_ready(disp);
+        return;
+      }
     }
   }
 
@@ -254,6 +265,14 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
 
   // Notify LVGL we are done
   lv_display_flush_ready(disp);
+
+  const int64_t flush_duration_us = esp_timer_get_time() - flush_start_us;
+  if (!first_flush && flush_duration_us > 5000) {
+    ESP_LOGW(TAG,
+             "Flush duration high: area(%d,%d)-(%d,%d) fb_idx=%d time=%" PRId64
+             "us",
+             offsetx1, offsety1, offsetx2, offsety2, fb_idx, flush_duration_us);
+  }
 }
 
 static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
@@ -262,6 +281,8 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     return NULL;
   }
   ESP_LOGI(TAG, "Initializing LVGL Display Driver...");
+
+  s_direct_mode = false;
 
   // ARS: VSYNC Synchronization Semaphore
   s_vsync.wait_enabled = ARS_LCD_WAIT_VSYNC_ENABLED;
@@ -307,6 +328,13 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
         "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
         (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
         (int)frame_bytes);
+    s_direct_mode = true;
+    if (s_rgb_framebuffer_count >= 1) {
+      ESP_LOGI(TAG, "fb0=%p", s_rgb_framebuffers[0]);
+    }
+    if (s_rgb_framebuffer_count >= 2) {
+      ESP_LOGI(TAG, "fb1=%p", s_rgb_framebuffers[1]);
+    }
     return disp;
   }
 
@@ -606,7 +634,7 @@ static lv_indev_t *indev_init(lv_display_t *disp, esp_lcd_touch_handle_t tp) {
 
 esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
                          esp_lcd_touch_handle_t tp_handle) {
-  ESP_LOGI(TAG, "Initializing LVGL Port (AntigravitFix)");
+  ESP_LOGI(TAG, "lvgl_port_init enter panel=%p touch=%p", lcd_handle, tp_handle);
 
   lv_init();
   esp_err_t err = tick_init();
@@ -658,6 +686,10 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
 
   // Debug Screen creation moved to lvgl_port_task to execute on correct core
   // lv_port_create_debug_screen();
+
+  ESP_LOGI(TAG, "lvgl_port_init done (disp=%p direct=%d fb_count=%d stride=%d)",
+           disp, s_direct_mode, (int)s_rgb_framebuffer_count,
+           (int)s_rgb_stride_bytes);
 
   return ESP_OK;
 }

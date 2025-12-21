@@ -188,6 +188,7 @@ esp_err_t app_board_init(void) {
   // Debug: Run Test Pattern (Color Bars) to verify display independently of
   // LVGL
   board_lcd_test_pattern();
+  ESP_LOGI(TAG, "LCD pipeline check: VCOM/reset/backlight/test pattern done");
 
   // 5. Touch Transform (load + migrate legacy if needed)
   if (g_tp_handle) {

@@ -148,6 +148,12 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   // Initialize the RGB LCD panel
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
 
+  ESP_LOGI(TAG,
+           "RGB panel ready: handle=%p fbs=%d stride_bytes=%d bounce_lines=%d",
+           panel_handle, EXAMPLE_LCD_RGB_BUFFER_NUMS,
+           (int)(EXAMPLE_LCD_H_RES * (EXAMPLE_LCD_BIT_PER_PIXEL / 8)),
+           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+
   if (ARS_LCD_WAIT_VSYNC_ENABLED) {
     esp_lcd_rgb_panel_event_callbacks_t cbs = {
         .on_frame_buf_complete = NULL,
@@ -224,6 +230,9 @@ esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,
     if (s_framebuffer_count > 0) {
       ESP_LOGI(TAG, "RGB framebuffers ready: %d stride=%d bytes", (int)s_framebuffer_count,
                (int)s_stride_bytes);
+      for (size_t i = 0; i < s_framebuffer_count; i++) {
+        ESP_LOGI(TAG, "fb[%d]=%p", (int)i, s_framebuffers[i]);
+      }
     }
   }
 
