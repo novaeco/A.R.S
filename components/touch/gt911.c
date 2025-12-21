@@ -77,6 +77,7 @@ static volatile uint32_t s_gt911_invalid_points = 0;
 static volatile uint32_t s_gt911_clamped_points = 0;
 static int64_t s_last_irq_us = 0;
 static int64_t s_spurious_block_until_us = 0;
+static int64_t s_next_ioext_reset_after_us = 0;
 static int s_gt911_int_gpio = -1;
 static uint16_t s_gt911_last_raw_x = 0;
 static uint16_t s_gt911_last_raw_y = 0;
@@ -919,6 +920,12 @@ static esp_err_t gt911_reset_via_ioext(void) {
     return ESP_ERR_NOT_SUPPORTED;
   }
 
+  int64_t now = esp_timer_get_time();
+  if (now < s_next_ioext_reset_after_us) {
+    ESP_LOGW(TAG, "GT911 reset skipped: IOEXT backoff active");
+    return ESP_ERR_TIMEOUT;
+  }
+
   if (!IO_EXTENSION_Is_Initialized()) {
     ESP_LOGE(TAG, "IO extension not ready for GT911 reset");
     return ESP_ERR_INVALID_STATE;
@@ -927,6 +934,7 @@ static esp_err_t gt911_reset_via_ioext(void) {
   esp_err_t ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 0);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset low failed: %s", esp_err_to_name(ret));
+    s_next_ioext_reset_after_us = esp_timer_get_time() + 500000; // 500ms backoff
     return ret;
   }
   vTaskDelay(pdMS_TO_TICKS(20));
@@ -934,10 +942,12 @@ static esp_err_t gt911_reset_via_ioext(void) {
   ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 1);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset high failed: %s", esp_err_to_name(ret));
+    s_next_ioext_reset_after_us = esp_timer_get_time() + 500000; // 500ms backoff
     return ret;
   }
 
   vTaskDelay(pdMS_TO_TICKS(60));
+  s_next_ioext_reset_after_us = esp_timer_get_time() + 100000; // 100ms guard
   return ESP_OK;
 }
 
