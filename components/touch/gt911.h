@@ -8,7 +8,14 @@
  */
 #pragma once
 
+#include "sdkconfig.h"
 #include "touch.h"
+
+#ifndef CONFIG_ARS_TOUCH_POLL_INTERVAL_MS
+#define CONFIG_ARS_TOUCH_POLL_INTERVAL_MS 20
+#endif
+
+#define GT911_POLL_INTERVAL_MS CONFIG_ARS_TOUCH_POLL_INTERVAL_MS
 
 #ifndef ESP_LCD_TOUCH_MAX_POINTS
 #ifdef CONFIG_ESP_LCD_TOUCH_MAX_POINTS

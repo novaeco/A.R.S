@@ -48,12 +48,10 @@
 #include "i2c.h"
 #include "i2c_bus_shared.h"
 #include "io_extension.h"
-#include "rgb_lcd_port.h"
 #include <rom/ets_sys.h>
 
 #include "gt911.h"
 
-#define GT911_POLL_INTERVAL_MS 20
 #define GT911_RAW_MARGIN 64
 #define GT911_DEBUG_DUMP_INTERVAL_US 500000
 

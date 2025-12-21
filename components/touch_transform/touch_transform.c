@@ -317,7 +317,7 @@ touch_sample_raw_t touch_transform_sample_raw_oriented(
   // Interpret "pressed" based on irq counter delta / last read heuristic
   sample.pressed = stats.last_raw_x || stats.last_raw_y;
 
-  if (apply_orientation_hint) {
+  if (apply_orientation_hint && !touch_orient_driver_applied()) {
     lv_point_t oriented = {.x = sample.raw_x, .y = sample.raw_y};
     touch_orient_map_point(touch_orient_get_active(), sample.raw_x,
                            sample.raw_y, CONFIG_ARS_TOUCH_X_MAX,

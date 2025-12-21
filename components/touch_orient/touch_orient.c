@@ -12,6 +12,7 @@ static const char *TAG = "touch_orient";
 
 static touch_orient_config_t s_active_cfg = {0};
 static bool s_active_cfg_set = false;
+static bool s_driver_applied = false;
 
 static uint32_t calculate_crc(const touch_orient_config_t *cfg);
 
@@ -194,6 +195,8 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
 
   set_active_cfg(cfg);
 
+  s_driver_applied = true;
+
   esp_lcd_touch_set_swap_xy(tp, cfg->swap_xy);
   esp_lcd_touch_set_mirror_x(tp, cfg->mirror_x);
   esp_lcd_touch_set_mirror_y(tp, cfg->mirror_y);
@@ -225,6 +228,8 @@ const touch_orient_config_t *touch_orient_get_active(void) {
   }
   return &s_active_cfg;
 }
+
+bool touch_orient_driver_applied(void) { return s_driver_applied; }
 
 void touch_orient_map_point(const touch_orient_config_t *cfg, int32_t in_x,
                             int32_t in_y, int32_t max_x, int32_t max_y,
@@ -277,5 +282,6 @@ esp_err_t touch_orient_clear(void) {
     return commit_err;
 
   ESP_LOGI(TAG, "Cleared touch orientation entry from NVS");
+  s_driver_applied = false;
   return ESP_OK;
 }

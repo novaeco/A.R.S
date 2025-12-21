@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "board.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
@@ -34,55 +35,56 @@
 /**
  * @brief LCD Resolution and Timing
  */
-#define EXAMPLE_LCD_H_RES (1024) ///< Horizontal resolution in pixels
-#define EXAMPLE_LCD_V_RES (600)  ///< Vertical resolution in pixels
-#define EXAMPLE_LCD_PIXEL_CLOCK_HZ                                             \
-  (18000000) ///< Pixel clock frequency in Hz (18MHz for stable 1024x600 ST7262)
+#define EXAMPLE_LCD_H_RES BOARD_LCD_HRES ///< Horizontal resolution in pixels
+#define EXAMPLE_LCD_V_RES BOARD_LCD_VRES ///< Vertical resolution in pixels
+#define EXAMPLE_LCD_PIXEL_CLOCK_HZ                                            \
+  BOARD_LCD_PCLK_HZ ///< Pixel clock frequency in Hz (18MHz for stable 1024x600 ST7262)
 
 /**
  * @brief Color and Pixel Configuration
  */
-#define EXAMPLE_LCD_BIT_PER_PIXEL (16) ///< Bits per pixel (color depth)
-#define EXAMPLE_RGB_BIT_PER_PIXEL (16) ///< RGB interface color depth
-#define EXAMPLE_RGB_DATA_WIDTH (16)    ///< Data width for RGB interface
-#define EXAMPLE_LCD_RGB_BUFFER_NUMS                                            \
-  (2) ///< Number of frame buffers for double buffering
-#define EXAMPLE_RGB_BOUNCE_BUFFER_SIZE                                         \
-  (EXAMPLE_LCD_H_RES * 10) ///< Size of bounce buffer for RGB data
+#define EXAMPLE_LCD_BIT_PER_PIXEL BOARD_LCD_BIT_PER_PIXEL ///< Bits per pixel (color depth)
+#define EXAMPLE_RGB_BIT_PER_PIXEL                                                     \
+  BOARD_LCD_RGB_BIT_PER_PIXEL ///< RGB interface color depth
+#define EXAMPLE_RGB_DATA_WIDTH BOARD_LCD_RGB_DATA_WIDTH ///< Data width for RGB interface
+#define EXAMPLE_LCD_RGB_BUFFER_NUMS                                                      \
+  BOARD_LCD_RGB_BUFFER_NUMS ///< Number of frame buffers for double buffering
+#define EXAMPLE_RGB_BOUNCE_BUFFER_SIZE                                                   \
+  (EXAMPLE_LCD_H_RES * BOARD_LCD_RGB_BOUNCE_BUFFER_LINES) ///< Size of bounce buffer for RGB data
 
 /**
  * @brief GPIO Pins for RGB LCD Signals
  */
-#define EXAMPLE_LCD_IO_RGB_DISP (-1)           ///< DISP signal, -1 if not used
-#define EXAMPLE_LCD_IO_RGB_VSYNC (GPIO_NUM_3)  ///< Vertical sync signal
-#define EXAMPLE_LCD_IO_RGB_HSYNC (GPIO_NUM_46) ///< Horizontal sync signal
-#define EXAMPLE_LCD_IO_RGB_DE (GPIO_NUM_5)     ///< Data enable signal
-#define EXAMPLE_LCD_IO_RGB_PCLK (GPIO_NUM_7)   ///< Pixel clock signal
+#define EXAMPLE_LCD_IO_RGB_DISP BOARD_LCD_IO_DISP ///< DISP signal, -1 if not used
+#define EXAMPLE_LCD_IO_RGB_VSYNC BOARD_LCD_IO_VSYNC ///< Vertical sync signal
+#define EXAMPLE_LCD_IO_RGB_HSYNC BOARD_LCD_IO_HSYNC ///< Horizontal sync signal
+#define EXAMPLE_LCD_IO_RGB_DE BOARD_LCD_IO_DE ///< Data enable signal
+#define EXAMPLE_LCD_IO_RGB_PCLK BOARD_LCD_IO_PCLK ///< Pixel clock signal
 
 /**
  * @brief GPIO Pins for RGB Data Signals
  */
 // Blue data signals
-#define EXAMPLE_LCD_IO_RGB_DATA0 (GPIO_NUM_14) ///< B3
-#define EXAMPLE_LCD_IO_RGB_DATA1 (GPIO_NUM_38) ///< B4
-#define EXAMPLE_LCD_IO_RGB_DATA2 (GPIO_NUM_18) ///< B5
-#define EXAMPLE_LCD_IO_RGB_DATA3 (GPIO_NUM_17) ///< B6
-#define EXAMPLE_LCD_IO_RGB_DATA4 (GPIO_NUM_10) ///< B7
+#define EXAMPLE_LCD_IO_RGB_DATA0 BOARD_LCD_IO_DATA0 ///< B3
+#define EXAMPLE_LCD_IO_RGB_DATA1 BOARD_LCD_IO_DATA1 ///< B4
+#define EXAMPLE_LCD_IO_RGB_DATA2 BOARD_LCD_IO_DATA2 ///< B5
+#define EXAMPLE_LCD_IO_RGB_DATA3 BOARD_LCD_IO_DATA3 ///< B6
+#define EXAMPLE_LCD_IO_RGB_DATA4 BOARD_LCD_IO_DATA4 ///< B7
 
 // Green data signals
-#define EXAMPLE_LCD_IO_RGB_DATA5 (GPIO_NUM_39)  ///< G2
-#define EXAMPLE_LCD_IO_RGB_DATA6 (GPIO_NUM_0)   ///< G3
-#define EXAMPLE_LCD_IO_RGB_DATA7 (GPIO_NUM_45)  ///< G4
-#define EXAMPLE_LCD_IO_RGB_DATA8 (GPIO_NUM_48)  ///< G5
-#define EXAMPLE_LCD_IO_RGB_DATA9 (GPIO_NUM_47)  ///< G6
-#define EXAMPLE_LCD_IO_RGB_DATA10 (GPIO_NUM_21) ///< G7
+#define EXAMPLE_LCD_IO_RGB_DATA5 BOARD_LCD_IO_DATA5 ///< G2
+#define EXAMPLE_LCD_IO_RGB_DATA6 BOARD_LCD_IO_DATA6 ///< G3
+#define EXAMPLE_LCD_IO_RGB_DATA7 BOARD_LCD_IO_DATA7 ///< G4
+#define EXAMPLE_LCD_IO_RGB_DATA8 BOARD_LCD_IO_DATA8 ///< G5
+#define EXAMPLE_LCD_IO_RGB_DATA9 BOARD_LCD_IO_DATA9 ///< G6
+#define EXAMPLE_LCD_IO_RGB_DATA10 BOARD_LCD_IO_DATA10 ///< G7
 
 // Red data signals
-#define EXAMPLE_LCD_IO_RGB_DATA11 (GPIO_NUM_1)  ///< R3
-#define EXAMPLE_LCD_IO_RGB_DATA12 (GPIO_NUM_2)  ///< R4
-#define EXAMPLE_LCD_IO_RGB_DATA13 (GPIO_NUM_42) ///< R5
-#define EXAMPLE_LCD_IO_RGB_DATA14 (GPIO_NUM_41) ///< R6
-#define EXAMPLE_LCD_IO_RGB_DATA15 (GPIO_NUM_40) ///< R7
+#define EXAMPLE_LCD_IO_RGB_DATA11 BOARD_LCD_IO_DATA11 ///< R3
+#define EXAMPLE_LCD_IO_RGB_DATA12 BOARD_LCD_IO_DATA12 ///< R4
+#define EXAMPLE_LCD_IO_RGB_DATA13 BOARD_LCD_IO_DATA13 ///< R5
+#define EXAMPLE_LCD_IO_RGB_DATA14 BOARD_LCD_IO_DATA14 ///< R6
+#define EXAMPLE_LCD_IO_RGB_DATA15 BOARD_LCD_IO_DATA15 ///< R7
 
 /**
  * @brief Reset and Backlight Configuration
