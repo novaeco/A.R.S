@@ -3,6 +3,7 @@
 #include "esp_lcd_panel_rgb.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -282,13 +283,8 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   esp_err_t fb_ret = rgb_lcd_port_get_framebuffers(&s_rgb_framebuffers,
                                                   &s_rgb_framebuffer_count,
                                                   &s_rgb_stride_bytes);
-  if (fb_ret != ESP_OK || s_rgb_framebuffer_count == 0 ||
-      s_rgb_framebuffers == NULL) {
-    ESP_LOGE(TAG, "RGB framebuffers unavailable: %s", esp_err_to_name(fb_ret));
-    return NULL;
-  }
 
-  size_t frame_bytes = s_rgb_stride_bytes * LVGL_PORT_V_RES;
+  size_t frame_bytes = 0;
   lv_display_t *disp = lv_display_create(LVGL_PORT_H_RES, LVGL_PORT_V_RES);
   if (!disp) {
     ESP_LOGE(TAG, "Failed to create LVGL display instance");
@@ -296,16 +292,75 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   }
 
   lv_display_set_flush_cb(disp, flush_callback);
-  lv_display_set_buffers(disp, s_rgb_framebuffers[0],
-                         (s_rgb_framebuffer_count > 1) ? s_rgb_framebuffers[1]
-                                                       : NULL,
-                         frame_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
   lv_display_set_user_data(disp, panel_handle);
 
+  if (fb_ret == ESP_OK && s_rgb_framebuffer_count > 0 &&
+      s_rgb_framebuffers != NULL) {
+    frame_bytes = s_rgb_stride_bytes * LVGL_PORT_V_RES;
+    lv_display_set_buffers(disp, s_rgb_framebuffers[0],
+                           (s_rgb_framebuffer_count > 1)
+                               ? s_rgb_framebuffers[1]
+                               : NULL,
+                           frame_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+    ESP_LOGI(
+        TAG,
+        "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
+        (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
+        (int)frame_bytes);
+    return disp;
+  }
+
+  // Fallback: allocate LVGL-managed buffers (partial render) when RGB driver
+  // doesn't expose framebuffers (prevents black screen on incompatible builds)
+  ESP_LOGW(TAG,
+           "RGB framebuffers unavailable (%s); falling back to partial buffers",
+           esp_err_to_name(fb_ret));
+
+  const size_t buf_lines = CONFIG_ARS_LVGL_BUF_LINES;
+  frame_bytes = LVGL_PORT_H_RES * buf_lines * sizeof(lv_color_t);
+
+  bool buf_psram = false;
+  void *buf1 = heap_caps_malloc(frame_bytes,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (buf1) {
+    buf_psram = true;
+  } else {
+    buf1 = heap_caps_malloc(frame_bytes, MALLOC_CAP_8BIT);
+  }
+  if (!buf1) {
+    ESP_LOGE(TAG, "Failed to allocate primary LVGL buffer (%d bytes)",
+             (int)frame_bytes);
+    return NULL;
+  }
+
+  void *buf2 = NULL;
+#if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
+  bool buf2_psram = false;
+  buf2 = heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (buf2) {
+    buf2_psram = true;
+  } else {
+    buf2 = heap_caps_malloc(frame_bytes, MALLOC_CAP_8BIT);
+  }
+  if (!buf2) {
+    ESP_LOGW(TAG, "Double buffer allocation failed; using single buffer");
+  }
+#endif
+
+  lv_display_set_buffers(disp, buf1, buf2, frame_bytes,
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+#if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
+  const char *buf2_desc = buf2 ? (buf2_psram ? "buf2=psram" : "buf2=internal")
+                               : "buf2=absent";
+#else
+  const char *buf2_desc = "buf2=disabled";
+#endif
+
   ESP_LOGI(TAG,
-           "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
-           (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
-           (int)frame_bytes);
+           "LVGL PARTIAL fallback: lines=%d buf_bytes=%d double=%s (buf1=%s %s)",
+           (int)buf_lines, (int)frame_bytes, buf2 ? "yes" : "no",
+           buf_psram ? "psram" : "internal", buf2_desc);
 
   return disp;
 }
