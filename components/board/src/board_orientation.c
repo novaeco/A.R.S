@@ -60,8 +60,28 @@ void board_orientation_apply_touch_defaults(touch_orient_config_t *cfg,
                                             const board_orientation_t *orient) {
   if (!cfg || !orient)
     return;
-  cfg->swap_xy = orient->swap_xy;
-  cfg->mirror_x = orient->mirror_x;
-  cfg->mirror_y = orient->mirror_y;
+  switch (orient->rotation) {
+  case LV_DISPLAY_ROTATION_90:
+    cfg->swap_xy = true;
+    cfg->mirror_x = false;
+    cfg->mirror_y = true;
+    break;
+  case LV_DISPLAY_ROTATION_180:
+    cfg->swap_xy = false;
+    cfg->mirror_x = true;
+    cfg->mirror_y = true;
+    break;
+  case LV_DISPLAY_ROTATION_270:
+    cfg->swap_xy = true;
+    cfg->mirror_x = true;
+    cfg->mirror_y = false;
+    break;
+  case LV_DISPLAY_ROTATION_0:
+  default:
+    cfg->swap_xy = false;
+    cfg->mirror_x = false;
+    cfg->mirror_y = false;
+    break;
+  }
 }
 

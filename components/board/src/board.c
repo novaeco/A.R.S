@@ -13,6 +13,19 @@
 #include "esp_adc/adc_oneshot.h"
 
 static const char *TAG = "board";
+static inline int rotation_deg(lv_display_rotation_t rot) {
+  switch (rot) {
+  case LV_DISPLAY_ROTATION_90:
+    return 90;
+  case LV_DISPLAY_ROTATION_180:
+    return 180;
+  case LV_DISPLAY_ROTATION_270:
+    return 270;
+  case LV_DISPLAY_ROTATION_0:
+  default:
+    return 0;
+  }
+}
 
 // Global Hardware Handles
 static esp_lcd_touch_handle_t g_tp_handle = NULL;
@@ -98,6 +111,10 @@ esp_err_t app_board_init(void) {
         ESP_LOGE(TAG, "touch_orient apply failed: %s",
                  esp_err_to_name(orient_err));
       }
+      ESP_LOGI(TAG,
+               "Touch orientation effective: rot=%d swap=%d mirX=%d mirY=%d",
+               rotation_deg(orient_defaults.rotation), orient_cfg.swap_xy,
+               orient_cfg.mirror_x, orient_cfg.mirror_y);
       orient_cfg_ready = true;
     }
   } else {
@@ -193,6 +210,18 @@ esp_err_t app_board_init(void) {
     } else {
       if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "Touch transform not found in NVS; using defaults");
+        if (orient_cfg_ready) {
+          board_orientation_t orient_defaults;
+          board_orientation_get_defaults(&orient_defaults);
+          board_orientation_apply_touch_defaults(&orient_cfg, &orient_defaults);
+          touch_orient_apply(g_tp_handle, &orient_cfg);
+          touch_orient_save(&orient_cfg);
+          ESP_LOGI(TAG,
+                   "Defaulted touch orientation from rotation: rot=%d swap=%d "
+                   "mirX=%d mirY=%d",
+                   rotation_deg(orient_defaults.rotation), orient_cfg.swap_xy,
+                   orient_cfg.mirror_x, orient_cfg.mirror_y);
+        }
       } else {
         ESP_LOGW(TAG, "Touch transform missing: %s", esp_err_to_name(err));
       }

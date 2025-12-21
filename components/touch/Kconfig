@@ -78,6 +78,14 @@ menu "Touch Configuration"
             Enable debug logging for touch input processing in LVGL port.
             Reduces spam by only logging changes or significant events.
 
+    config ARS_TOUCH_DIAG
+        bool "Enable LVGL touch read_cb keepalive logs"
+        default n
+        help
+            When enabled, emit a periodic keepalive from the LVGL input read
+            callback to confirm touch polling is active. Intended for bench
+            diagnostics; disable for production to avoid log noise.
+
     config GT911_DEBUG_DUMP
         bool "Dump raw GT911 frames (rate-limited)"
         default n

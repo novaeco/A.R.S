@@ -307,6 +307,9 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 static int64_t s_last_touch_diag_us = 0;
 static uint32_t s_touch_event_seq = 0;
 static const char *TOUCH_DIAG_TAG = "TOUCH_DIAG";
+#if CONFIG_ARS_TOUCH_DIAG
+static int64_t s_touch_keepalive_us = 0;
+#endif
 
 static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   esp_lcd_touch_handle_t tp =
@@ -506,6 +509,16 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
              s_touch_event_seq, state_str, raw_x, raw_y, (int)oriented_point.x,
              (int)oriented_point.y, data->point.x, data->point.y);
   }
+
+#if CONFIG_ARS_TOUCH_DIAG
+  if ((now_us - s_touch_keepalive_us) >= 1000000) {
+    s_touch_keepalive_us = now_us;
+    const char *state_str =
+        data->state == LV_INDEV_STATE_PRESSED ? "pressed" : "released";
+    ESP_LOGI(TOUCH_DIAG_TAG, "read_cb alive (%s) last=(%d,%d)", state_str,
+             (int)data->point.x, (int)data->point.y);
+  }
+#endif
 
   ars_touch_debug_feed(raw_x, raw_y, data->point.x, data->point.y,
                        data->state == LV_INDEV_STATE_PRESSED);
