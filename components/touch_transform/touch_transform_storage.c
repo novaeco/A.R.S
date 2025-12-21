@@ -243,6 +243,15 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
                                : TOUCHCAL_SLOT_A;
 
   touch_transform_record_t to_store = *rec;
+  if (!to_store.transform.swap_xy && !to_store.transform.mirror_x &&
+      !to_store.transform.mirror_y) {
+    touch_orient_config_t orient_cfg;
+    if (touch_orient_load(&orient_cfg) == ESP_OK) {
+      to_store.transform.swap_xy = orient_cfg.swap_xy;
+      to_store.transform.mirror_x = orient_cfg.mirror_x;
+      to_store.transform.mirror_y = orient_cfg.mirror_y;
+    }
+  }
   to_store.magic = TOUCHCAL_MAGIC;
   to_store.version = TOUCHCAL_VERSION;
   to_store.generation = next_gen;

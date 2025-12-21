@@ -29,6 +29,7 @@ void app_main(void) {
   bool display_ok = false;
   bool touch_ok = false;
   bool lvgl_ok = false;
+  bool storage_ok = false;
 
   // Boot order guard rails:
   // 0) Persistent storage + base network stack (NVS, esp_netif, events) so
@@ -60,7 +61,11 @@ void app_main(void) {
   }
 
   // 1. Filesystem
-  ESP_ERROR_CHECK(data_manager_init());
+  esp_err_t storage_ret = data_manager_init();
+  storage_ok = (storage_ret == ESP_OK) && data_manager_is_ready();
+  if (!storage_ok) {
+    ESP_LOGW(TAG, "Storage unavailable: %s", esp_err_to_name(storage_ret));
+  }
 
   // 2. Display Hardware (BSP Init)
   // Dependency Injection for UI to avoid circular Board dependency
@@ -121,7 +126,8 @@ void app_main(void) {
                                : "not_provisioned";
 
   ESP_LOGI(TAG,
-           "BOOT-SUMMARY display=%s touch=%s lvgl=%s sd=%s wifi=%s",
+           "BOOT-SUMMARY storage=%s display=%s touch=%s lvgl=%s sd=%s wifi=%s",
+           storage_ok ? "ok" : "unavailable",
            display_ok ? "ok" : "fail",
            touch_ok ? "ok" : "fail",
            lvgl_ok ? "ok" : "fail",

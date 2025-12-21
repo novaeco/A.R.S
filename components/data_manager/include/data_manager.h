@@ -9,6 +9,11 @@
 #define MAX_SPECIES_LEN 64
 #define MAX_ID_LEN 32
 
+_Static_assert(MAX_ID_LEN > 1, "MAX_ID_LEN must allow null termination");
+_Static_assert(MAX_NAME_LEN > 1, "MAX_NAME_LEN must allow null termination");
+_Static_assert(MAX_SPECIES_LEN > 1,
+              "MAX_SPECIES_LEN must allow null termination");
+
 typedef enum { GENDER_MALE, GENDER_FEMALE, GENDER_UNKNOWN } reptile_gender_t;
 
 typedef struct {
@@ -45,6 +50,7 @@ typedef struct {
 
 // API
 esp_err_t data_manager_init(void);
+bool data_manager_is_ready(void);
 
 // Reptile Operations
 esp_err_t data_manager_save_reptile(const reptile_t *reptile);

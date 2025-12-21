@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +22,8 @@ static const char *MOUNT_POINT = "/data";
 #endif
 
 static SemaphoreHandle_t s_data_fs_lock = NULL;
+static bool s_storage_ready = false;
+static bool s_storage_warned = false;
 
 static bool data_fs_lock(TickType_t timeout_ticks) {
   if (!s_data_fs_lock) {
@@ -39,16 +42,41 @@ static esp_err_t ensure_directory(const char *path) {
   struct stat st = {0};
   if (stat(path, &st) == -1) {
     if (mkdir(path, 0775) != 0) {
-      ESP_LOGE(TAG, "Failed to create directory %s", path);
+      ESP_LOGE(TAG, "Failed to create directory %s (errno=%d)", path, errno);
       return ESP_FAIL;
     }
   }
   return ESP_OK;
 }
 
+static inline void copy_bounded(char *dst, size_t dst_size, const char *src) {
+  if (!dst || dst_size == 0) {
+    return;
+  }
+  if (!src) {
+    dst[0] = '\0';
+    return;
+  }
+  strlcpy(dst, src, dst_size);
+}
+
+static inline bool storage_ready_guard(const char *context) {
+  if (s_storage_ready) {
+    return true;
+  }
+  if (!s_storage_warned) {
+    ESP_LOGW(TAG, "%s: storage unavailable", context);
+    s_storage_warned = true;
+  }
+  return false;
+}
+
+bool data_manager_is_ready(void) { return s_storage_ready; }
+
 esp_err_t data_manager_init(void) {
   ESP_LOGI(TAG, "Initializing Data Manager");
 
+  s_storage_ready = false;
   esp_vfs_littlefs_conf_t conf = {
       .base_path = MOUNT_POINT,
       .partition_label = "storage",
@@ -66,7 +94,8 @@ esp_err_t data_manager_init(void) {
     } else {
       ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
     }
-    ESP_LOGE(TAG, "LittleFS mount is mandatory; aborting init.");
+    ESP_LOGW(TAG,
+             "LittleFS unavailable; continuing without persistent storage");
     return ret;
   }
 
@@ -92,7 +121,7 @@ esp_err_t data_manager_init(void) {
                       "failed to create events dir");
   ESP_RETURN_ON_ERROR(ensure_directory("/data/weights"), TAG,
                       "failed to create weights dir");
-
+  s_storage_ready = true;
   return ESP_OK;
 }
 
@@ -177,6 +206,9 @@ static cJSON *load_json_from_file(const char *path) {
 }
 
 esp_err_t data_manager_save_reptile(const reptile_t *reptile) {
+  if (!storage_ready_guard(__func__)) {
+    return ESP_ERR_INVALID_STATE;
+  }
   cJSON *root = cJSON_CreateObject();
   if (!root) {
     ESP_LOGE(TAG, "Failed to allocate reptile object (id=%s)", reptile->id);
@@ -198,6 +230,10 @@ esp_err_t data_manager_save_reptile(const reptile_t *reptile) {
 }
 
 esp_err_t data_manager_load_reptile(const char *id, reptile_t *out_reptile) {
+  if (!storage_ready_guard(__func__)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
   char path[128];
   snprintf(path, sizeof(path), "/data/reptiles/%s.json", id);
   cJSON *json = load_json_from_file(path);
@@ -206,13 +242,16 @@ esp_err_t data_manager_load_reptile(const char *id, reptile_t *out_reptile) {
 
   cJSON *item;
   if ((item = cJSON_GetObjectItem(json, "id")))
-    strncpy(out_reptile->id, item->valuestring, MAX_ID_LEN - 1);
+    copy_bounded(out_reptile->id, sizeof(out_reptile->id), item->valuestring);
   if ((item = cJSON_GetObjectItem(json, "name")))
-    strncpy(out_reptile->name, item->valuestring, MAX_NAME_LEN - 1);
+    copy_bounded(out_reptile->name, sizeof(out_reptile->name),
+                 item->valuestring);
   if ((item = cJSON_GetObjectItem(json, "species")))
-    strncpy(out_reptile->species, item->valuestring, MAX_SPECIES_LEN - 1);
+    copy_bounded(out_reptile->species, sizeof(out_reptile->species),
+                 item->valuestring);
   if ((item = cJSON_GetObjectItem(json, "morph")))
-    strncpy(out_reptile->morph, item->valuestring, MAX_SPECIES_LEN - 1);
+    copy_bounded(out_reptile->morph, sizeof(out_reptile->morph),
+                 item->valuestring);
   if ((item = cJSON_GetObjectItem(json, "birth_date")))
     out_reptile->birth_date = (int64_t)item->valuedouble;
   if ((item = cJSON_GetObjectItem(json, "gender")))
@@ -225,6 +264,9 @@ esp_err_t data_manager_load_reptile(const char *id, reptile_t *out_reptile) {
 }
 
 esp_err_t data_manager_delete_reptile(const char *id) {
+  if (!storage_ready_guard(__func__)) {
+    return ESP_ERR_INVALID_STATE;
+  }
   char path[128];
   snprintf(path, sizeof(path), "/data/reptiles/%s.json", id);
   if (!data_fs_lock(pdMS_TO_TICKS(2000))) {
@@ -242,6 +284,9 @@ cJSON *data_manager_list_reptiles(void) {
     ESP_LOGE(TAG, "Failed to allocate reptiles array");
     return NULL;
   }
+  if (!storage_ready_guard(__func__)) {
+    return arr;
+  }
   if (!data_fs_lock(pdMS_TO_TICKS(2000))) {
     ESP_LOGE(TAG, "FS busy, cannot list reptiles");
     return arr;
@@ -253,8 +298,7 @@ cJSON *data_manager_list_reptiles(void) {
     while ((dir = readdir(d)) != NULL) {
       if (strstr(dir->d_name, ".json")) {
         char id[MAX_ID_LEN];
-        strncpy(id, dir->d_name, sizeof(id));
-        id[sizeof(id) - 1] = '\0';
+        copy_bounded(id, sizeof(id), dir->d_name);
         char *ext = strstr(id, ".json");
         if (ext)
           *ext = '\0';
@@ -281,6 +325,9 @@ cJSON *data_manager_list_reptiles(void) {
 }
 
 esp_err_t data_manager_add_event(const reptile_event_t *event) {
+  if (!storage_ready_guard(__func__)) {
+    return ESP_ERR_INVALID_STATE;
+  }
   char path[128];
   snprintf(path, sizeof(path), "/data/events/%s.json", event->reptile_id);
 
@@ -313,6 +360,9 @@ esp_err_t data_manager_add_event(const reptile_event_t *event) {
 }
 
 cJSON *data_manager_get_events(const char *reptile_id) {
+  if (!storage_ready_guard(__func__)) {
+    return NULL;
+  }
   char path[128];
   snprintf(path, sizeof(path), "/data/events/%s.json", reptile_id);
   cJSON *json = load_json_from_file(path);
@@ -328,6 +378,9 @@ cJSON *data_manager_get_events(const char *reptile_id) {
 
 esp_err_t data_manager_add_weight(const char *reptile_id, float weight,
                                   int64_t timestamp) {
+  if (!storage_ready_guard(__func__)) {
+    return ESP_ERR_INVALID_STATE;
+  }
   char path[128];
   snprintf(path, sizeof(path), "/data/weights/%s.json", reptile_id);
 
@@ -357,6 +410,9 @@ esp_err_t data_manager_add_weight(const char *reptile_id, float weight,
 }
 
 cJSON *data_manager_get_weights(const char *reptile_id) {
+  if (!storage_ready_guard(__func__)) {
+    return NULL;
+  }
   char path[128];
   snprintf(path, sizeof(path), "/data/weights/%s.json", reptile_id);
   cJSON *json = load_json_from_file(path);
