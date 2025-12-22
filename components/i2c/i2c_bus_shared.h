@@ -57,6 +57,23 @@ bool i2c_bus_shared_is_ready(void);
  */
 esp_err_t i2c_bus_shared_recover(void);
 
+/**
+ * @brief Attempt bus recovery when caller ALREADY holds the mutex.
+ *        Use this from code paths that have locked the bus.
+ *
+ * @note Caller MUST already hold the I2C bus lock before calling this.
+ */
+esp_err_t i2c_bus_shared_recover_locked(void);
+
+/**
+ * @brief Check if current task holds the I2C mutex.
+ *        Useful for recovery paths to determine if locked variant should be
+ * used.
+ *
+ * @return true if current task holds the mutex, false otherwise.
+ */
+bool i2c_bus_shared_is_locked_by_me(void);
+
 #ifdef __cplusplus
 }
 #endif

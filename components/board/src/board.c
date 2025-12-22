@@ -111,6 +111,8 @@ esp_err_t app_board_init(void) {
         ESP_LOGE(TAG, "touch_orient apply failed: %s",
                  esp_err_to_name(orient_err));
       }
+      // Yield to IDLE task after NVS/I2C operations to prevent WDT
+      vTaskDelay(pdMS_TO_TICKS(10));
       ESP_LOGI(TAG,
                "Touch orientation effective: rot=%d swap=%d mirX=%d mirY=%d",
                rotation_deg(orient_defaults.rotation), orient_cfg.swap_xy,
@@ -151,8 +153,11 @@ esp_err_t app_board_init(void) {
     ESP_LOGI(TAG, "LCD reset pulse completed (IO 3)");
   }
 
-  // Wait for power to stabilize
+  // Wait for power to stabilize and yield to IDLE task
   vTaskDelay(pdMS_TO_TICKS(50));
+  
+  // Extra yield to prevent WDT during long init sequences
+  vTaskDelay(pdMS_TO_TICKS(10));
 
   // 3. Initialize RGB LCD
   g_panel_handle = waveshare_esp32_s3_rgb_lcd_init();
@@ -229,12 +234,18 @@ esp_err_t app_board_init(void) {
     } else {
       if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "Touch transform not found in NVS; using defaults");
+        // Yield before heavy NVS operations to prevent WDT
+        vTaskDelay(pdMS_TO_TICKS(10));
         if (orient_cfg_ready) {
           board_orientation_t orient_defaults;
           board_orientation_get_defaults(&orient_defaults);
           board_orientation_apply_touch_defaults(&orient_cfg, &orient_defaults);
           touch_orient_apply(g_tp_handle, &orient_cfg);
+          // Yield after apply before save
+          vTaskDelay(pdMS_TO_TICKS(10));
           touch_orient_save(&orient_cfg);
+          // Yield after save
+          vTaskDelay(pdMS_TO_TICKS(10));
           ESP_LOGI(TAG,
                    "Defaulted touch orientation from rotation: rot=%d swap=%d "
                    "mirX=%d mirY=%d",
@@ -472,6 +483,10 @@ static void board_lcd_draw_test_pattern(void) {
       for (int x = x_start; x < x_end; x++) {
         frame_buf[y * 1024 + x] = color;
       }
+      // Yield every 50 lines to prevent WDT timeout - use vTaskDelay to guarantee IDLE runs
+      if ((y % 50) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+      }
     }
   }
 
@@ -481,19 +496,20 @@ static void board_lcd_draw_test_pattern(void) {
   ESP_LOGI(TAG, "Test Pattern queued. You should see RGBWB bands.");
 }
 
-#if CONFIG_ARS_LCD_BOOT_TEST_PATTERN
+// Test pattern task - always available, runs on CPU1 with low priority to avoid WDT
 static void board_lcd_test_pattern_task(void *arg) {
   if (g_panel_handle) {
     board_lcd_draw_test_pattern();
   }
+#if CONFIG_ARS_LCD_BOOT_TEST_PATTERN
   vTaskDelay(pdMS_TO_TICKS(CONFIG_ARS_LCD_BOOT_TEST_PATTERN_MS));
   ESP_LOGI(TAG, "Test Pattern window elapsed (%d ms)",
            CONFIG_ARS_LCD_BOOT_TEST_PATTERN_MS);
+#endif
   vTaskDelete(NULL);
 }
-#endif
 
-// 3. Flattened Test Pattern (Optimized)
+// 3. Flattened Test Pattern (Optimized) - Always task-based to prevent WDT
 void board_lcd_test_pattern(void) {
   if (!g_panel_handle) {
     ESP_LOGE(TAG, "Test Pattern skipped: Panel handle is NULL");
@@ -505,13 +521,11 @@ void board_lcd_test_pattern(void) {
   return;
 #endif
 
-#if CONFIG_ARS_LCD_BOOT_TEST_PATTERN
-  if (xTaskCreate(board_lcd_test_pattern_task, "lcd_test", 4096, NULL, 5,
-                  NULL) != pdPASS) {
-    ESP_LOGW(TAG, "Test pattern task creation failed, running inline");
-    board_lcd_draw_test_pattern();
+  // Always run in dedicated task pinned to CPU1 with low priority to avoid
+  // starving IDLE0 and triggering WDT timeout
+  if (xTaskCreatePinnedToCore(board_lcd_test_pattern_task, "lcd_test", 4096,
+                               NULL, 2, NULL, 1) != pdPASS) {
+    ESP_LOGW(TAG, "Test pattern task creation failed, skipping to avoid WDT");
+    // Do NOT run inline - this would block and trigger WDT
   }
-#else
-  board_lcd_draw_test_pattern();
-#endif
 }

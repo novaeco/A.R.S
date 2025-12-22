@@ -13,6 +13,7 @@ static const char *TAG = "i2c_bus_shared";
 // Define the global mutex
 SemaphoreHandle_t g_i2c_bus_mutex = NULL;
 static i2c_master_bus_handle_t s_shared_bus = NULL;
+static uint32_t s_consecutive_recover_fails = 0;
 
 esp_err_t i2c_bus_shared_init(void) {
   static bool initialized = false;
@@ -47,7 +48,8 @@ esp_err_t i2c_bus_shared_init(void) {
       .flags.enable_internal_pullup = true,
   };
 
-  ESP_LOGI(TAG, "Init shared I2C bus 0 (SCL=%d SDA=%d)", ARS_I2C_SCL, ARS_I2C_SDA);
+  ESP_LOGI(TAG, "Init shared I2C bus 0 (SCL=%d SDA=%d)", ARS_I2C_SCL,
+           ARS_I2C_SDA);
 
   esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &s_shared_bus);
   if (ret != ESP_OK) {
@@ -84,6 +86,19 @@ i2c_master_bus_handle_t i2c_bus_shared_get_handle(void) { return s_shared_bus; }
 
 bool i2c_bus_shared_is_ready(void) { return s_shared_bus != NULL; }
 
+bool i2c_bus_shared_is_locked_by_me(void) {
+  if (g_i2c_bus_mutex == NULL) {
+    return false;
+  }
+  // For recursive mutex: if we can take it with 0 timeout, we already hold it
+  // (or it's free). We then give it back to restore state.
+  if (xSemaphoreTakeRecursive(g_i2c_bus_mutex, 0) == pdTRUE) {
+    xSemaphoreGiveRecursive(g_i2c_bus_mutex);
+    return true;
+  }
+  return false;
+}
+
 void i2c_bus_shared_deinit(void) {
   if (s_shared_bus != NULL) {
     esp_err_t del_ret = i2c_del_master_bus(s_shared_bus);
@@ -100,17 +115,10 @@ void i2c_bus_shared_deinit(void) {
   }
 }
 
-esp_err_t i2c_bus_shared_recover(void) {
-  if (xPortInIsrContext()) {
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  const TickType_t lock_timeout = pdMS_TO_TICKS(200);
-  if (!i2c_bus_shared_lock(lock_timeout)) {
-    ESP_LOGW(TAG, "Bus recovery skipped: mutex busy");
-    return ESP_ERR_TIMEOUT;
-  }
-
+/**
+ * @brief Internal recovery logic - assumes mutex is already held by caller.
+ */
+static esp_err_t i2c_bus_shared_recover_internal(void) {
   esp_err_t ret = ESP_FAIL;
   bool manual_toggle_needed = false;
 
@@ -141,6 +149,9 @@ esp_err_t i2c_bus_shared_recover(void) {
       esp_rom_delay_us(10);
       gpio_set_level(ARS_I2C_SCL, 1);
       esp_rom_delay_us(10);
+      if (i == 4) { // Yield halfway through to prevent WDT
+        vTaskDelay(1);
+      }
     }
     gpio_set_level(ARS_I2C_SDA, 1);
 
@@ -154,13 +165,62 @@ esp_err_t i2c_bus_shared_recover(void) {
     }
     ret = i2c_bus_shared_init();
     if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Bus re-init after toggle failed: %s", esp_err_to_name(ret));
+      ESP_LOGE(TAG, "Bus re-init after toggle failed: %s",
+               esp_err_to_name(ret));
     }
   }
 
-  i2c_bus_shared_unlock();
   if (ret == ESP_OK) {
     ESP_LOGI(TAG, "I2C bus recovery complete");
+    s_consecutive_recover_fails = 0;
   }
+  return ret;
+}
+
+esp_err_t i2c_bus_shared_recover_locked(void) {
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (s_consecutive_recover_fails >= 3) {
+    ESP_LOGE(TAG, "Bus recovery rate-limited (3 consecutive failures)");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  // Caller must already hold the mutex - proceed directly to recovery
+  return i2c_bus_shared_recover_internal();
+}
+
+esp_err_t i2c_bus_shared_recover(void) {
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (s_consecutive_recover_fails >= 3) {
+    ESP_LOGE(TAG, "Bus recovery rate-limited (3 consecutive failures)");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  // Check if caller already holds the mutex (recursive mutex detection)
+  // If so, use the locked variant directly to avoid issues
+  bool already_locked = i2c_bus_shared_is_locked_by_me();
+
+  if (already_locked) {
+    // Caller already holds mutex - use locked variant
+    ESP_LOGD(TAG, "Recovery called while holding mutex, using locked variant");
+    return i2c_bus_shared_recover_internal();
+  }
+
+  // Normal path: acquire mutex then recover
+  const TickType_t lock_timeout = pdMS_TO_TICKS(200);
+  if (!i2c_bus_shared_lock(lock_timeout)) {
+    ESP_LOGW(TAG, "Bus recovery skipped: mutex busy");
+    s_consecutive_recover_fails++;
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t ret = i2c_bus_shared_recover_internal();
+
+  i2c_bus_shared_unlock();
   return ret;
 }

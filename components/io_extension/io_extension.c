@@ -28,9 +28,9 @@ io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
  */
 #include "esp_log.h"
 #include "esp_timer.h"
-#include <rom/ets_sys.h>
 #include "freertos/FreeRTOS.h"
 #include "i2c_bus_shared.h"
+#include <rom/ets_sys.h>
 
 static const char *TAG = "io_ext";
 static bool s_ioext_initialized = false;
@@ -53,12 +53,15 @@ static bool ioext_take_bus(TickType_t wait_ticks, const char *ctx) {
 static void ioext_on_error(const char *ctx, esp_err_t err) {
   s_ioext_error_streak++;
   int64_t now = esp_timer_get_time();
-  if (s_ioext_error_streak >= 3 && now >= s_ioext_next_recover_us) {
+  if (s_ioext_error_streak >= 3 && s_ioext_error_streak <= 6 &&
+      now >= s_ioext_next_recover_us) {
     ESP_LOGW(TAG, "%s: attempting bus recovery after %u errors (%s)", ctx,
              (unsigned)s_ioext_error_streak, esp_err_to_name(err));
     i2c_bus_shared_recover();
     s_ioext_next_recover_us = now + 500000; // 500ms backoff
-    s_ioext_error_streak = 0;
+  }
+  if (s_ioext_error_streak > 10) {
+    ESP_LOGE(TAG, "%s: I2C bus unrecoverable after 10 errors", ctx);
   }
 }
 
@@ -181,9 +184,8 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
     // Allow the output latch to settle before re-reading
     ets_delay_us(120);
     uint8_t out_reg = 0;
-    esp_err_t rb_ret =
-        DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
-                           &out_reg, 1);
+    esp_err_t rb_ret = DEV_I2C_Read_Nbyte(
+        IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR, &out_reg, 1);
     if (rb_ret == ESP_OK) {
       *latched_level = (out_reg >> pin) & 0x1;
     } else {
@@ -194,9 +196,8 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
 
   if (ret == ESP_OK && input_level) {
     uint8_t in_reg = 0;
-    esp_err_t in_ret =
-        DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_INPUT_ADDR,
-                           &in_reg, 1);
+    esp_err_t in_ret = DEV_I2C_Read_Nbyte(
+        IO_EXTENSION.addr, IO_EXTENSION_IO_INPUT_ADDR, &in_reg, 1);
     if (in_ret == ESP_OK) {
       *input_level = (in_reg >> pin) & 0x1;
     } else {
@@ -215,8 +216,7 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
   return ret;
 }
 
-esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
-                                         uint8_t *latched_level) {
+esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin, uint8_t *latched_level) {
   if (!latched_level) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -227,9 +227,8 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin,
   }
 
   uint8_t out_reg = 0;
-  esp_err_t ret =
-      DEV_I2C_Read_Nbyte(IO_EXTENSION.addr, IO_EXTENSION_IO_OUTPUT_ADDR,
-                         &out_reg, 1);
+  esp_err_t ret = DEV_I2C_Read_Nbyte(IO_EXTENSION.addr,
+                                     IO_EXTENSION_IO_OUTPUT_ADDR, &out_reg, 1);
 
   DEV_I2C_GiveLock();
 
