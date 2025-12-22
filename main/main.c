@@ -15,11 +15,11 @@
 // #include "ui_calibration.h"
 #include "sd.h"
 #include "ui_wizard.h"
-#include <stdbool.h>
 #include <esp_err.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <stdbool.h>
 
 static const char *TAG = "main";
 
@@ -74,6 +74,9 @@ void app_main(void) {
   // weak stub.
   lvgl_port_set_ui_init_cb(ui_init);
 
+  // Yield before long init to give IDLE task a chance
+  vTaskDelay(pdMS_TO_TICKS(10));
+
   // This initializes LCD and Touch.
   esp_err_t board_ret = app_board_init();
   if (board_ret != ESP_OK) {
@@ -115,8 +118,10 @@ void app_main(void) {
   // 5. WiFi / Web Server Init
   // net_init() is safe to call, it will auto-connect if credentials exist in
   // NVS from a previous setup or manual config.
+  vTaskDelay(pdMS_TO_TICKS(10)); // Yield to allow IDLE task to reset watchdog
   net_init();
 
+  vTaskDelay(pdMS_TO_TICKS(10)); // Yield after net_init for stability
   net_status_t net_status = net_get_status();
   bool wifi_provisioned = net_manager_is_provisioned();
   bool wifi_connected = net_status.is_connected;
@@ -127,10 +132,8 @@ void app_main(void) {
 
   ESP_LOGI(TAG,
            "BOOT-SUMMARY storage=%s display=%s touch=%s lvgl=%s sd=%s wifi=%s",
-           storage_ok ? "ok" : "unavailable",
-           display_ok ? "ok" : "fail",
-           touch_ok ? "ok" : "fail",
-           lvgl_ok ? "ok" : "fail",
+           storage_ok ? "ok" : "unavailable", display_ok ? "ok" : "fail",
+           touch_ok ? "ok" : "fail", lvgl_ok ? "ok" : "fail",
            sd_state_str(sd_state), wifi_state);
 
   // --- Verification: Log Touch Coordinates for 10s ---
