@@ -5,6 +5,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_tls.h"
 #include "esp_wifi.h"
@@ -13,9 +14,9 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 #include "web_server.h"
+#include <inttypes.h>
 #include <string.h>
 #include <strings.h>
-#include <inttypes.h>
 
 #ifndef CONFIG_ARS_ENABLE_HTTP_CLIENT
 #define CONFIG_ARS_ENABLE_HTTP_CLIENT 0
@@ -56,8 +57,8 @@ static esp_err_t start_wifi_station_if_provisioned(void);
 static void wifi_provisioning_task(void *arg);
 ESP_EVENT_DEFINE_BASE(NET_MANAGER_EVENT);
 
-static wifi_prov_state_t
-disc_reason_to_state(wifi_err_reason_t reason, wifi_err_reason_t *out_reason) {
+static wifi_prov_state_t disc_reason_to_state(wifi_err_reason_t reason,
+                                              wifi_err_reason_t *out_reason) {
   wifi_prov_state_t state = WIFI_PROV_STATE_FAILED;
   switch (reason) {
   case WIFI_REASON_AUTH_FAIL:
@@ -83,9 +84,9 @@ static void net_manager_update_state(wifi_prov_state_t state,
   s_prov_state = state;
   s_last_reason = reason;
   net_manager_state_evt_t evt = {.state = state, .reason = reason};
-  esp_err_t post_err = esp_event_post(NET_MANAGER_EVENT,
-                                      NET_MANAGER_EVENT_STATE_CHANGED, &evt,
-                                      sizeof(evt), portMAX_DELAY);
+  esp_err_t post_err =
+      esp_event_post(NET_MANAGER_EVENT, NET_MANAGER_EVENT_STATE_CHANGED, &evt,
+                     sizeof(evt), portMAX_DELAY);
   if (post_err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to emit provisioning state event: %s",
              esp_err_to_name(post_err));
@@ -157,7 +158,10 @@ static void wifi_retry_execute(void) {
 
 static void wifi_retry_task(void *arg) {
   (void)arg;
+  // Register with Task WDT for monitoring
+  esp_task_wdt_add(NULL);
   while (1) {
+    esp_task_wdt_reset();
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     wifi_retry_execute();
   }
@@ -201,7 +205,10 @@ static esp_err_t ensure_wifi_retry_task(void) {
 
 static void wifi_watchdog_task(void *arg) {
   (void)arg;
+  // Register with Task WDT for monitoring
+  esp_task_wdt_add(NULL);
   while (1) {
+    esp_task_wdt_reset();
     if (has_credentials && !is_connected) {
       ESP_LOGW(TAG, "Watchdog: WiFi disconnected, triggering retry logic...");
       schedule_wifi_retry(5);
@@ -277,8 +284,7 @@ static esp_err_t start_wifi_station_if_provisioned(void) {
   }
 
   s_wifi_started = true;
-  net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
-                           WIFI_REASON_UNSPECIFIED);
+  net_manager_update_state(WIFI_PROV_STATE_CONNECTING, WIFI_REASON_UNSPECIFIED);
   return ESP_OK;
 }
 
@@ -314,7 +320,7 @@ static void schedule_wifi_retry(uint32_t delay_ms) {
 static void wifi_provisioning_task(void *arg) {
   (void)arg;
   ESP_LOGI(TAG, "Provisioning: ouvrez Parametres -> Wi-Fi et saisissez les "
-               "identifiants.");
+                "identifiants.");
   while (1) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (!has_credentials) {
@@ -570,6 +576,9 @@ static bool net_try_load_credentials(wifi_config_t *wifi_cfg) {
 esp_err_t net_init(void) {
   ESP_LOGI(TAG, "Initializing Network...");
 
+  // Yield briefly to reset watchdog and allow other tasks to run
+  vTaskDelay(pdMS_TO_TICKS(5));
+
   // Note: NVS, Netif, and Event Loop are now initialized in app_main()
   // to ensure they are ready before any component usage.
   esp_err_t err = ESP_OK;
@@ -601,6 +610,9 @@ esp_err_t net_init(void) {
     return err;
   }
 
+  // Yield after WiFi init to allow watchdog reset
+  vTaskDelay(pdMS_TO_TICKS(10));
+
   err = esp_wifi_set_mode(WIFI_MODE_STA);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "esp_wifi_set_mode failed: %s", esp_err_to_name(err));
@@ -620,8 +632,9 @@ esp_err_t net_init(void) {
     }
   } else {
     // Provisioning mode: show clear instructions for the UI flow
-    ESP_LOGI(TAG, "Wi-Fi not provisioned. UI -> Parametres -> Wi-Fi pour saisir "
-                 "SSID/Mot de passe. Provisioning task waiting...");
+    ESP_LOGI(TAG,
+             "Wi-Fi not provisioned. UI -> Parametres -> Wi-Fi pour saisir "
+             "SSID/Mot de passe. Provisioning task waiting...");
     net_manager_update_state(WIFI_PROV_STATE_NOT_PROVISIONED,
                              WIFI_REASON_UNSPECIFIED);
   }
@@ -724,8 +737,9 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
 
 esp_err_t net_http_get(const char *url, char *out_buffer, size_t buffer_len) {
 #if !CONFIG_ARS_ENABLE_HTTP_CLIENT
-    ESP_LOGW(TAG, "HTTP client disabled by Kconfig (CONFIG_ARS_ENABLE_HTTP_CLIENT=n)");
-    return ESP_ERR_NOT_SUPPORTED;
+  ESP_LOGW(TAG,
+           "HTTP client disabled by Kconfig (CONFIG_ARS_ENABLE_HTTP_CLIENT=n)");
+  return ESP_ERR_NOT_SUPPORTED;
 #endif
 
   if (!url || !out_buffer || buffer_len == 0) {
@@ -737,14 +751,13 @@ esp_err_t net_http_get(const char *url, char *out_buffer, size_t buffer_len) {
 
   bool is_https = false;
   if (url != NULL && strncasecmp(url, "https://", 8) == 0) {
-      is_https = true;
+    is_https = true;
   }
 
   if (!is_https && !CONFIG_ARS_HTTP_CLIENT_ALLOW_INSECURE) {
-      ESP_LOGW(TAG, "Insecure HTTP (non-TLS) is disabled by Kconfig");
-      return ESP_ERR_NOT_SUPPORTED;
+    ESP_LOGW(TAG, "Insecure HTTP (non-TLS) is disabled by Kconfig");
+    return ESP_ERR_NOT_SUPPORTED;
   }
-
 
   esp_http_client_config_t config = {
       .url = url,
@@ -780,7 +793,8 @@ esp_err_t net_http_get(const char *url, char *out_buffer, size_t buffer_len) {
     }
 
     int to_read = (int)(buffer_len - 1 - total_read);
-    int read_len = esp_http_client_read(client, out_buffer + total_read, to_read);
+    int read_len =
+        esp_http_client_read(client, out_buffer + total_read, to_read);
     if (read_len < 0) {
       ESP_LOGE(TAG, "HTTP read failed after %u bytes: %s", (unsigned)total_read,
                esp_err_to_name(read_len));
@@ -805,7 +819,8 @@ esp_err_t net_http_get(const char *url, char *out_buffer, size_t buffer_len) {
     out_buffer[total_read] = '\0';
     if (truncated) {
       ESP_LOGW(TAG,
-               "HTTP response truncated to %u bytes (buffer size %u, content length %" PRId64 ")",
+               "HTTP response truncated to %u bytes (buffer size %u, content "
+               "length %" PRId64 ")",
                (unsigned)total_read, (unsigned)buffer_len, content_length);
       err = ESP_ERR_NO_MEM;
     }

@@ -12,10 +12,10 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <limits.h>
 
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -99,6 +99,10 @@ static portMUX_TYPE s_gt911_error_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_gt911_use_ioext_reset = false;
 static uint8_t s_gt911_ioext_reset_pin = IO_EXTENSION_IO_1;
 
+// Degraded mode tracking for graceful failure handling
+static bool s_gt911_degraded_mode = false;
+static int64_t s_last_degraded_log_us = 0;
+
 static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp);
 
 typedef struct {
@@ -126,11 +130,12 @@ static inline void gt911_enable_irq_guarded(void) {
   }
 }
 
-static inline void gt911_enter_poll_mode(uint32_t interval_ms, int64_t duration_us) {
+static inline void gt911_enter_poll_mode(uint32_t interval_ms,
+                                         int64_t duration_us) {
   s_poll_mode = true;
   s_poll_interval_ms = interval_ms;
-  s_poll_mode_until_us = duration_us > 0 ? (esp_timer_get_time() + duration_us)
-                                          : INT64_MAX;
+  s_poll_mode_until_us =
+      duration_us > 0 ? (esp_timer_get_time() + duration_us) : INT64_MAX;
 }
 
 static inline void gt911_mark_i2c_error(void) {
@@ -178,10 +183,11 @@ static void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
     uint16_t raw_x = u16_le(&buf[1]);
     uint16_t raw_y = u16_le(&buf[3]);
     uint16_t strength = u16_le(&buf[5]);
-    ESP_LOGI(TAG,
-             "GT911 decode id=%u raw=(%u,%u) strength=%u touch_cnt=%u max=(%d,%d)",
-             track_id, raw_x, raw_y, strength, status & 0x0F,
-             CONFIG_ARS_TOUCH_X_MAX, CONFIG_ARS_TOUCH_Y_MAX);
+    ESP_LOGI(
+        TAG,
+        "GT911 decode id=%u raw=(%u,%u) strength=%u touch_cnt=%u max=(%d,%d)",
+        track_id, raw_x, raw_y, strength, status & 0x0F, CONFIG_ARS_TOUCH_X_MAX,
+        CONFIG_ARS_TOUCH_Y_MAX);
   }
 }
 #else
@@ -202,18 +208,69 @@ static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
                                   esp_err_t err) {
   s_gt911_consecutive_errors++;
   const int64_t now = esp_timer_get_time();
+
+  // Skip recovery entirely in degraded mode to prevent blocking
+  if (s_gt911_degraded_mode) {
+    // Rate-limited warning
+    if ((now - s_last_degraded_log_us) > 10000000) { // 10 second rate limit
+      ESP_LOGW(TAG, "GT911 in degraded mode - skipping recovery");
+      s_last_degraded_log_us = now;
+    }
+    return;
+  }
+
   if (s_gt911_consecutive_errors <= GT911_I2C_RESET_THRESHOLD ||
       now < s_gt911_next_recover_us) {
     return;
   }
 
+  // Don't attempt recovery if bus is not ready
+  if (!i2c_bus_shared_is_ready()) {
+    ESP_LOGW(TAG, "GT911 recovery skipped: I2C bus not ready");
+    s_gt911_consecutive_errors = 0;
+    return;
+  }
+
   ESP_LOGW(TAG, "GT911 recovery (%s): %s (backoff %u ms)", stage,
            esp_err_to_name(err), s_gt911_recover_backoff_ms);
-  i2c_bus_shared_recover();
+
+  // Yield before recovery to allow IDLE task to run
+  vTaskDelay(pdMS_TO_TICKS(5));
+
+  // Recovery is now safe - i2c_bus_shared_recover() auto-detects if we hold
+  // mutex
+  esp_err_t recover_ret = i2c_bus_shared_recover();
+  if (recover_ret != ESP_OK) {
+    ESP_LOGW(TAG, "I2C recovery failed: %s", esp_err_to_name(recover_ret));
+    // Schedule retry via backoff, don't block
+    s_gt911_next_recover_us = now + (int64_t)s_gt911_recover_backoff_ms * 1000;
+    s_gt911_consecutive_errors = 0;
+
+    // Enter degraded mode after 2 consecutive recovery failures (faster)
+    static uint32_t s_recovery_failures = 0;
+    s_recovery_failures++;
+    if (s_recovery_failures >= 2 && !s_gt911_degraded_mode) {
+      s_gt911_degraded_mode = true;
+      ESP_LOGW(TAG, "GT911 entering degraded mode - touch may be unavailable");
+    }
+    return;
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(10)); // Yield to IDLE after recovery attempt
   esp_err_t reset_ret = touch_gt911_reset(tp);
   if (reset_ret != ESP_OK) {
-    ESP_LOGE(TAG, "GT911 reset failed after recovery: %s",
-             esp_err_to_name(reset_ret));
+    // Rate-limited logging for reset failures
+    if ((now - s_last_degraded_log_us) > 5000000) { // 5 second rate limit
+      ESP_LOGE(TAG, "GT911 reset failed after recovery: %s",
+               esp_err_to_name(reset_ret));
+      s_last_degraded_log_us = now;
+    }
+  } else {
+    // Recovery successful - exit degraded mode
+    if (s_gt911_degraded_mode) {
+      s_gt911_degraded_mode = false;
+      ESP_LOGI(TAG, "GT911 recovered from degraded mode");
+    }
   }
 
   uint32_t next = s_gt911_recover_backoff_ms << 1;
@@ -227,8 +284,7 @@ static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
 
 static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
                                                int offset, int scale,
-                                               bool *clamped,
-                                               bool is_x_axis) {
+                                               bool *clamped, bool is_x_axis) {
 #if CONFIG_ARS_TOUCH_DISABLE_LEGACY_CAL
   (void)offset;
   (void)scale;
@@ -487,11 +543,11 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
   // Create IRQ task to handle I2C reads outside ISR or run polling fallback
   static bool task_created = false;
   if (!task_created) {
-    s_gt911_int_gpio = int_configured ? esp_lcd_touch_gt911->config.int_gpio_num
-                                      : -1;
+    s_gt911_int_gpio =
+        int_configured ? esp_lcd_touch_gt911->config.int_gpio_num : -1;
     BaseType_t task_ret = xTaskCreatePinnedToCore(
         gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911, 5,
-        &s_gt911_irq_task, tskNO_AFFINITY);
+        &s_gt911_irq_task, 1); // Pin to CPU 1 to avoid blocking IDLE0
     if (task_ret != pdPASS) {
       ESP_LOGE(TAG, "Failed to create GT911 IRQ task");
       ret = ESP_FAIL;
@@ -690,10 +746,12 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
     uint16_t yb = u16_le(&p[3]);
     uint16_t size_b = u16_le(&p[5]);
 
-    bool a_ok = xa <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
-                ya <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
-    bool b_ok = xb <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
-                yb <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
+    bool a_ok =
+        xa <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
+        ya <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
+    bool b_ok =
+        xb <= (tp->config.x_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN) &&
+        yb <= (tp->config.y_max + CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
 
     const bool forced_layout = (GT911_LAYOUT_FORCED != 0);
     bool use_layout_a = true;
@@ -811,8 +869,8 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
              CONFIG_ARS_TOUCH_GT911_LAYOUT_MARGIN);
   }
   if (clamped_points > 0 && gt911_should_log(&last_clamp_log, 1000000)) {
-    ESP_LOGI(TAG, "Clamped %" PRIu32 " points (last raw=%u,%u)",
-             clamped_points, last_clamped_x, last_clamped_y);
+    ESP_LOGI(TAG, "Clamped %" PRIu32 " points (last raw=%u,%u)", clamped_points,
+             last_clamped_x, last_clamped_y);
   }
 
   s_last_touch_down = (stored_points > 0);
@@ -957,10 +1015,19 @@ static esp_err_t gt911_reset_via_ioext(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  // Pre-check I2C bus availability with short timeout
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(50))) {
+    ESP_LOGW(TAG, "GT911 IOEXT reset skipped: I2C bus busy");
+    s_next_ioext_reset_after_us = esp_timer_get_time() + 500000;
+    return ESP_ERR_TIMEOUT;
+  }
+  i2c_bus_shared_unlock();
+
   esp_err_t ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 0);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset low failed: %s", esp_err_to_name(ret));
-    s_next_ioext_reset_after_us = esp_timer_get_time() + 500000; // 500ms backoff
+    s_next_ioext_reset_after_us =
+        esp_timer_get_time() + 500000; // 500ms backoff
     return ret;
   }
   vTaskDelay(pdMS_TO_TICKS(20));
@@ -968,7 +1035,8 @@ static esp_err_t gt911_reset_via_ioext(void) {
   ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 1);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "IOEXT touch reset high failed: %s", esp_err_to_name(ret));
-    s_next_ioext_reset_after_us = esp_timer_get_time() + 500000; // 500ms backoff
+    s_next_ioext_reset_after_us =
+        esp_timer_get_time() + 500000; // 500ms backoff
     return ret;
   }
 
@@ -1148,7 +1216,8 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     }
     config_with_addr.dev_addr = sanitized_addr;
 
-    ret = esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle);
+    ret =
+        esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle);
     if (ret != ESP_OK) {
       ESP_LOGE(TAG, "Failed to create GT911 panel IO fallback 0x%02X: %s",
                config_with_addr.dev_addr, esp_err_to_name(ret));
@@ -1236,8 +1305,7 @@ static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp) {
     }
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    ret =
-        gpio_set_level(tp->config.rst_gpio_num, !tp->config.levels.reset);
+    ret = gpio_set_level(tp->config.rst_gpio_num, !tp->config.levels.reset);
     if (ret != ESP_OK) {
       ESP_LOGE(TAG, "GPIO reset high failed: %s", esp_err_to_name(ret));
       goto restore_int;
@@ -1254,12 +1322,11 @@ static esp_err_t touch_gt911_reset(esp_lcd_touch_handle_t tp) {
 
 restore_int:
   if (int_configured) {
-    const gpio_config_t int_in_cfg = {
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = 1,
-        .pull_down_en = 0,
-        .intr_type = GPIO_INTR_NEGEDGE,
-        .pin_bit_mask = BIT64(int_gpio)};
+    const gpio_config_t int_in_cfg = {.mode = GPIO_MODE_INPUT,
+                                      .pull_up_en = 1,
+                                      .pull_down_en = 0,
+                                      .intr_type = GPIO_INTR_NEGEDGE,
+                                      .pin_bit_mask = BIT64(int_gpio)};
     esp_err_t cfg_ret = gpio_config(&int_in_cfg);
     if (cfg_ret != ESP_OK) {
       ESP_LOGE(TAG, "INT restore failed: %s", esp_err_to_name(cfg_ret));
@@ -1555,7 +1622,8 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
   /* Read data with retry */
   esp_err_t err = ESP_FAIL;
 
-  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(200));
+  bool locked = i2c_bus_shared_lock(
+      pdMS_TO_TICKS(50)); // Reduced timeout to fail faster on bus contention
   if (!locked) {
     return ESP_ERR_TIMEOUT;
   }
@@ -1579,7 +1647,8 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
   /* Write data with retry */
   esp_err_t err = ESP_FAIL;
 
-  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(200));
+  bool locked = i2c_bus_shared_lock(
+      pdMS_TO_TICKS(50)); // Reduced timeout to fail faster on bus contention
   if (!locked) {
     return ESP_ERR_TIMEOUT;
   }
@@ -1622,7 +1691,9 @@ static void gt911_irq_task(void *arg) {
   uint32_t error_backoff_ms = 10;
 
   while (1) {
-    uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_interval_ms));
+    taskYIELD(); // Explicitly yield to prevent watchdog starvation on any core
+    uint32_t notified =
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_interval_ms));
     int64_t now = esp_timer_get_time();
 
     if (s_spurious_block_until_us > now && !s_poll_mode) {
