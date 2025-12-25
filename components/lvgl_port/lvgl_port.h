@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "esp_lcd_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_lcd_types.h"
 #include "lvgl.h"
 #include "touch.h"
 
@@ -44,12 +44,12 @@ typedef void (*lvgl_port_ui_init_cb_t)(void);
  *
  */
 
-#define CONFIG_EXAMPLE_LVGL_PORT_BUF_PSRAM 1
-#define CONFIG_EXAMPLE_LVGL_PORT_BUF_INTERNAL 0
+#define CONFIG_ARS_LVGL_PORT_BUF_PSRAM 1
+#define CONFIG_ARS_LVGL_PORT_BUF_INTERNAL 0
 
-#if CONFIG_EXAMPLE_LVGL_PORT_BUF_PSRAM
+#if CONFIG_ARS_LVGL_PORT_BUF_PSRAM
 #define LVGL_PORT_BUFFER_MALLOC_CAPS (MALLOC_CAP_SPIRAM)
-#elif CONFIG_EXAMPLE_LVGL_PORT_BUF_INTERNAL
+#elif CONFIG_ARS_LVGL_PORT_BUF_INTERNAL
 #define LVGL_PORT_BUFFER_MALLOC_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #endif
 #define LVGL_PORT_BUFFER_HEIGHT (100)
@@ -79,7 +79,7 @@ typedef void (*lvgl_port_ui_init_cb_t)(void);
  *      - 270: 270 degree
  *
  */
-#define EXAMPLE_LVGL_PORT_ROTATION_DEGREE (0)
+#define ARS_LVGL_PORT_ROTATION_DEGREE (0)
 
 /**
  * Below configurations are automatically set according to the above
@@ -97,21 +97,21 @@ typedef void (*lvgl_port_ui_init_cb_t)(void);
 #define LVGL_PORT_DIRECT_MODE (1)
 #endif /* LVGL_PORT_AVOID_TEAR_MODE */
 
-#if EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 0
-#define EXAMPLE_LVGL_PORT_ROTATION_0 (1)
+#if ARS_LVGL_PORT_ROTATION_DEGREE == 0
+#define ARS_LVGL_PORT_ROTATION_0 (1)
 #else
-#if EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 90
-#define EXAMPLE_LVGL_PORT_ROTATION_90 (1)
-#elif EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 180
-#define EXAMPLE_LVGL_PORT_ROTATION_180 (1)
-#elif EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 270
-#define EXAMPLE_LVGL_PORT_ROTATION_270 (1)
+#if ARS_LVGL_PORT_ROTATION_DEGREE == 90
+#define ARS_LVGL_PORT_ROTATION_90 (1)
+#elif ARS_LVGL_PORT_ROTATION_DEGREE == 180
+#define ARS_LVGL_PORT_ROTATION_180 (1)
+#elif ARS_LVGL_PORT_ROTATION_DEGREE == 270
+#define ARS_LVGL_PORT_ROTATION_270 (1)
 #endif
 #ifdef LVGL_PORT_LCD_RGB_BUFFER_NUMS
 #undef LVGL_PORT_LCD_RGB_BUFFER_NUMS
 #define LVGL_PORT_LCD_RGB_BUFFER_NUMS (3)
 #endif
-#endif /* EXAMPLE_LVGL_PORT_ROTATION_DEGREE */
+#endif /* ARS_LVGL_PORT_ROTATION_DEGREE */
 #else
 #define LVGL_PORT_LCD_RGB_BUFFER_NUMS (1)
 #define LVGL_PORT_FULL_REFRESH (0)

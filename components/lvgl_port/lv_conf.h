@@ -17,9 +17,9 @@
 /*Color depth: 1 (1 byte per pixel), 8 (RGB332), 16 (RGB565), 32 (ARGB8888)*/
 #define LV_COLOR_DEPTH 16
 
-/*================.........
+/*====================
    MEMORY SETTINGS
- *================.........*/
+ *====================*/
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc/lv_mem_free`*/
 #define LV_MEM_CUSTOM 0
@@ -34,6 +34,14 @@
 #define LV_TICK_CUSTOM_INCLUDE "esp_timer.h"
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (esp_timer_get_time() / 1000)
 #endif
+
+/*====================
+   FONT SETTINGS
+ *====================*/
+
+/* Enable Montserrat fonts needed by UI theme */
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_20 1
 
 /*====================
    DEBUG SETTINGS

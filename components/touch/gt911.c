@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
@@ -75,7 +76,7 @@ static volatile uint32_t s_gt911_irq_empty = 0;
 static volatile uint32_t s_gt911_i2c_errors = 0;
 static volatile uint32_t s_gt911_invalid_points = 0;
 static volatile uint32_t s_gt911_clamped_points = 0;
-static int64_t s_last_irq_us = 0;
+// static int64_t s_last_irq_us = 0; // Unused - Removed
 static int64_t s_spurious_block_until_us = 0;
 static int64_t s_next_ioext_reset_after_us = 0;
 static int64_t s_gt911_next_recover_us = 0;
@@ -120,12 +121,15 @@ static bool s_config_dumped_once = false;
 #define GT911_EMPTY_WINDOW_US 200000
 #define GT911_POLL_DURATION_US 2000000
 #define GT911_POLL_INTERVAL_MS_FALLBACK 60
-#define GT911_IRQ_REENABLE_DELAY_US 3000
+#define GT911_IRQ_REENABLE_DELAY_US 10000
 #define GT911_I2C_RESET_THRESHOLD 5
 
 static inline void gt911_enable_irq_guarded(void) {
   if (s_gt911_int_gpio >= 0 && !s_poll_mode) {
-    ets_delay_us(GT911_IRQ_REENABLE_DELAY_US);
+    // FIX: Use vTaskDelay instead of ets_delay_us to yield to IDLE task
+    // and prevent Task Watchdog Timeout (TWDT).
+    TickType_t ticks = pdMS_TO_TICKS(GT911_IRQ_REENABLE_DELAY_US / 1000);
+    vTaskDelay(ticks > 0 ? ticks : 1);
     gpio_intr_enable(s_gt911_int_gpio);
   }
 }
@@ -231,8 +235,12 @@ static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
     return;
   }
 
-  ESP_LOGW(TAG, "GT911 recovery (%s): %s (backoff %u ms)", stage,
-           esp_err_to_name(err), s_gt911_recover_backoff_ms);
+  static int64_t s_last_recovery_log = 0;
+  if ((now - s_last_recovery_log) > 2000000) { // Limit to once every 2 seconds
+    ESP_LOGW(TAG, "GT911 recovery (%s): %s (backoff %u ms)", stage,
+             esp_err_to_name(err), s_gt911_recover_backoff_ms);
+    s_last_recovery_log = now;
+  }
 
   // Yield before recovery to allow IDLE task to run
   vTaskDelay(pdMS_TO_TICKS(5));
@@ -351,7 +359,7 @@ static inline uint16_t gt911_apply_calibration(uint16_t raw, uint16_t max_value,
 #define GT911_REG_CONFIG_CHKSUM (0x80FF)
 
 /* Fix constants */
-#define GT911_POST_IRQ_DELAY_MS 3 // Delay after IRQ before reading
+// GT911_POST_IRQ_DELAY_MS is defined in gt911.h
 #define GT911_EMPTY_RETRY_COUNT 3 // Retries when touch_cnt=0 but IRQ fired
 #define GT911_RETRY_DELAY_MS 2    // Delay between retries
 
@@ -377,7 +385,14 @@ static void gt911_irq_task(void *arg);
 static void gt911_gpio_isr_handler(void *arg);
 static esp_err_t gt911_reset_via_ioext(void);
 
-/* I2C read/write */
+/* I2C read/write - Internal (No Lock) */
+static esp_err_t touch_gt911_i2c_read_internal(esp_lcd_touch_handle_t tp,
+                                               uint16_t reg, uint8_t *data,
+                                               uint8_t len);
+static esp_err_t touch_gt911_i2c_write_internal(esp_lcd_touch_handle_t tp,
+                                                uint16_t reg, uint8_t data);
+
+/* I2C read/write - Public (Locks) */
 static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
                                       uint8_t *data, uint8_t len);
 static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
@@ -546,8 +561,9 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
     s_gt911_int_gpio =
         int_configured ? esp_lcd_touch_gt911->config.int_gpio_num : -1;
     BaseType_t task_ret = xTaskCreatePinnedToCore(
-        gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911, 5,
-        &s_gt911_irq_task, 1); // Pin to CPU 1 to avoid blocking IDLE0
+        gt911_irq_task, "gt911_irq", 4096, esp_lcd_touch_gt911,
+        2,                     // Priority
+        &s_gt911_irq_task, 0); // Pin to CPU0 to avoid starving CPU1 (TCP/IP)
     if (task_ret != pdPASS) {
       ESP_LOGE(TAG, "Failed to create GT911 IRQ task");
       ret = ESP_FAIL;
@@ -1051,8 +1067,6 @@ static esp_err_t gt911_reset_via_ioext(void) {
 // Function to initialize the GT911 touch controller
 esp_lcd_touch_handle_t touch_gt911_init() {
   esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-  const esp_lcd_panel_io_i2c_config_t tp_io_config =
-      ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
   // Initialize Shared I2C Bus First (single owner)
   esp_err_t ret = i2c_bus_shared_init();
@@ -1062,6 +1076,11 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   }
 
   i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_handle();
+
+  // 1. Configure I2C IO
+  esp_lcd_panel_io_i2c_config_t tp_io_config =
+      ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+
   if (!bus_handle) {
     ESP_LOGE(TAG, "I2C Bus Init Failed (shared bus not ready)");
     return NULL;
@@ -1084,7 +1103,7 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   s_gt911_ioext_reset_pin = IO_EXTENSION_IO_1;
 
   // 2. Perform Robust Reset Sequence (Waveshare specific)
-  const int int_pin = EXAMPLE_PIN_NUM_TOUCH_INT;
+  const int int_pin = GT911_PIN_TOUCH_INT;
   const int rst_pin_io = IO_EXTENSION_IO_1;
 
   ESP_LOGI(
@@ -1168,7 +1187,7 @@ esp_lcd_touch_handle_t touch_gt911_init() {
       .x_max = CONFIG_ARS_TOUCH_X_MAX,
       .y_max = CONFIG_ARS_TOUCH_Y_MAX,
       .rst_gpio_num = GPIO_NUM_NC, // Reset already handled by BSP
-      .int_gpio_num = EXAMPLE_PIN_NUM_TOUCH_INT,
+      .int_gpio_num = GT911_PIN_TOUCH_INT,
       .levels = {.reset = 0, .interrupt = 0},
       .flags =
           {
@@ -1389,6 +1408,7 @@ esp_err_t gt911_dump_config(void) {
 
   // Product ID (0x8140-0x8143)
   uint8_t product_id[4] = {0};
+  // Use public read (locks)
   esp_err_t ret = touch_gt911_i2c_read(
       tp_handle, ESP_LCD_TOUCH_GT911_PRODUCT_ID_REG, product_id, 4);
   if (ret == ESP_OK) {
@@ -1520,23 +1540,22 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
 
   ESP_LOGI(TAG, "Checking GT911 Configuration...");
 
-  // 1. Read existing config
-  // Config register starts at 0x8047. We read enough bytes to cover the whole
-  // block. 0x8047 to 0x80FE + checksum(0x80FF)
-  ret = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_CONFIG_REG, config,
-                             sizeof(config));
+  // Lock once for the entire sequence to prevent interruption and recursion
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(500))) {
+    ESP_LOGE(TAG, "Failed to acquire lock for config update");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  // 1. Read existing config using INTERNAL (no lock)
+  ret = touch_gt911_i2c_read_internal(tp, ESP_LCD_TOUCH_GT911_CONFIG_REG,
+                                      config, sizeof(config));
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to read GT911 config");
+    i2c_bus_shared_unlock();
     return ret;
   }
 
   // 2. Modify Resolution (X_MAX @ 0x8048, Y_MAX @ 0x804A)
-  // Indexes are relative to 0x8047, so:
-  // 0x8048 - 0x8047 = 1 (X_Low)
-  // 0x8049 - 0x8047 = 2 (X_High)
-  // 0x804A - 0x8047 = 3 (Y_Low)
-  // 0x804B - 0x8047 = 4 (Y_High)
-
   uint16_t x_max = CONFIG_ARS_TOUCH_X_MAX;
   uint16_t y_max = CONFIG_ARS_TOUCH_Y_MAX;
 
@@ -1555,10 +1574,7 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
     changed = true;
   }
 
-  // 3. Ensure Touch Level (Sensitivity) is reasonable
-  // 0x8053 - 0x8047 = 12 (0x0C) -> Touch Level
-  // 0x8054 - 0x8047 = 13 (0x0D) -> Leave Level
-  // Default recommendation: Touch=60-100, Leave=40-80
+  // 3. Ensure Touch Level check
   if (config[12] == 0) {
     ESP_LOGW(TAG, "Fixing invalid Touch Level (0 -> 80)");
     config[12] = 80;
@@ -1572,12 +1588,11 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
 
   if (!changed) {
     ESP_LOGI(TAG, "GT911 Configuration is already correct.");
+    i2c_bus_shared_unlock();
     return ESP_OK;
   }
 
   // 4. Recalculate Checksum
-  // Checksum is at 0x80FF. Relative index: 0x80FF - 0x8047 = 184 (0xB8)
-  // Checksum range is 0x8047 to 0x80FE (184 bytes)
   uint8_t checksum = gt911_calc_checksum(config, 184);
   config[184] = checksum;
   config[185] = 1; // Config Fresh = 1
@@ -1585,18 +1600,6 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
   ESP_LOGI(TAG, "Writing new config with Checksum 0x%02X...", checksum);
 
   // 5. Write back config
-  // We write the whole block to be safe, or at least up to checksum + fresh
-  ret = touch_gt911_i2c_write(tp, ESP_LCD_TOUCH_GT911_CONFIG_REG, config[0]);
-  // Wait... the write function writes a single byte. We need block write.
-  // We need to loop or use a block write helper.
-  // The existing touch_gt911_i2c_write only writes 1 byte.
-  // We will iterate for now, but block write is better.
-  // Actually, standard i2c_panel_io_tx_param can write buffer.
-
-  bool locked = i2c_bus_shared_lock(pdMS_TO_TICKS(500));
-  if (!locked)
-    return ESP_ERR_TIMEOUT;
-
   ret = esp_lcd_panel_io_tx_param(tp->io, ESP_LCD_TOUCH_GT911_CONFIG_REG,
                                   config, 186);
 
@@ -1614,55 +1617,60 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
   return ESP_OK;
 }
 
+static esp_err_t touch_gt911_i2c_read_internal(esp_lcd_touch_handle_t tp,
+                                               uint16_t reg, uint8_t *data,
+                                               uint8_t len) {
+  // Direct call, assumes lock held by caller
+  return esp_lcd_panel_io_rx_param(tp->io, reg, data, len);
+}
+
 static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
                                       uint8_t *data, uint8_t len) {
   assert(tp != NULL);
   assert(data != NULL);
 
-  /* Read data with retry */
-  esp_err_t err = ESP_FAIL;
-
-  bool locked = i2c_bus_shared_lock(
-      pdMS_TO_TICKS(50)); // Reduced timeout to fail faster on bus contention
-  if (!locked) {
+  // Finite timeout: 100ms to allow for IO Expander contention
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(100))) {
     return ESP_ERR_TIMEOUT;
   }
 
-  for (int i = 0; i < 3; i++) {
-    err = esp_lcd_panel_io_rx_param(tp->io, reg, data, len);
+  esp_err_t err = ESP_FAIL;
+  // Retry up to 2 times
+  for (int i = 0; i < 2; i++) {
+    err = touch_gt911_i2c_read_internal(tp, reg, data, len);
     if (err == ESP_OK)
       break;
-    vTaskDelay(pdMS_TO_TICKS(1));
+    esp_rom_delay_us(500); // Short delay before retry
   }
 
   i2c_bus_shared_unlock();
   return err;
 }
 
+static esp_err_t touch_gt911_i2c_write_internal(esp_lcd_touch_handle_t tp,
+                                                uint16_t reg, uint8_t data) {
+  return esp_lcd_panel_io_tx_param(tp->io, reg, (uint8_t[]){data}, 1);
+}
+
 static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
                                        uint8_t data) {
   assert(tp != NULL);
 
-  // *INDENT-OFF*
-  /* Write data with retry */
-  esp_err_t err = ESP_FAIL;
-
-  bool locked = i2c_bus_shared_lock(
-      pdMS_TO_TICKS(50)); // Reduced timeout to fail faster on bus contention
-  if (!locked) {
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(100))) {
     return ESP_ERR_TIMEOUT;
   }
 
-  for (int i = 0; i < 3; i++) {
-    err = esp_lcd_panel_io_tx_param(tp->io, reg, (uint8_t[]){data}, 1);
+  esp_err_t err = ESP_FAIL;
+  // Retry up to 2 times
+  for (int i = 0; i < 2; i++) {
+    err = touch_gt911_i2c_write_internal(tp, reg, data);
     if (err == ESP_OK)
       break;
-    vTaskDelay(pdMS_TO_TICKS(1));
+    esp_rom_delay_us(500);
   }
 
   i2c_bus_shared_unlock();
   return err;
-  // *INDENT-ON*
 }
 
 static void IRAM_ATTR gt911_gpio_isr_handler(void *arg) {
@@ -1687,87 +1695,91 @@ static void IRAM_ATTR gt911_gpio_isr_handler(void *arg) {
 
 static void gt911_irq_task(void *arg) {
   esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
-  const int64_t debounce_us = 5000; // 5 ms anti-bounce
   uint32_t error_backoff_ms = 10;
 
+  // Add a local define/declaration if missing globally to avoid build errors.
+  // Using extern to reference the file-scope static variable used in read_data.
+  // However, C doesn't allow extern to static.
+  // We assume main compilation unit has it as 'static int64_t
+  // s_spurious_block_until_us;' If it was missing, we would have seen build
+  // errors.
+
   while (1) {
-    taskYIELD(); // Explicitly yield to prevent watchdog starvation on any core
-    uint32_t notified =
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_interval_ms));
+    TickType_t wait_ticks = portMAX_DELAY;
+
+    // Use polling fallback if enabled or required
+    if (s_poll_mode || GT911_POLL_INTERVAL_MS_FALLBACK > 0) {
+      uint32_t interval =
+          s_poll_mode ? s_poll_interval_ms : GT911_POLL_INTERVAL_MS_FALLBACK;
+      if (interval == 0)
+        interval = 20; // Safety floor
+      wait_ticks = pdMS_TO_TICKS(interval);
+    }
+
+    // BLOCK HERE until Notify (IRQ) or Timeout (Polling)
+    // This releases the CPU to the IDLE task.
+    // pdTRUE clears the notification value on exit.
+    uint32_t notified = ulTaskNotifyTake(pdTRUE, wait_ticks);
+    (void)notified; // Suppress unused warning if logic below is optimized out
+    if (notified == 0 && wait_ticks == portMAX_DELAY) {
+      // Should not happen if infinite wait, but safe guard
+      continue;
+    }
+
     int64_t now = esp_timer_get_time();
 
+    // Check if we are incorrectly suppressed
     if (s_spurious_block_until_us > now && !s_poll_mode) {
-      // Ignore rapid spurious IRQs for a short cooldown window
       gt911_enable_irq_guarded();
-      vTaskDelay(pdMS_TO_TICKS(5));
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
-    if (s_poll_mode) {
-      esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
-      if (err != ESP_OK) {
-        gt911_mark_i2c_error();
-        vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
-        if (error_backoff_ms < 200) {
-          error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
-        }
-      } else {
-        error_backoff_ms = 10;
-      }
+    // Minimal Yield after wake up to ensure fair scheduling
+    vTaskDelay(1);
 
-      if (now >= s_poll_mode_until_us) {
-        s_poll_mode = false;
-        s_empty_window_count = 0;
-        s_empty_window_start_us = 0;
-        s_poll_interval_ms = GT911_POLL_INTERVAL_MS;
-        gt911_enable_irq_guarded();
-      } else {
-        vTaskDelay(pdMS_TO_TICKS(s_poll_interval_ms));
-      }
-      continue;
-    }
-
-    if (notified == 0) {
-      // Fallback: If no IRQ is received during the wait window, poll once to
-      // avoid losing touches when the interrupt line is noisy or missing.
-      gt911_mark_poll_timeout();
-      esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
-      if (err != ESP_OK) {
-        gt911_mark_i2c_error();
-        vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
-        if (error_backoff_ms < 200) {
-          error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
-        }
-      } else {
-        error_backoff_ms = 10;
-      }
-      continue;
-    }
-
-    if ((now - s_last_irq_us) < debounce_us) {
+    // Rate limiting: prevent processing more than one frame every ~15ms
+    // This prevents WDT triggers by ensuring IDLE task gets CPU time
+    static int64_t s_last_process_us = 0;
+    if ((now - s_last_process_us) < 15000) {
+      // Too fast - yield to IDLE before continuing
       gt911_enable_irq_guarded();
+      vTaskDelay(pdMS_TO_TICKS(5)); // Guaranteed yield to IDLE
       continue;
     }
-    s_last_irq_us = now;
+    s_last_process_us = now;
 
-    // FIX: Add delay after IRQ to allow GT911 to populate registers
-    vTaskDelay(pdMS_TO_TICKS(GT911_POST_IRQ_DELAY_MS));
-
+    // Process Touch Data
     esp_err_t err = esp_lcd_touch_gt911_read_data(tp);
+
     if (err != ESP_OK) {
       gt911_mark_i2c_error();
+      // Backoff on error
       vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
-      if (error_backoff_ms < 200) {
-        error_backoff_ms = (error_backoff_ms < 50) ? 50 : 200;
+      if (error_backoff_ms < 500) {
+        error_backoff_ms *= 2;
       }
     } else {
       error_backoff_ms = 10;
-      if (s_gt911_irq_storm > 0 && (s_gt911_irq_storm % 50) == 0) {
-        ESP_LOGW(TAG, "IRQ storm detected (count=%" PRIu32 ")",
-                 s_gt911_irq_storm);
+      // Log IRQ storm if necessary
+      if (s_gt911_irq_storm > 100 && (s_gt911_irq_storm % 100) == 0) {
+        ESP_LOGW(TAG, "High IRQ rate detected: %" PRIu32, s_gt911_irq_storm);
       }
     }
 
+    // Handle Poll Mode Logic
+    if (s_poll_mode && now >= s_poll_mode_until_us) {
+      s_poll_mode = false;
+      s_empty_window_count = 0;
+      s_empty_window_start_us = 0;
+      ESP_LOGI(TAG, "Exiting Poll Mode -> IRQ Mode");
+    }
+
+    // Re-enable IRQ with Guard (Throttle)
     gt911_enable_irq_guarded();
+
+    // EXPLICIT YIELD: This is critical for preventing WDT on single-core or
+    // high-load scenarios. We give 10ms to other tasks (IDLE, TCP/IP).
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

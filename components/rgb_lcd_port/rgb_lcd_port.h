@@ -36,65 +36,69 @@
 /**
  * @brief LCD Resolution and Timing
  */
-#define EXAMPLE_LCD_H_RES BOARD_LCD_HRES ///< Horizontal resolution in pixels
-#define EXAMPLE_LCD_V_RES BOARD_LCD_VRES ///< Vertical resolution in pixels
-#define EXAMPLE_LCD_PIXEL_CLOCK_HZ                                            \
-  BOARD_LCD_PCLK_HZ ///< Pixel clock frequency in Hz (configurable, 51.2 MHz recommandé 1024x600@60Hz)
+#define ARS_LCD_H_RES BOARD_LCD_HRES ///< Horizontal resolution in pixels
+#define ARS_LCD_V_RES BOARD_LCD_VRES ///< Vertical resolution in pixels
+#define ARS_LCD_PIXEL_CLOCK_HZ                                                 \
+  BOARD_LCD_PCLK_HZ ///< Pixel clock frequency in Hz (configurable, 51.2 MHz
+                    ///< recommandé 1024x600@60Hz)
 
 /**
  * @brief Color and Pixel Configuration
  */
-#define EXAMPLE_LCD_BIT_PER_PIXEL BOARD_LCD_BIT_PER_PIXEL ///< Bits per pixel (color depth)
-#define EXAMPLE_RGB_BIT_PER_PIXEL                                                     \
+#define ARS_LCD_BIT_PER_PIXEL                                                  \
+  BOARD_LCD_BIT_PER_PIXEL ///< Bits per pixel (color depth)
+#define ARS_RGB_BIT_PER_PIXEL                                                  \
   BOARD_LCD_RGB_BIT_PER_PIXEL ///< RGB interface color depth
-#define EXAMPLE_RGB_DATA_WIDTH BOARD_LCD_RGB_DATA_WIDTH ///< Data width for RGB interface
-#define EXAMPLE_LCD_RGB_BUFFER_NUMS                                                      \
+#define ARS_RGB_DATA_WIDTH                                                     \
+  BOARD_LCD_RGB_DATA_WIDTH ///< Data width for RGB interface
+#define ARS_LCD_RGB_BUFFER_NUMS                                                \
   BOARD_LCD_RGB_BUFFER_NUMS ///< Number of frame buffers for double buffering
-#define EXAMPLE_RGB_BOUNCE_BUFFER_SIZE                                                   \
-  (EXAMPLE_LCD_H_RES * BOARD_LCD_RGB_BOUNCE_BUFFER_LINES) ///< Size of bounce buffer for RGB data
+#define ARS_RGB_BOUNCE_BUFFER_SIZE                                             \
+  (ARS_LCD_H_RES *                                                             \
+   BOARD_LCD_RGB_BOUNCE_BUFFER_LINES) ///< Size of bounce buffer for RGB data
 
 /**
  * @brief GPIO Pins for RGB LCD Signals
  */
-#define EXAMPLE_LCD_IO_RGB_DISP BOARD_LCD_IO_DISP ///< DISP signal, -1 if not used
-#define EXAMPLE_LCD_IO_RGB_VSYNC BOARD_LCD_IO_VSYNC ///< Vertical sync signal
-#define EXAMPLE_LCD_IO_RGB_HSYNC BOARD_LCD_IO_HSYNC ///< Horizontal sync signal
-#define EXAMPLE_LCD_IO_RGB_DE BOARD_LCD_IO_DE ///< Data enable signal
-#define EXAMPLE_LCD_IO_RGB_PCLK BOARD_LCD_IO_PCLK ///< Pixel clock signal
+#define ARS_LCD_IO_RGB_DISP BOARD_LCD_IO_DISP   ///< DISP signal, -1 if not used
+#define ARS_LCD_IO_RGB_VSYNC BOARD_LCD_IO_VSYNC ///< Vertical sync signal
+#define ARS_LCD_IO_RGB_HSYNC BOARD_LCD_IO_HSYNC ///< Horizontal sync signal
+#define ARS_LCD_IO_RGB_DE BOARD_LCD_IO_DE       ///< Data enable signal
+#define ARS_LCD_IO_RGB_PCLK BOARD_LCD_IO_PCLK   ///< Pixel clock signal
 
 /**
  * @brief GPIO Pins for RGB Data Signals
  */
 // Blue data signals
-#define EXAMPLE_LCD_IO_RGB_DATA0 BOARD_LCD_IO_DATA0 ///< B3
-#define EXAMPLE_LCD_IO_RGB_DATA1 BOARD_LCD_IO_DATA1 ///< B4
-#define EXAMPLE_LCD_IO_RGB_DATA2 BOARD_LCD_IO_DATA2 ///< B5
-#define EXAMPLE_LCD_IO_RGB_DATA3 BOARD_LCD_IO_DATA3 ///< B6
-#define EXAMPLE_LCD_IO_RGB_DATA4 BOARD_LCD_IO_DATA4 ///< B7
+#define ARS_LCD_IO_RGB_DATA0 BOARD_LCD_IO_DATA0 ///< B3
+#define ARS_LCD_IO_RGB_DATA1 BOARD_LCD_IO_DATA1 ///< B4
+#define ARS_LCD_IO_RGB_DATA2 BOARD_LCD_IO_DATA2 ///< B5
+#define ARS_LCD_IO_RGB_DATA3 BOARD_LCD_IO_DATA3 ///< B6
+#define ARS_LCD_IO_RGB_DATA4 BOARD_LCD_IO_DATA4 ///< B7
 
 // Green data signals
-#define EXAMPLE_LCD_IO_RGB_DATA5 BOARD_LCD_IO_DATA5 ///< G2
-#define EXAMPLE_LCD_IO_RGB_DATA6 BOARD_LCD_IO_DATA6 ///< G3
-#define EXAMPLE_LCD_IO_RGB_DATA7 BOARD_LCD_IO_DATA7 ///< G4
-#define EXAMPLE_LCD_IO_RGB_DATA8 BOARD_LCD_IO_DATA8 ///< G5
-#define EXAMPLE_LCD_IO_RGB_DATA9 BOARD_LCD_IO_DATA9 ///< G6
-#define EXAMPLE_LCD_IO_RGB_DATA10 BOARD_LCD_IO_DATA10 ///< G7
+#define ARS_LCD_IO_RGB_DATA5 BOARD_LCD_IO_DATA5   ///< G2
+#define ARS_LCD_IO_RGB_DATA6 BOARD_LCD_IO_DATA6   ///< G3
+#define ARS_LCD_IO_RGB_DATA7 BOARD_LCD_IO_DATA7   ///< G4
+#define ARS_LCD_IO_RGB_DATA8 BOARD_LCD_IO_DATA8   ///< G5
+#define ARS_LCD_IO_RGB_DATA9 BOARD_LCD_IO_DATA9   ///< G6
+#define ARS_LCD_IO_RGB_DATA10 BOARD_LCD_IO_DATA10 ///< G7
 
 // Red data signals
-#define EXAMPLE_LCD_IO_RGB_DATA11 BOARD_LCD_IO_DATA11 ///< R3
-#define EXAMPLE_LCD_IO_RGB_DATA12 BOARD_LCD_IO_DATA12 ///< R4
-#define EXAMPLE_LCD_IO_RGB_DATA13 BOARD_LCD_IO_DATA13 ///< R5
-#define EXAMPLE_LCD_IO_RGB_DATA14 BOARD_LCD_IO_DATA14 ///< R6
-#define EXAMPLE_LCD_IO_RGB_DATA15 BOARD_LCD_IO_DATA15 ///< R7
+#define ARS_LCD_IO_RGB_DATA11 BOARD_LCD_IO_DATA11 ///< R3
+#define ARS_LCD_IO_RGB_DATA12 BOARD_LCD_IO_DATA12 ///< R4
+#define ARS_LCD_IO_RGB_DATA13 BOARD_LCD_IO_DATA13 ///< R5
+#define ARS_LCD_IO_RGB_DATA14 BOARD_LCD_IO_DATA14 ///< R6
+#define ARS_LCD_IO_RGB_DATA15 BOARD_LCD_IO_DATA15 ///< R7
 
 /**
  * @brief Reset and Backlight Configuration
  */
-#define EXAMPLE_LCD_IO_RST (-1)           ///< Reset pin, -1 if not used
-#define EXAMPLE_PIN_NUM_BK_LIGHT (-1)     ///< Backlight pin, -1 if not used
-#define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL (1) ///< Logic level to turn on backlight
-#define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL                                         \
-  (!EXAMPLE_LCD_BK_LIGHT_ON_LEVEL) ///< Logic level to turn off backlight
+#define ARS_LCD_IO_RST (-1)           ///< Reset pin, -1 if not used
+#define ARS_PIN_NUM_BK_LIGHT (-1)     ///< Backlight pin, -1 if not used
+#define ARS_LCD_BK_LIGHT_ON_LEVEL (1) ///< Logic level to turn on backlight
+#define ARS_LCD_BK_LIGHT_OFF_LEVEL                                             \
+  (!ARS_LCD_BK_LIGHT_ON_LEVEL) ///< Logic level to turn off backlight
 
 /**
  * @brief Function Declarations
@@ -114,7 +118,7 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_get_handle(void);
  * @param[out] stride_bytes taille en octets d'une ligne
  */
 esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,
-                                       size_t *stride_bytes);
+                                        size_t *stride_bytes);
 
 void waveshare_rgb_lcd_bl_on();
 void waveshare_rgb_lcd_bl_off();

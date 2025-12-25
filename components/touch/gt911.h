@@ -17,6 +17,11 @@
 
 #define GT911_POLL_INTERVAL_MS CONFIG_ARS_TOUCH_POLL_INTERVAL_MS
 
+// Added to prevent IRQ storm / WDT starvation
+#ifndef GT911_POST_IRQ_DELAY_MS
+#define GT911_POST_IRQ_DELAY_MS 10
+#endif
+
 #ifndef ESP_LCD_TOUCH_MAX_POINTS
 #ifdef CONFIG_ESP_LCD_TOUCH_MAX_POINTS
 #define ESP_LCD_TOUCH_MAX_POINTS CONFIG_ESP_LCD_TOUCH_MAX_POINTS
@@ -36,10 +41,14 @@
 #define ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP                              \
   (0x14) // Backup I2C address when interrupt GPIO is high
 
-#define EXAMPLE_PIN_NUM_TOUCH_RST                                              \
-  (-1) // Reset pin for the touch controller (set to -1 if not used)
-#define EXAMPLE_PIN_NUM_TOUCH_INT                                              \
-  (GPIO_NUM_4) // Interrupt pin for the touch controller
+#define GT911_PIN_TOUCH_RST (-1) // Reset via IO extension, not direct GPIO
+
+// Backward compatibility alias
+#define GT911_PIN_NUM_TOUCH_RST GT911_PIN_TOUCH_RST
+#define GT911_PIN_TOUCH_INT (GPIO_NUM_4) // Touch IRQ pin (Waveshare 7B)
+
+// Backward compatibility alias
+#define GT911_PIN_NUM_TOUCH_INT GT911_PIN_TOUCH_INT
 
 /**
  * @brief GT911 Configuration Structure

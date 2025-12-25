@@ -186,7 +186,7 @@ esp_err_t touch_orient_save(const touch_orient_config_t *cfg) {
     ESP_LOGI(TAG, "Config saved: Swap=%d, MirX=%d, MirY=%d", to_save.swap_xy,
              to_save.mirror_x, to_save.mirror_y);
     // Yield after NVS write to allow IDLE task to run
-    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(20));
   } else {
     ESP_LOGE(TAG, "Failed to save config: %s", esp_err_to_name(err));
   }

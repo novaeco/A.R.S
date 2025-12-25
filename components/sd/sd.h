@@ -33,7 +33,7 @@
 
 // Define constants for SD card configuration
 #define MOUNT_POINT "/sdcard"                // Mount point for SD card
-#define EXAMPLE_FORMAT_IF_MOUNT_FAILED false // Format SD card if mounting fails
+#define ARS_FORMAT_IF_MOUNT_FAILED false // Format SD card if mounting fails
 
 typedef enum {
   SD_STATE_UNINITIALIZED = 0,

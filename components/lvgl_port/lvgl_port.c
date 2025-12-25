@@ -1,23 +1,24 @@
 #include "lvgl_port.h"
+#include "board_orientation.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "lvgl.h"
-#include "sdkconfig.h"
 #include "gt911.h"
+#include "lvgl.h"
+#include "rgb_lcd_port.h"
+#include "sdkconfig.h"
 #include "touch.h"
 #include "touch_orient.h"
 #include "touch_transform.h"
-#include "board_orientation.h"
-#include "rgb_lcd_port.h"
 #include <inttypes.h>
 
-#if defined(CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE) && CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE
+#if defined(CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE) &&                               \
+    CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
 #elif defined(CONFIG_ARS_LCD_WAIT_VSYNC)
 #define ARS_LCD_WAIT_VSYNC_ENABLED CONFIG_ARS_LCD_WAIT_VSYNC
@@ -159,9 +160,9 @@ static void lvgl_port_task(void *arg) {
       lv_timer_handler();
       lvgl_port_unlock();
     }
-    // Yield to prevent WDT on this core (though usually it's Core 0 complaining
-    // about IDLE0, but being safe)
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // Yield to prevent WDT on CPU1 - CRITICAL for preventing IDLE1 starvation
+    // With priority reduced to 5 (from 10), this delay ensures IDLE gets time
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -181,9 +182,7 @@ static vsync_sync_t s_vsync = {.sem = NULL,
                                .wait_supported = ARS_LCD_WAIT_VSYNC_ENABLED,
                                .timeout_logged = false};
 
-void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb) {
-  s_ui_init_cb = cb;
-}
+void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb) { s_ui_init_cb = cb; }
 
 IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
@@ -224,8 +223,8 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   if (s_first_flush) {
     ESP_LOGI(TAG,
              "LVGL First Flush (%s): area(%d,%d)-(%d,%d) fb_idx=%d fb_cnt=%d",
-             s_direct_mode ? "direct" : "fallback", offsetx1, offsety1, offsetx2,
-             offsety2, fb_idx, (int)s_rgb_framebuffer_count);
+             s_direct_mode ? "direct" : "fallback", offsetx1, offsety1,
+             offsetx2, offsety2, fb_idx, (int)s_rgb_framebuffer_count);
     s_first_flush = false;
   }
 
@@ -234,7 +233,17 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
              px_map);
   }
 
-  if (!s_direct_mode) {
+  if (s_direct_mode) {
+    // In DIRECT mode, px_map IS the framebuffer pointer.
+    // We must invoke draw_bitmap to trigger the double-buffer swap in the RGB
+    // driver. We pass the full screen area because we are swapping the entire
+    // buffer.
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(
+        panel_handle, 0, 0, LVGL_PORT_H_RES, LVGL_PORT_V_RES, px_map);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Direct swap failed: %s", esp_err_to_name(ret));
+    }
+  } else {
     esp_err_t draw_ret = ESP_OK;
     if (panel_handle) {
       draw_ret = esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1,
@@ -248,15 +257,16 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
     }
   }
 
-  const bool wait_vsync = s_direct_mode && s_vsync.sem && s_vsync.wait_supported &&
-                          s_vsync.wait_enabled;
+  const bool wait_vsync = s_direct_mode && s_vsync.sem &&
+                          s_vsync.wait_supported && s_vsync.wait_enabled;
 
   // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear. Timeout is
   // small (configurable) to avoid blocking if the callback is missing.
   if (wait_vsync) {
     xSemaphoreTake(s_vsync.sem, 0);
 
-    if (xSemaphoreTake(s_vsync.sem, pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)) !=
+    if (xSemaphoreTake(s_vsync.sem,
+                       pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)) !=
         pdTRUE) {
       s_vsync.wait_enabled = false;
       if (!s_vsync.timeout_logged) {
@@ -305,9 +315,8 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     ESP_LOGI(TAG, "VSYNC wait disabled by configuration");
   }
 
-  esp_err_t fb_ret = rgb_lcd_port_get_framebuffers(&s_rgb_framebuffers,
-                                                  &s_rgb_framebuffer_count,
-                                                  &s_rgb_stride_bytes);
+  esp_err_t fb_ret = rgb_lcd_port_get_framebuffers(
+      &s_rgb_framebuffers, &s_rgb_framebuffer_count, &s_rgb_stride_bytes);
 
   size_t frame_bytes = 0;
   lv_display_t *disp = lv_display_create(LVGL_PORT_H_RES, LVGL_PORT_V_RES);
@@ -321,25 +330,37 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
 
   if (fb_ret == ESP_OK && s_rgb_framebuffer_count > 0 &&
       s_rgb_framebuffers != NULL) {
-    frame_bytes = s_rgb_stride_bytes * LVGL_PORT_V_RES;
-    lv_display_set_buffers(disp, s_rgb_framebuffers[0],
-                           (s_rgb_framebuffer_count > 1)
-                               ? s_rgb_framebuffers[1]
-                               : NULL,
-                           frame_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
-    ESP_LOGI(
-        TAG,
-        "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
-        (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
-        (int)frame_bytes);
-    s_direct_mode = true;
-    if (s_rgb_framebuffer_count >= 1) {
-      ESP_LOGI(TAG, "fb0=%p", s_rgb_framebuffers[0]);
+
+    lv_color_format_t cf = lv_display_get_color_format(disp);
+    uint32_t bpp = lv_color_format_get_size(cf);
+    uint32_t expected_stride = LVGL_PORT_H_RES * bpp;
+
+    if (s_rgb_stride_bytes == expected_stride) {
+      frame_bytes = s_rgb_stride_bytes * LVGL_PORT_V_RES;
+      lv_display_set_buffers(
+          disp, s_rgb_framebuffers[0],
+          (s_rgb_framebuffer_count > 1) ? s_rgb_framebuffers[1] : NULL,
+          frame_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+      ESP_LOGI(
+          TAG,
+          "LVGL DIRECT mode ready: fb_count=%d stride=%d bytes frame=%d bytes",
+          (int)s_rgb_framebuffer_count, (int)s_rgb_stride_bytes,
+          (int)frame_bytes);
+      s_direct_mode = true;
+      if (s_rgb_framebuffer_count >= 1) {
+        ESP_LOGI(TAG, "fb0=%p", s_rgb_framebuffers[0]);
+      }
+      if (s_rgb_framebuffer_count >= 2) {
+        ESP_LOGI(TAG, "fb1=%p", s_rgb_framebuffers[1]);
+      }
+      return disp;
+    } else {
+      ESP_LOGW(TAG,
+               "Direct mode stride mismatch: driver=%d vs lvgl=%d (w=%d "
+               "bpp=%d). Forcing PARTIAL.",
+               (int)s_rgb_stride_bytes, (int)expected_stride, LVGL_PORT_H_RES,
+               (int)bpp);
     }
-    if (s_rgb_framebuffer_count >= 2) {
-      ESP_LOGI(TAG, "fb1=%p", s_rgb_framebuffers[1]);
-    }
-    return disp;
   }
 
   // Fallback: allocate LVGL-managed buffers (partial render) when RGB driver
@@ -349,11 +370,13 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
            esp_err_to_name(fb_ret));
 
   const size_t buf_lines = CONFIG_ARS_LVGL_BUF_LINES;
-  frame_bytes = LVGL_PORT_H_RES * buf_lines * sizeof(lv_color_t);
+  lv_color_format_t cf = lv_display_get_color_format(disp);
+  uint32_t bpp = lv_color_format_get_size(cf);
+  frame_bytes = LVGL_PORT_H_RES * buf_lines * bpp;
 
   bool buf_psram = false;
-  void *buf1 = heap_caps_malloc(frame_bytes,
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  void *buf1 =
+      heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (buf1) {
     buf_psram = true;
   } else {
@@ -383,16 +406,17 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
 
 #if CONFIG_ARS_LVGL_USE_DOUBLE_BUF
-  const char *buf2_desc = buf2 ? (buf2_psram ? "buf2=psram" : "buf2=internal")
-                               : "buf2=absent";
+  const char *buf2_desc =
+      buf2 ? (buf2_psram ? "buf2=psram" : "buf2=internal") : "buf2=absent";
 #else
   const char *buf2_desc = "buf2=disabled";
 #endif
 
-  ESP_LOGI(TAG,
-           "LVGL PARTIAL fallback: lines=%d buf_bytes=%d double=%s (buf1=%s %s)",
-           (int)buf_lines, (int)frame_bytes, buf2 ? "yes" : "no",
-           buf_psram ? "psram" : "internal", buf2_desc);
+  ESP_LOGI(
+      TAG,
+      "LVGL PARTIAL fallback: lines=%d buf_bytes=%d double=%s (buf1=%s %s)",
+      (int)buf_lines, (int)frame_bytes, buf2 ? "yes" : "no",
+      buf_psram ? "psram" : "internal", buf2_desc);
 
   return disp;
 }
@@ -413,19 +437,10 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
   if (!tp)
     return;
 
-  static int64_t last_read_err_us = 0;
   int64_t now_us = esp_timer_get_time();
-  esp_err_t read_ret = esp_lcd_touch_read_data(tp);
-  if (read_ret != ESP_OK) {
-    if ((now_us - last_read_err_us) > 500000) {
-      ESP_LOGW(TAG, "Touch read failed: %s", esp_err_to_name(read_ret));
-      last_read_err_us = now_us;
-    }
-    data->state = LV_INDEV_STATE_RELEASED;
-    data->point.x = 0;
-    data->point.y = 0;
-    return;
-  }
+  // Fixed: Do NOT call esp_lcd_touch_read_data here.
+  // The GT911 driver handles reading in its own IRQ/Poll task.
+  // Calling it here causes I2C contention and timeouts.
 
   uint8_t touchpad_cnt = 0;
   esp_lcd_touch_point_data_t touch_points[1] = {0};
@@ -486,8 +501,8 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     const touch_transform_t *tf = touch_transform_get_active();
     if (tf) {
       if (touch_transform_apply_ex(tf, oriented.x, oriented.y, LVGL_PORT_H_RES,
-                                   LVGL_PORT_V_RES, false, &mapped_point) !=
-          ESP_OK) {
+                                   LVGL_PORT_V_RES, false,
+                                   &mapped_point) != ESP_OK) {
         mapped_point = oriented;
       }
     }
@@ -495,10 +510,8 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     int16_t y = mapped_point.y;
 
     if ((s_touch_event_seq++ % 64) == 0) {
-      ESP_LOGD(TAG,
-               "touch raw(%d,%d)->orient(%d,%d)->final(%d,%d) pressed=%d",
-               raw_x, raw_y, (int)oriented_point.x, (int)oriented_point.y, x,
-               y,
+      ESP_LOGD(TAG, "touch raw(%d,%d)->orient(%d,%d)->final(%d,%d) pressed=%d",
+               raw_x, raw_y, (int)oriented_point.x, (int)oriented_point.y, x, y,
                (int)stable_pressed);
     }
 
@@ -580,14 +593,14 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     if (stats.clamped_points != s_last_diag_clamped) {
       ESP_LOGI("TOUCH_EVT",
                "clamped=%" PRIu32 " last_raw=(%u,%u) last_xy=(%d,%d)",
-               stats.clamped_points - s_last_diag_clamped,
-               stats.last_clamped_x, stats.last_clamped_y, data->point.x,
-               data->point.y);
+               stats.clamped_points - s_last_diag_clamped, stats.last_clamped_x,
+               stats.last_clamped_y, data->point.x, data->point.y);
       s_last_diag_clamped = stats.clamped_points;
     }
     if (stats.i2c_errors != s_last_diag_i2c_err) {
       ESP_LOGW("TOUCH_EVT",
-               "i2c_errors=%" PRIu32 " poll_timeouts=%" PRIu32 " (delta %" PRIu32 ")",
+               "i2c_errors=%" PRIu32 " poll_timeouts=%" PRIu32
+               " (delta %" PRIu32 ")",
                stats.i2c_errors, stats.poll_timeouts,
                stats.i2c_errors - s_last_diag_i2c_err);
       s_last_diag_i2c_err = stats.i2c_errors;
@@ -596,8 +609,8 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
 
   bool log_press = data->state == LV_INDEV_STATE_PRESSED &&
                    ((now_us - s_last_touch_diag_us) >= 200000 || state_changed);
-  bool log_release = state_changed &&
-                     prev_state == LV_INDEV_STATE_PRESSED && has_valid_point;
+  bool log_release =
+      state_changed && prev_state == LV_INDEV_STATE_PRESSED && has_valid_point;
   if (log_press || log_release) {
     s_last_touch_diag_us = now_us;
     s_touch_event_seq++;
@@ -638,7 +651,8 @@ static lv_indev_t *indev_init(lv_display_t *disp, esp_lcd_touch_handle_t tp) {
 
 esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
                          esp_lcd_touch_handle_t tp_handle) {
-  ESP_LOGI(TAG, "lvgl_port_init enter panel=%p touch=%p", lcd_handle, tp_handle);
+  ESP_LOGI(TAG, "lvgl_port_init enter panel=%p touch=%p", lcd_handle,
+           tp_handle);
 
   lv_init();
   esp_err_t err = tick_init();
@@ -713,8 +727,7 @@ void lvgl_port_unlock(void) {
 }
 
 bool lvgl_port_in_task_context(void) {
-  return lvgl_task_handle &&
-         (xTaskGetCurrentTaskHandle() == lvgl_task_handle);
+  return lvgl_task_handle && (xTaskGetCurrentTaskHandle() == lvgl_task_handle);
 }
 
 TaskHandle_t lvgl_port_get_task_handle(void) { return lvgl_task_handle; }
