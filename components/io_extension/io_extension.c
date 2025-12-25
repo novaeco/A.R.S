@@ -11,6 +11,14 @@
  * | Info         :   Basic version, includes functions to read and write
  * |                 GPIO pins using I2C communication with IO_EXTENSION.
  *
+ * P0-C Concurrency:
+ * - All IOEXT operations use i2c_bus_shared_lock() for I2C bus access
+ * - Lock order to avoid deadlock:
+ *   1. sd_extcs_lock() (if SD transaction)
+ *   2. i2c_bus_shared_lock() (always for I2C access)
+ * - NEVER acquire locks in reverse order!
+ * - CH32V003 does NOT support reliable I2C readback; use shadow state.
+ *
  ******************************************************************************/
 #include "io_extension.h" // Include IO_EXTENSION driver header for GPIO functions
 #include "esp_check.h"
