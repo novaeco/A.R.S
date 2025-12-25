@@ -1,83 +1,68 @@
+# =============================================================================
+# ESP-IDF / LVGL / A.R.S Project Configuration Defaults
+# =============================================================================
+# Ce fichier définit les valeurs par défaut pour la configuration du projet.
+# Après modification, exécuter: idf.py set-target esp32s3 && idf.py fullclean build
+# =============================================================================
+
+# --- Target ---
 CONFIG_IDF_TARGET="esp32s3"
-CONFIG_IDF_TARGET_ESP32S3=y
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
-CONFIG_PARTITION_TABLE_OFFSET=0x8000
-CONFIG_PARTITION_TABLE_MD5=y
 
-# ====== Task Watchdog Fix ======
-# Désactive IPv6 pour éviter les blocages ND6 Router Solicitation
-CONFIG_LWIP_IPV6=n
-# Pin tcpip task sur CPU1 pour libérer CPU0 (IDLE0)
-CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
-CONFIG_LWIP_TCPIP_TASK_AFFINITY=1
-# Timeout WDT augmenté à 30s
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
-# ================================
-
-# Pin main task to CPU1 to free CPU0 (IDLE0) during initialization
-CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
-CONFIG_ESP_MAIN_TASK_AFFINITY=1
-
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-CONFIG_FREERTOS_HZ=1000
-
-# Flash Size
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
-
-# Linker orphan section handling (explicit choice to avoid bootloader warnings)
-CONFIG_COMPILER_ORPHAN_SECTIONS_WARNING=y
-
-# PSRAM Configuration
+# --- PSRAM (critical for RGB framebuffers) ---
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 
-# SD Card Pinout (Waveshare 7B)
-CONFIG_ARS_SD_MOSI=11
-CONFIG_ARS_SD_MISO=13
-CONFIG_ARS_SD_SCK=12
-CONFIG_ARS_SD_CS_MODE_IO_EXPANDER=y
-CONFIG_ARS_SD_CS_EXIO=4
+# --- Cache Configuration (CRITICAL: 64B cache line required for bounce buffer) ---
+# Source: https://docs.espressif.com/projects/esp-faq/en/latest/software-framework/peripherals/lcd.html
+# "When using PSRAM and Bounce buffer, please configure the Data cache line size to 64 Bytes"
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
-# ARS Optimization Defaults
-CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE=n
+# --- VSYNC Synchronization (FIX A: Enable VSYNC to prevent tearing) ---
+CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE=y
+CONFIG_ARS_LCD_WAIT_VSYNC=y
+CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS=20
+
+# --- LCD RGB Panel (P0-A FIX: PCLK ≤22MHz for Octal PSRAM@80MHz) ---
+# Source: FAQ Espressif - max PCLK ~22MHz with Octal PSRAM at 80MHz
+CONFIG_ARS_LCD_PCLK_HZ=21000000
+# Bounce buffer: 10 lines minimum for stability (10*1024*2 = ~20KB SRAM)
+CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES=10
+CONFIG_ARS_LCD_PCLK_ACTIVE_NEG=y
+
+# --- LVGL Task ---
+CONFIG_ARS_LVGL_TASK_CORE=1
+CONFIG_ARS_LVGL_TASK_PRIO=5
+CONFIG_ARS_LVGL_TASK_STACK=8192
 CONFIG_ARS_LVGL_BUF_LINES=80
-CONFIG_ARS_LVGL_USE_DOUBLE_BUF=n
 CONFIG_ARS_LVGL_COLOR_DEPTH=16
 
-# Web interface hardening
-CONFIG_ARS_WEB_ENABLE=y
-CONFIG_ARS_WEB_REQUIRE_TLS_PROXY=y
-CONFIG_ARS_WEB_MAX_CONTENT_LENGTH=4096
+# --- Touch Orientation Defaults ---
+CONFIG_ARS_TOUCH_SWAP_XY=0
+CONFIG_ARS_TOUCH_MIRROR_X=1
+CONFIG_ARS_TOUCH_MIRROR_Y=1
 
-# Data manager safety
-CONFIG_ARS_DATA_MAX_JSON_SIZE=8192
-
-# Board defaults
-CONFIG_ARS_BACKLIGHT_USE_IO_EXPANDER=y
-CONFIG_ARS_BACKLIGHT_GPIO=-1
-CONFIG_ARS_BAT_ADC_UNIT=1
-CONFIG_ARS_BAT_ADC_CHANNEL=7
-CONFIG_ARS_BAT_DIV_NUM=2
-CONFIG_ARS_BAT_DIV_DEN=1
-CONFIG_ARS_LCD_PCLK_HZ=51200000
-CONFIG_ARS_LCD_PCLK_ACTIVE_NEG=y
-CONFIG_ARS_LCD_HSYNC_IDLE_LOW=n
-CONFIG_ARS_LCD_VSYNC_IDLE_LOW=n
-CONFIG_ARS_LCD_DE_IDLE_HIGH=n
-CONFIG_ARS_SKIP_TEST_PATTERN=y
-CONFIG_ARS_LCD_BOOT_TEST_PATTERN=n
-CONFIG_ARS_LCD_BOOT_TEST_PATTERN_MS=2000
-CONFIG_ARS_TOUCH_SWAP_XY=n
-CONFIG_ARS_TOUCH_MIRROR_X=y
-CONFIG_ARS_TOUCH_MIRROR_Y=y
-CONFIG_ARS_DISPLAY_ROTATION_180=y
-
-# HTTP client disabled by default (HTTPS only when enabled)
-CONFIG_ARS_ENABLE_HTTP_CLIENT=n
+# --- LVGL Fonts ---
 CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+
+# --- Task Watchdog ---
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2048
+
+# --- I2C Deprecation Suppress ---
+CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
+
+# --- Console ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
