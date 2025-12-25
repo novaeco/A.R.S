@@ -142,7 +142,38 @@ void core_free_animal_content(animal_t *animal) {
 }
 
 esp_err_t core_export_csv(const char *filepath) {
-  ESP_LOGI(TAG, "Stub: Export CSV to %s", filepath);
+  ESP_LOGI(TAG, "Exporting CSV to %s", filepath);
+
+  FILE *f = fopen(filepath, "w");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to open export file: %s", filepath);
+    return ESP_FAIL;
+  }
+
+  // Header
+  fprintf(f, "ID,Name,Species,Sex,DOB,Weight(g)\n");
+
+  cJSON *list = data_manager_list_reptiles();
+  if (list) {
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, list) {
+      cJSON *id_obj = cJSON_GetObjectItem(item, "id");
+      if (id_obj) {
+        reptile_t r;
+        if (data_manager_load_reptile(id_obj->valuestring, &r) == ESP_OK) {
+          const char *sex_str = (r.gender == GENDER_MALE)
+                                    ? "M"
+                                    : (r.gender == GENDER_FEMALE ? "F" : "U");
+          fprintf(f, "%s,%s,%s,%s,%lld,%.1f\n", r.id, r.name, r.species,
+                  sex_str, (long long)r.birth_date, r.weight);
+        }
+      }
+    }
+    cJSON_Delete(list);
+  }
+
+  fclose(f);
+  ESP_LOGI(TAG, "Export complete.");
   return ESP_OK;
 }
 

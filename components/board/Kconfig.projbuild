@@ -2,10 +2,19 @@ menu "BSP / Board"
 
 config ARS_LCD_PCLK_HZ
     int "Fréquence pixel clock (Hz)"
-    default 51200000
+    default 26000000
     help
         Fréquence du pclk pour le panneau RGB 1024x600. Valeur recommandée
         pour 60 Hz avec timings 1344x635 : ~51.2 MHz. Ajustable pour A/B test.
+    
+    config ARS_LCD_BOUNCE_BUFFER_LINES
+        int "Lignes du bounce buffer RGB"
+        default 4
+        range 2 100
+        help
+            Taille du bounce buffer en nombre de lignes. Augmenter réduit les risques
+            d'underrun PSRAM (artefacts) mais consomme de la SRAM interne.
+            Recommandé > 2 pour PCLK > 40MHz. 10 lignes * 1024 * 2B = 20KB SRAM.
 
 config ARS_LCD_PCLK_ACTIVE_NEG
     bool "PCLK actif sur front descendant"

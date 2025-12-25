@@ -8,8 +8,8 @@
 #include "sdkconfig.h"
 #include <dirent.h>
 #include <errno.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
@@ -90,7 +90,8 @@ esp_err_t data_manager_init(void) {
     if (ret == ESP_FAIL) {
       ESP_LOGE(TAG, "Failed to mount or format filesystem");
     } else if (ret == ESP_ERR_NOT_FOUND) {
-      ESP_LOGE(TAG, "Failed to find LittleFS partition with label '%s'", conf.partition_label);
+      ESP_LOGE(TAG, "Failed to find LittleFS partition with label '%s'",
+               conf.partition_label);
     } else {
       ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
     }
@@ -121,6 +122,11 @@ esp_err_t data_manager_init(void) {
                       "failed to create events dir");
   ESP_RETURN_ON_ERROR(ensure_directory("/data/weights"), TAG,
                       "failed to create weights dir");
+  ESP_RETURN_ON_ERROR(ensure_directory("/data/documents"), TAG,
+                      "failed to create documents dir");
+  ESP_RETURN_ON_ERROR(ensure_directory("/data/contacts"), TAG,
+                      "failed to create contacts dir");
+
   s_storage_ready = true;
   return ESP_OK;
 }
@@ -165,7 +171,7 @@ static cJSON *load_json_from_file(const char *path) {
 
   FILE *f = fopen(path, "r");
   if (f == NULL) {
-    ESP_LOGE(TAG, "Failed to open file for reading: %s", path);
+    // Silent fail for non-existent file read
     data_fs_unlock();
     return NULL;
   }
@@ -307,7 +313,8 @@ cJSON *data_manager_list_reptiles(void) {
         if (data_manager_load_reptile(id, &r) == ESP_OK) {
           cJSON *obj = cJSON_CreateObject();
           if (!obj) {
-            ESP_LOGE(TAG, "Failed to allocate reptile entry for %s", dir->d_name);
+            ESP_LOGE(TAG, "Failed to allocate reptile entry for %s",
+                     dir->d_name);
             closedir(d);
             cJSON_Delete(arr);
             return NULL;
@@ -424,6 +431,259 @@ cJSON *data_manager_get_weights(const char *reptile_id) {
     return arr;
   }
   return json;
+}
+
+// Document Operations
+esp_err_t data_manager_save_document(const document_t *doc) {
+  if (!storage_ready_guard(__func__))
+    return ESP_ERR_INVALID_STATE;
+
+  cJSON *root = cJSON_CreateObject();
+  if (!root)
+    return ESP_ERR_NO_MEM;
+
+  cJSON_AddStringToObject(root, "id", doc->id);
+  cJSON_AddStringToObject(root, "related_id", doc->related_id);
+  cJSON_AddNumberToObject(root, "type", doc->type);
+  cJSON_AddStringToObject(root, "title", doc->title);
+  cJSON_AddStringToObject(root, "filename", doc->filename);
+  cJSON_AddNumberToObject(root, "timestamp", (double)doc->timestamp);
+
+  char path[128];
+  snprintf(path, sizeof(path), "/data/documents/%s.json", doc->id);
+  esp_err_t err = save_json_to_file(path, root);
+  cJSON_Delete(root);
+  return err;
+}
+
+esp_err_t data_manager_load_document(const char *id, document_t *out_doc) {
+  if (!storage_ready_guard(__func__))
+    return ESP_ERR_INVALID_STATE;
+
+  char path[128];
+  snprintf(path, sizeof(path), "/data/documents/%s.json", id);
+  cJSON *json = load_json_from_file(path);
+  if (!json)
+    return ESP_FAIL;
+
+  cJSON *item;
+  if ((item = cJSON_GetObjectItem(json, "id")))
+    copy_bounded(out_doc->id, sizeof(out_doc->id), item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "related_id")))
+    copy_bounded(out_doc->related_id, sizeof(out_doc->related_id),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "type")))
+    out_doc->type = (document_type_t)item->valueint;
+  if ((item = cJSON_GetObjectItem(json, "title")))
+    copy_bounded(out_doc->title, sizeof(out_doc->title), item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "filename")))
+    copy_bounded(out_doc->filename, sizeof(out_doc->filename),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "timestamp")))
+    out_doc->timestamp = (int64_t)item->valuedouble;
+
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+cJSON *data_manager_list_documents(const char *related_id) {
+  cJSON *arr = cJSON_CreateArray();
+  if (!storage_ready_guard(__func__))
+    return arr;
+  if (!data_fs_lock(pdMS_TO_TICKS(2000)))
+    return arr;
+
+  DIR *d = opendir("/data/documents");
+  if (d) {
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+      if (strstr(dir->d_name, ".json")) {
+        char id[MAX_ID_LEN];
+        copy_bounded(id, sizeof(id), dir->d_name);
+        char *ext = strstr(id, ".json");
+        if (ext)
+          *ext = '\0';
+
+        // Optimization: if we could peek json without load, better. For now
+        // load full. We need to check related_id if provided. Temporarily
+        // unlock to call load_document (which locks) - recursive lock issue?
+        // Ah, load_json_from_file locks. We hold lock. Recursive mutex?
+        // s_data_fs_lock was created with xSemaphoreCreateMutex which is not
+        // recursive. We must implement an internal load helper that doesn't
+        // lock or use recursive mutex. Or simply: read file manually here.
+        // Since we are inside lock, we can fopen directly.
+
+        char path[128];
+        snprintf(path, sizeof(path), "/data/documents/%s.json", id);
+        FILE *f = fopen(path, "r");
+        if (f) {
+          fseek(f, 0, SEEK_END);
+          long len = ftell(f);
+          fseek(f, 0, SEEK_SET);
+          char *buf = malloc(len + 1);
+          if (buf) {
+            if (fread(buf, 1, len, f) == len) {
+              buf[len] = 0;
+              cJSON *json = cJSON_Parse(buf);
+              if (json) {
+                bool match = true;
+                if (related_id) {
+                  cJSON *r_id = cJSON_GetObjectItem(json, "related_id");
+                  if (!r_id || strcmp(r_id->valuestring, related_id) != 0)
+                    match = false;
+                }
+                if (match) {
+                  cJSON_AddItemToArray(
+                      arr, json); // Add copy? No, we need new obj or detach?
+                  // list_documents usually returns summary. Let's return full
+                  // object for now. But cJSON_AddItem transfers ownership. We
+                  // shouldn't delete json then. But we are in a loop. Let's
+                  // detach item or clone. Actually better: create summary
+                  // object.
+                  cJSON *sum = cJSON_CreateObject();
+                  cJSON_AddStringToObject(sum, "id", id);
+                  cJSON *tit = cJSON_GetObjectItem(json, "title");
+                  if (tit)
+                    cJSON_AddStringToObject(sum, "title", tit->valuestring);
+                  cJSON *ts = cJSON_GetObjectItem(json, "timestamp");
+                  if (ts)
+                    cJSON_AddNumberToObject(sum, "timestamp", ts->valuedouble);
+                  cJSON_AddStringToObject(
+                      sum, "filename",
+                      cJSON_GetObjectItem(json, "filename")
+                          ? cJSON_GetObjectItem(json, "filename")->valuestring
+                          : "");
+
+                  cJSON_AddItemToArray(arr, sum);
+                }
+                cJSON_Delete(json);
+              }
+            }
+            free(buf);
+          }
+          fclose(f);
+        }
+      }
+    }
+    closedir(d);
+  }
+  data_fs_unlock();
+  return arr;
+}
+
+// Contact Operations
+esp_err_t data_manager_save_contact(const contact_t *contact) {
+  if (!storage_ready_guard(__func__))
+    return ESP_ERR_INVALID_STATE;
+
+  cJSON *root = cJSON_CreateObject();
+  if (!root)
+    return ESP_ERR_NO_MEM;
+
+  cJSON_AddStringToObject(root, "id", contact->id);
+  cJSON_AddStringToObject(root, "name", contact->name);
+  cJSON_AddStringToObject(root, "role", contact->role);
+  cJSON_AddStringToObject(root, "phone", contact->phone);
+  cJSON_AddStringToObject(root, "email", contact->email);
+  cJSON_AddStringToObject(root, "notes", contact->notes);
+
+  char path[128];
+  snprintf(path, sizeof(path), "/data/contacts/%s.json", contact->id);
+  esp_err_t err = save_json_to_file(path, root);
+  cJSON_Delete(root);
+  return err;
+}
+
+esp_err_t data_manager_load_contact(const char *id, contact_t *out_contact) {
+  if (!storage_ready_guard(__func__))
+    return ESP_ERR_INVALID_STATE;
+
+  char path[128];
+  snprintf(path, sizeof(path), "/data/contacts/%s.json", id);
+  cJSON *json = load_json_from_file(path);
+  if (!json)
+    return ESP_FAIL;
+
+  cJSON *item;
+  if ((item = cJSON_GetObjectItem(json, "id")))
+    copy_bounded(out_contact->id, sizeof(out_contact->id), item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "name")))
+    copy_bounded(out_contact->name, sizeof(out_contact->name),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "role")))
+    copy_bounded(out_contact->role, sizeof(out_contact->role),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "phone")))
+    copy_bounded(out_contact->phone, sizeof(out_contact->phone),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "email")))
+    copy_bounded(out_contact->email, sizeof(out_contact->email),
+                 item->valuestring);
+  if ((item = cJSON_GetObjectItem(json, "notes")))
+    copy_bounded(out_contact->notes, sizeof(out_contact->notes),
+                 item->valuestring);
+
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+cJSON *data_manager_list_contacts(void) {
+  cJSON *arr = cJSON_CreateArray();
+  if (!storage_ready_guard(__func__))
+    return arr;
+  if (!data_fs_lock(pdMS_TO_TICKS(2000)))
+    return arr;
+
+  DIR *d = opendir("/data/contacts");
+  if (d) {
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+      if (strstr(dir->d_name, ".json")) {
+        char id[MAX_ID_LEN];
+        copy_bounded(id, sizeof(id), dir->d_name);
+        char *ext = strstr(id, ".json");
+        if (ext)
+          *ext = '\0';
+
+        char path[128];
+        snprintf(path, sizeof(path), "/data/contacts/%s.json", id);
+        FILE *f = fopen(path, "r");
+        if (f) {
+          fseek(f, 0, SEEK_END);
+          long len = ftell(f);
+          fseek(f, 0, SEEK_SET);
+          char *buf = malloc(len + 1);
+          if (buf) {
+            if (fread(buf, 1, len, f) == len) {
+              buf[len] = 0;
+              cJSON *json = cJSON_Parse(buf);
+              if (json) {
+                cJSON *entry = cJSON_CreateObject();
+                cJSON_AddStringToObject(entry, "id", id);
+                cJSON_AddStringToObject(
+                    entry, "name",
+                    cJSON_GetObjectItem(json, "name")
+                        ? cJSON_GetObjectItem(json, "name")->valuestring
+                        : "");
+                cJSON_AddStringToObject(
+                    entry, "role",
+                    cJSON_GetObjectItem(json, "role")
+                        ? cJSON_GetObjectItem(json, "role")->valuestring
+                        : "");
+                cJSON_AddItemToArray(arr, entry);
+                cJSON_Delete(json);
+              }
+            }
+            free(buf);
+          }
+          fclose(f);
+        }
+      }
+    }
+    closedir(d);
+  }
+  data_fs_unlock();
+  return arr;
 }
 
 const char *gender_to_str(reptile_gender_t gender) {

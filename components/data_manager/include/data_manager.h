@@ -12,7 +12,7 @@
 _Static_assert(MAX_ID_LEN > 1, "MAX_ID_LEN must allow null termination");
 _Static_assert(MAX_NAME_LEN > 1, "MAX_NAME_LEN must allow null termination");
 _Static_assert(MAX_SPECIES_LEN > 1,
-              "MAX_SPECIES_LEN must allow null termination");
+               "MAX_SPECIES_LEN must allow null termination");
 
 typedef enum { GENDER_MALE, GENDER_FEMALE, GENDER_UNKNOWN } reptile_gender_t;
 
@@ -29,7 +29,8 @@ typedef struct {
 
 typedef enum {
   EVENT_FEEDING,
-  EVENT_MOLT,   // Kept for backward compat if used, mapped to SHEDDING conceptually or distinct
+  EVENT_MOLT, // Kept for backward compat if used, mapped to SHEDDING
+              // conceptually or distinct
   EVENT_VET,
   EVENT_BREEDING, // distinct
   EVENT_OTHER,
@@ -47,6 +48,32 @@ typedef struct {
   int64_t timestamp;
   char notes[256];
 } reptile_event_t;
+
+typedef enum {
+  DOC_TYPE_MEDICAL,
+  DOC_TYPE_CERTIFICATE,
+  DOC_TYPE_PHOTO,
+  DOC_TYPE_INVOICE,
+  DOC_TYPE_OTHER
+} document_type_t;
+
+typedef struct {
+  char id[MAX_ID_LEN];
+  char related_id[MAX_ID_LEN]; // Can be reptile_id
+  document_type_t type;
+  char title[64];
+  char filename[64]; // Filename on SD card or storage
+  int64_t timestamp;
+} document_t;
+
+typedef struct {
+  char id[MAX_ID_LEN];
+  char name[64];
+  char role[32]; // e.g. "Vet", "Breeder"
+  char phone[32];
+  char email[64];
+  char notes[128];
+} contact_t;
 
 // API
 esp_err_t data_manager_init(void);
@@ -67,6 +94,26 @@ cJSON *data_manager_get_events(const char *reptile_id);
 esp_err_t data_manager_add_weight(const char *reptile_id, float weight,
                                   int64_t timestamp);
 cJSON *data_manager_get_weights(const char *reptile_id);
+
+// Document Operations
+esp_err_t data_manager_save_document(const document_t *doc);
+esp_err_t data_manager_load_document(const char *id, document_t *out_doc);
+cJSON *data_manager_list_documents(const char *related_id); // NULL for all
+
+// Contact Operations
+esp_err_t data_manager_save_contact(const contact_t *contact);
+esp_err_t data_manager_load_contact(const char *id, contact_t *out_contact);
+cJSON *data_manager_list_contacts(void);
+
+// Document Operations
+esp_err_t data_manager_save_document(const document_t *doc);
+esp_err_t data_manager_load_document(const char *id, document_t *out_doc);
+cJSON *data_manager_list_documents(const char *related_id); // NULL for all
+
+// Contact Operations
+esp_err_t data_manager_save_contact(const contact_t *contact);
+esp_err_t data_manager_load_contact(const char *id, contact_t *out_contact);
+cJSON *data_manager_list_contacts(void);
 
 // Utils
 const char *gender_to_str(reptile_gender_t gender);

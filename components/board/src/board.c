@@ -1,16 +1,17 @@
 #include "../include/board.h"
+#include "board_orientation.h"
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
-#include "board_orientation.h"
 
 // ADC One-Shot & Calibration Includes
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_cache.h"
 
 static const char *TAG = "board";
 static inline int rotation_deg(lv_display_rotation_t rot) {
@@ -35,6 +36,14 @@ static adc_cali_handle_t s_adc_cali_handle = NULL;
 static bool s_adc_cali_enabled = false;
 static float s_bat_divider = 1.0f;
 
+static void ars_cache_writeback(void *addr, size_t size) {
+  // Writeback (C2M) to ensure CPU writes (memset) reach the RAM for DMA
+  esp_err_t err = esp_cache_msync(addr, size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Cache sync failed: %s", esp_err_to_name(err));
+  }
+}
+
 // BSP Components
 #include "gt911.h"
 #include "i2c_bus_shared.h" // Added for shared bus init
@@ -46,6 +55,17 @@ static float s_bat_divider = 1.0f;
 #include "touch_transform.h"
 
 // ... (other includes)
+
+static SemaphoreHandle_t s_lcd_init_done = NULL;
+
+static void lcd_init_task(void *arg) {
+  ESP_LOGI(TAG, "LCD Init Task running on Core %d", xPortGetCoreID());
+  g_panel_handle = waveshare_esp32_s3_rgb_lcd_init();
+  if (s_lcd_init_done) {
+    xSemaphoreGive(s_lcd_init_done);
+  }
+  vTaskDelete(NULL);
+}
 
 esp_err_t app_board_init(void) {
   ESP_LOGI(TAG, "Initializing Board via BSP...");
@@ -61,7 +81,8 @@ esp_err_t app_board_init(void) {
   if (orient_reset == ESP_ERR_NVS_NOT_FOUND) {
     ESP_LOGI(TAG, "touch_orient NVS already clean");
   } else if (orient_reset != ESP_OK) {
-    ESP_LOGW(TAG, "touch_orient clear failed: %s", esp_err_to_name(orient_reset));
+    ESP_LOGW(TAG, "touch_orient clear failed: %s",
+             esp_err_to_name(orient_reset));
   }
 
   esp_err_t tf_reset = touch_transform_storage_clear();
@@ -155,23 +176,78 @@ esp_err_t app_board_init(void) {
 
   // Wait for power to stabilize and yield to IDLE task
   vTaskDelay(pdMS_TO_TICKS(50));
-  
+
   // Extra yield to prevent WDT during long init sequences
   vTaskDelay(pdMS_TO_TICKS(10));
 
   // 3. Initialize RGB LCD
-  g_panel_handle = waveshare_esp32_s3_rgb_lcd_init();
+  s_lcd_init_done = xSemaphoreCreateBinary();
+  if (s_lcd_init_done == NULL) {
+    ESP_LOGE(TAG, "Failed to create LCD init semaphore");
+    return ESP_FAIL;
+  }
+
+  // Spawn init task on CPU0
+  BaseType_t task_ret = xTaskCreatePinnedToCore(lcd_init_task, "lcd_init", 4096,
+                                                NULL, 5, NULL, 0);
+  if (task_ret != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create LCD init task");
+    vSemaphoreDelete(s_lcd_init_done);
+    return ESP_FAIL;
+  }
+
+  // Wait for completion
+  xSemaphoreTake(s_lcd_init_done, portMAX_DELAY);
+  vSemaphoreDelete(s_lcd_init_done);
+  s_lcd_init_done = NULL;
+
   if (g_panel_handle == NULL) {
     ESP_LOGE(TAG, "Failed to init RGB LCD");
     return ESP_FAIL;
   }
 
   // Ensure display is ON
-  // Note: esp_lcd_panel_disp_on_off is not supported by RGB panel driver
-  // (returns ESP_ERR_NOT_SUPPORTED) The display is enabled by default or via
-  // the DISP GPIO handling in the driver.
   ESP_LOGI(TAG,
            "Skipping esp_lcd_panel_disp_on_off (not supported for RGB panel)");
+
+  // 3.5 Clear Framebuffers to avoid garbage/artifacts
+  void **buffers = NULL;
+  size_t buf_count = 0;
+  size_t stride = 0;
+  if (rgb_lcd_port_get_framebuffers(&buffers, &buf_count, &stride) == ESP_OK) {
+    ESP_LOGI(TAG, "Clearing %d framebuffers before backlight override...",
+             (int)buf_count);
+    size_t fb_size = (size_t)(BOARD_LCD_HRES * BOARD_LCD_VRES *
+                              (BOARD_LCD_BIT_PER_PIXEL / 8));
+    if (stride > 0) {
+      fb_size = stride * BOARD_LCD_VRES;
+    }
+    for (size_t i = 0; i < buf_count; i++) {
+      if (buffers[i]) {
+        // Chunked clear to prevent WDT on large framebuffers (1.2MB+)
+        uint8_t *p = (uint8_t *)buffers[i];
+        size_t left = fb_size;
+        size_t chunk = 32 * 1024; // 32KB chunks
+
+        ESP_LOGI(TAG, "Clearing FB %d (%u bytes) in chunks...", (int)i,
+                 (unsigned int)fb_size);
+
+        while (left > 0) {
+          size_t c = (left > chunk) ? chunk : left;
+          memset(p, 0, c);
+          // Flush cache for this chunk immediately
+          if (esp_ptr_external_ram(p)) {
+            ars_cache_writeback(p, c);
+          }
+          p += c;
+          left -= c;
+          // Yield to feed IDLE/WDT
+          if (left > 0)
+            vTaskDelay(1);
+        }
+      }
+    }
+  }
 
   // 4. Backlight Enable (IO_2)
   // Enable Backlight to see the test pattern
@@ -193,10 +269,16 @@ esp_err_t app_board_init(void) {
   // Debug: Run Test Pattern (Color Bars) to verify display independently of
   // LVGL
   board_lcd_test_pattern();
+  // Yield to IDLE task before printing final pipeline status to prevent WDT if
+  // UART is slow
+  vTaskDelay(pdMS_TO_TICKS(10));
   ESP_LOGI(TAG, "LCD pipeline check: VCOM/reset/backlight/test pattern done");
 
   // 5. Touch Transform (load + migrate legacy if needed)
   if (g_tp_handle) {
+    // Yield to IDLE task before NVS operations to prevent WDT
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     touch_transform_record_t rec = {0};
     esp_err_t err = touch_transform_storage_load(&rec);
     if (err == ESP_ERR_NOT_FOUND) {
@@ -212,8 +294,8 @@ esp_err_t app_board_init(void) {
                  rec.generation, rec.transform.swap_xy, rec.transform.mirror_x,
                  rec.transform.mirror_y);
         touch_transform_t apply_tf = rec.transform;
-        bool has_orient_flags = apply_tf.swap_xy || apply_tf.mirror_x ||
-                                apply_tf.mirror_y;
+        bool has_orient_flags =
+            apply_tf.swap_xy || apply_tf.mirror_x || apply_tf.mirror_y;
         if (has_orient_flags && orient_cfg_ready) {
           orient_cfg.swap_xy = apply_tf.swap_xy;
           orient_cfg.mirror_x = apply_tf.mirror_x;
@@ -352,9 +434,7 @@ lv_display_t *app_board_get_disp(void) {
   return lv_display_get_default();
 }
 
-lv_indev_t *app_board_get_indev(void) {
-  return lv_indev_get_next(NULL);
-}
+lv_indev_t *app_board_get_indev(void) { return lv_indev_get_next(NULL); }
 
 esp_lcd_touch_handle_t app_board_get_touch_handle(void) { return g_tp_handle; }
 esp_lcd_panel_handle_t app_board_get_panel_handle(void) {
@@ -483,7 +563,8 @@ static void board_lcd_draw_test_pattern(void) {
       for (int x = x_start; x < x_end; x++) {
         frame_buf[y * 1024 + x] = color;
       }
-      // Yield every 50 lines to prevent WDT timeout - use vTaskDelay to guarantee IDLE runs
+      // Yield every 50 lines to prevent WDT timeout - use vTaskDelay to
+      // guarantee IDLE runs
       if ((y % 50) == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
       }
@@ -496,7 +577,8 @@ static void board_lcd_draw_test_pattern(void) {
   ESP_LOGI(TAG, "Test Pattern queued. You should see RGBWB bands.");
 }
 
-// Test pattern task - always available, runs on CPU1 with low priority to avoid WDT
+// Test pattern task - always available, runs on CPU1 with low priority to avoid
+// WDT
 static void board_lcd_test_pattern_task(void *arg) {
   if (g_panel_handle) {
     board_lcd_draw_test_pattern();
@@ -524,7 +606,7 @@ void board_lcd_test_pattern(void) {
   // Always run in dedicated task pinned to CPU1 with low priority to avoid
   // starving IDLE0 and triggering WDT timeout
   if (xTaskCreatePinnedToCore(board_lcd_test_pattern_task, "lcd_test", 4096,
-                               NULL, 2, NULL, 1) != pdPASS) {
+                              NULL, 2, NULL, 1) != pdPASS) {
     ESP_LOGW(TAG, "Test pattern task creation failed, skipping to avoid WDT");
     // Do NOT run inline - this would block and trigger WDT
   }

@@ -13,6 +13,14 @@ extern "C" {
 extern SemaphoreHandle_t g_i2c_bus_mutex;
 
 /**
+ * Known I2C device addresses on the shared bus (Waveshare ESP32-S3 7B)
+ * These are for documentation/reference; actual addresses defined in drivers.
+ */
+#define I2C_ADDR_IO_EXTENSION 0x24  // CH32V003 IO extension
+#define I2C_ADDR_GT911_PRIMARY 0x5D // GT911 touch primary address
+#define I2C_ADDR_GT911_BACKUP 0x14  // GT911 touch backup address
+
+/**
  * @brief Initialize the Shared I2C Bus (Port 0) and the global mutex.
  *        Safe to call multiple times (idempotent).
  *        Pins: SDA=8, SCL=9

@@ -28,6 +28,25 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 #define I2C_PROBE_TIMEOUT_MS 100
 #define I2C_XFER_TIMEOUT_MS 200
 
+// Simple device address registry to warn about duplicate registrations
+#define I2C_MAX_DEVICES 8
+static uint8_t s_registered_addrs[I2C_MAX_DEVICES] = {0};
+static size_t s_registered_count = 0;
+
+static bool is_addr_registered(uint8_t addr) {
+  for (size_t i = 0; i < s_registered_count; i++) {
+    if (s_registered_addrs[i] == addr)
+      return true;
+  }
+  return false;
+}
+
+static void register_addr(uint8_t addr) {
+  if (s_registered_count < I2C_MAX_DEVICES) {
+    s_registered_addrs[s_registered_count++] = addr;
+  }
+}
+
 static inline bool i2c_lock() {
   return DEV_I2C_TakeLock(pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS));
 }
@@ -53,9 +72,7 @@ bool DEV_I2C_TakeLock(TickType_t wait_ms) {
   return i2c_bus_shared_lock(wait_ms);
 }
 
-void DEV_I2C_GiveLock(void) {
-  i2c_bus_shared_unlock();
-}
+void DEV_I2C_GiveLock(void) { i2c_bus_shared_unlock(); }
 
 esp_err_t DEV_I2C_Probe(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
   if (bus_handle == NULL) {
@@ -81,7 +98,8 @@ esp_err_t DEV_I2C_Probe(i2c_master_bus_handle_t bus_handle, uint8_t addr) {
   DEV_I2C_GiveLock();
 
   if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "I2C probe 0x%02X failed: %s", san_addr, esp_err_to_name(ret));
+    ESP_LOGE(TAG, "I2C probe 0x%02X failed: %s", san_addr,
+             esp_err_to_name(ret));
   } else {
     ESP_LOGD(TAG, "I2C probe 0x%02X OK", san_addr);
   }
@@ -127,6 +145,14 @@ esp_err_t DEV_I2C_Add_Device(uint8_t addr,
   esp_err_t addr_ok = DEV_I2C_SanitizeAddr(addr, &san_addr);
   if (addr_ok != ESP_OK) {
     return addr_ok;
+  }
+
+  // Warn if attempting to re-register same address (may indicate driver bug)
+  if (is_addr_registered(san_addr)) {
+    ESP_LOGW(TAG, "Device 0x%02X already registered on bus", san_addr);
+  } else {
+    register_addr(san_addr);
+    ESP_LOGD(TAG, "Registered device 0x%02X on shared bus", san_addr);
   }
 
   i2c_device_config_t dev_cfg = {
@@ -198,9 +224,8 @@ esp_err_t DEV_I2C_Write_Byte(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
 
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret =
-      i2c_master_transmit(dev_handle, data, sizeof(data),
-                          pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
+  esp_err_t ret = i2c_master_transmit(dev_handle, data, sizeof(data),
+                                      pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -211,8 +236,8 @@ esp_err_t DEV_I2C_Read_Byte(i2c_master_dev_handle_t dev_handle,
     return ESP_ERR_INVALID_ARG;
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret =
-      i2c_master_receive(dev_handle, value, 1, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
+  esp_err_t ret = i2c_master_receive(dev_handle, value, 1,
+                                     pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -226,9 +251,8 @@ esp_err_t DEV_I2C_Read_Word(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
 
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret =
-      i2c_master_transmit_receive(dev_handle, cmd_buf, 1, data, 2,
-                                  pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
+  esp_err_t ret = i2c_master_transmit_receive(
+      dev_handle, cmd_buf, 1, data, 2, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
 
   if (ret == ESP_OK && value) {
@@ -243,8 +267,8 @@ esp_err_t DEV_I2C_Write_Nbyte(i2c_master_dev_handle_t dev_handle,
     return ESP_ERR_INVALID_ARG;
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret =
-      i2c_master_transmit(dev_handle, pdata, len, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
+  esp_err_t ret = i2c_master_transmit(dev_handle, pdata, len,
+                                      pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }
@@ -255,9 +279,8 @@ esp_err_t DEV_I2C_Read_Nbyte(i2c_master_dev_handle_t dev_handle, uint8_t Cmd,
     return ESP_ERR_INVALID_ARG;
   if (!i2c_lock())
     return ESP_ERR_TIMEOUT;
-  esp_err_t ret =
-      i2c_master_transmit_receive(dev_handle, &Cmd, 1, pdata, len,
-                                  pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
+  esp_err_t ret = i2c_master_transmit_receive(
+      dev_handle, &Cmd, 1, pdata, len, pdMS_TO_TICKS(I2C_XFER_TIMEOUT_MS));
   i2c_unlock();
   return ret;
 }

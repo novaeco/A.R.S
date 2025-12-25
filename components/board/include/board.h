@@ -1,11 +1,11 @@
 #pragma once
 
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "sdkconfig.h"
 #include <esp_err.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
-#include "driver/gpio.h"
-#include "driver/i2c_master.h"
 #include <lvgl.h>
 
 // Mapping Kconfig to Board Macros
@@ -16,7 +16,11 @@
 #define BOARD_LCD_RGB_BIT_PER_PIXEL 16
 #define BOARD_LCD_RGB_DATA_WIDTH 16
 #define BOARD_LCD_RGB_BUFFER_NUMS 2
+#ifdef CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES
+#define BOARD_LCD_RGB_BOUNCE_BUFFER_LINES CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES
+#else
 #define BOARD_LCD_RGB_BOUNCE_BUFFER_LINES 10
+#endif
 #ifdef CONFIG_ARS_LCD_PCLK_ACTIVE_NEG
 #define BOARD_LCD_PCLK_ACTIVE_NEG 1
 #else
@@ -65,19 +69,19 @@
 #define BOARD_LCD_IO_DATA15 GPIO_NUM_40
 
 #ifdef CONFIG_ARS_BAT_ADC_UNIT
-#define BOARD_BAT_ADC_UNIT   CONFIG_ARS_BAT_ADC_UNIT
+#define BOARD_BAT_ADC_UNIT CONFIG_ARS_BAT_ADC_UNIT
 #else
-#define BOARD_BAT_ADC_UNIT   ADC_UNIT_1 // Default fallback
+#define BOARD_BAT_ADC_UNIT ADC_UNIT_1 // Default fallback
 #endif
 
 #ifdef CONFIG_ARS_BAT_ADC_CHANNEL
-#define BOARD_BAT_ADC_CHAN   CONFIG_ARS_BAT_ADC_CHANNEL
+#define BOARD_BAT_ADC_CHAN CONFIG_ARS_BAT_ADC_CHANNEL
 #else
-#define BOARD_BAT_ADC_CHAN   0 // Default fallback
+#define BOARD_BAT_ADC_CHAN 0 // Default fallback
 #endif
 
-#define BOARD_BAT_DIV_NUM    CONFIG_ARS_BAT_DIV_NUM
-#define BOARD_BAT_DIV_DEN    CONFIG_ARS_BAT_DIV_DEN
+#define BOARD_BAT_DIV_NUM CONFIG_ARS_BAT_DIV_NUM
+#define BOARD_BAT_DIV_DEN CONFIG_ARS_BAT_DIV_DEN
 
 // I2C routing (shared bus used by GT911 and IO expanders)
 #ifdef CONFIG_ARS_I2C_PORT
