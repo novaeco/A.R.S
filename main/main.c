@@ -82,6 +82,7 @@ void app_main(void) {
   if (board_ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to init Board: %s", esp_err_to_name(board_ret));
   } else {
+    vTaskDelay(pdMS_TO_TICKS(50));
     display_ok = app_board_get_panel_handle() != NULL;
     touch_ok = app_board_get_touch_handle() != NULL;
   }
