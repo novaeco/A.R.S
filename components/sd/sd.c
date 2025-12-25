@@ -1,12 +1,12 @@
 #include "sd.h"
 #include "esp_log.h"
-#include "sd_host_extcs.h"
-#include "sdkconfig.h"
-#include <dirent.h>
-#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
+#include "sd_host_extcs.h"
+#include "sdkconfig.h"
+#include "sdmmc_cmd.h"
+#include <dirent.h>
+#include <string.h>
 
 static const char *TAG = "sd";
 
@@ -50,7 +50,45 @@ esp_err_t sd_card_init() {
 
   if (ret == ESP_OK) {
     card = sd_extcs_get_card_handle();
-    sd_set_state(SD_STATE_INIT_OK);
+
+    // ARS FIX (C): Validate SD card with a minimal read test BEFORE declaring
+    // INIT_OK. This prevents false INIT_OK when mount succeeds but DMA reads
+    // fail (error 0x107).
+    bool read_validated = false;
+    if (card) {
+      // Try to read sector 0 (MBR/boot sector) as a sanity check
+      uint8_t test_buf[512] __attribute__((aligned(4)));
+      esp_err_t read_ret = sdmmc_read_sectors(card, test_buf, 0, 1);
+      if (read_ret == ESP_OK) {
+        // Basic sanity: check for valid boot signature (0x55AA at offset 510)
+        // or non-zero data (indicates card is readable)
+        bool has_data = false;
+        for (int i = 0; i < 16 && !has_data; i++) {
+          if (test_buf[i] != 0x00 && test_buf[i] != 0xFF) {
+            has_data = true;
+          }
+        }
+        if (has_data || (test_buf[510] == 0x55 && test_buf[511] == 0xAA)) {
+          read_validated = true;
+          ESP_LOGI(TAG, "SD read validation PASS (sector 0 readable)");
+        } else {
+          ESP_LOGW(TAG,
+                   "SD read validation: sector 0 appears empty/unformatted");
+          read_validated = true; // Still OK, just unformatted
+        }
+      } else {
+        ESP_LOGE(TAG, "SD read validation FAILED: %s (0x%x)",
+                 esp_err_to_name(read_ret), read_ret);
+      }
+    }
+
+    if (read_validated) {
+      sd_set_state(SD_STATE_INIT_OK);
+    } else {
+      ESP_LOGE(TAG, "SD mounted but read validation failed; state=MOUNT_FAIL");
+      sd_set_state(SD_STATE_MOUNT_FAIL);
+      ret = ESP_ERR_INVALID_RESPONSE;
+    }
   } else if (ext_state == SD_EXTCS_STATE_ABSENT) {
     sd_set_state(SD_STATE_ABSENT);
     ESP_LOGW(TAG, "SD init: NO_CARD detected (ext-CS path healthy)");
@@ -62,7 +100,8 @@ esp_err_t sd_card_init() {
   sd_extcs_sequence_stats_t seq = {0};
   if (sd_extcs_get_sequence_stats(&seq) == ESP_OK) {
     ESP_LOGI(TAG,
-             "SD pipeline: pre_clks=%uB cmd0=%d cmd8=%d acmd41=%d cmd58=%d init=%u kHz target=%u kHz final=%s",
+             "SD pipeline: pre_clks=%uB cmd0=%d cmd8=%d acmd41=%d cmd58=%d "
+             "init=%u kHz target=%u kHz final=%s",
              seq.pre_clks_bytes, seq.cmd0_seen, seq.cmd8_seen, seq.acmd41_seen,
              seq.cmd58_seen, seq.init_freq_khz, seq.target_freq_khz,
              sd_extcs_state_str(seq.final_state));

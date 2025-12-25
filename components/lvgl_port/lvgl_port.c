@@ -309,10 +309,13 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
       ESP_LOGE(TAG, "Failed to allocate VSYNC semaphore");
       s_vsync.wait_enabled = false;
       s_vsync.wait_supported = false;
+      ESP_LOGI(TAG, "VSYNC sync: DISABLED (semaphore alloc failed)");
+    } else {
+      s_vsync.wait_enabled = s_vsync.wait_enabled && s_vsync.wait_supported;
+      ESP_LOGI(TAG, "VSYNC sync: ACTIVE (timeout=%dms)", ARS_LCD_WAIT_VSYNC_TIMEOUT_MS);
     }
-    s_vsync.wait_enabled = s_vsync.wait_enabled && s_vsync.wait_supported;
   } else {
-    ESP_LOGI(TAG, "VSYNC wait disabled by configuration");
+    ESP_LOGI(TAG, "VSYNC sync: DISABLED (CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE=n)");
   }
 
   esp_err_t fb_ret = rgb_lcd_port_get_framebuffers(

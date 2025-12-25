@@ -207,23 +207,15 @@ esp_err_t touch_orient_apply(esp_lcd_touch_handle_t tp,
   esp_lcd_touch_set_mirror_x(tp, cfg->mirror_x);
   esp_lcd_touch_set_mirror_y(tp, cfg->mirror_y);
 
-  ars_touch_calibration_t cal = {
-      .scale_x = (cfg->scale_x < 0.001f || cfg->scale_x > 100.0f)
-                     ? 1.0f
-                     : cfg->scale_x,
-      .scale_y = (cfg->scale_y < 0.001f || cfg->scale_y > 100.0f)
-                     ? 1.0f
-                     : cfg->scale_y,
-      .offset_x = cfg->offset_x,
-      .offset_y = cfg->offset_y,
-  };
-  ars_touch_set_calibration(tp, &cal);
+  // ARS FIX: Remove ars_touch_set_calibration call here.
+  // Calibration (scale/offset) is now handled exclusively by touch_transform
+  // module. This prevents double application of calibration which caused
+  // coordinate drift. touch_orient only handles driver-level swap/mirror flags.
 
   ESP_LOGI(TAG,
-           "Applied config: Swap=%d, MirX=%d, MirY=%d scale=(%.4f, %.4f) "
-           "offset=(%d,%d)",
-           cfg->swap_xy, cfg->mirror_x, cfg->mirror_y, (double)cal.scale_x,
-           (double)cal.scale_y, cal.offset_x, cal.offset_y);
+           "Applied orientation: Swap=%d, MirX=%d, MirY=%d (calibration via "
+           "touch_transform)",
+           cfg->swap_xy, cfg->mirror_x, cfg->mirror_y);
   // Yield after I2C touch configuration to allow IDLE task to run
   vTaskDelay(pdMS_TO_TICKS(5));
   return ESP_OK;

@@ -60,7 +60,7 @@ menu "LVGL Port Configuration"
 
     config ARS_LCD_VSYNC_WAIT_ENABLE
         bool "Enable RGB VSYNC wait integration"
-        default n
+        default y
         help
             Master switch for VSYNC wait logic. Keep disabled by default to
             avoid stalls when callbacks are unsupported; enable only after

@@ -334,8 +334,6 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
   }
 
   const int desired_level = level_high ? 1 : 0; // IO4: 0=assert, 1=deassert
-  esp_err_t err = ESP_FAIL;
-  uint8_t latched = 0xFF;
 
   if (s_cs_level == desired_level) {
     // Still provide settling window when redundant calls happen to keep timing
@@ -348,65 +346,50 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     return ESP_OK;
   }
 
-  int64_t now_us = esp_timer_get_time();
-  static int64_t last_cs_warn_us = 0;
+  // ARS FIX: Simplified CS control without readback verification.
+  // The CH32V003 IO expander does NOT reliably support readback of output
+  // registers via I2C. Previous code attempted to verify the written value
+  // by reading back the latch, which failed intermittently causing the
+  // "CS->LOW verify mismatch" warning on every boot.
+  //
+  // Solution: Trust the shadow state after a successful I2C write.
+  // The IO extension driver maintains Last_io_value which tracks the
+  // intended output state. If the I2C transaction succeeds, we consider
+  // the CS toggle successful.
 
-  for (int attempt = 0; attempt < SD_EXTCS_CS_READBACK_RETRIES; ++attempt) {
-    if (!i2c_bus_shared_lock(pdMS_TO_TICKS(300))) {
-      ESP_LOGW(TAG, "CS->%s lock timeout (attempt %d)",
-               level_high ? "HIGH" : "LOW", attempt + 1);
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
-
-    err = IO_EXTENSION_Output_With_Readback(IO_EXTENSION_IO_4, desired_level,
-                                            &latched, NULL);
-    i2c_bus_shared_unlock();
-
-    bool latched_ok = latched <= 1 && latched == desired_level;
-    if (err == ESP_OK && !latched_ok) {
-      ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
-      uint8_t verify = 0xFF;
-      if (IO_EXTENSION_Read_Output_Latch(IO_EXTENSION_IO_4, &verify) ==
-          ESP_OK) {
-        latched = verify;
-        latched_ok = verify == desired_level;
-      }
-    }
-
-    if (err == ESP_OK && latched_ok) {
-      break;
-    }
-
-    if ((now_us - last_cs_warn_us) > 2000000 ||
-        attempt == SD_EXTCS_CS_READBACK_RETRIES - 1) {
-      last_cs_warn_us = now_us;
-      ESP_LOGW(TAG, "CS->%s verify mismatch (latched=%u err=%s) attempt=%d",
-               level_high ? "HIGH" : "LOW", latched, esp_err_to_name(err),
-               attempt + 1);
-    }
-    ets_delay_us(SD_EXTCS_CS_READBACK_RETRY_US);
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(300))) {
+    ESP_LOGW(TAG, "CS->%s lock timeout", level_high ? "HIGH" : "LOW");
+    return ESP_ERR_TIMEOUT;
   }
 
-  if (err == ESP_OK) {
-    s_cs_level = desired_level;
-    s_last_cs_latched = latched;
-    s_last_cs_input = latched;
-    ESP_LOGD(TAG, "CS->%s via IOEXT4 (latched=%u)", level_high ? "HIGH" : "LOW",
-             latched);
-  } else {
-    ESP_LOGW(TAG, "CS->%s failed after retries (latched=%u err=%s)",
-             level_high ? "HIGH" : "LOW", latched, esp_err_to_name(err));
+  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, desired_level);
+  i2c_bus_shared_unlock();
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CS->%s I2C write failed: %s", level_high ? "HIGH" : "LOW",
+             esp_err_to_name(err));
+    return err;
   }
 
+  // Update shadow state - this is our source of truth
+  s_cs_level = desired_level;
+  s_last_cs_latched = desired_level;
+  s_last_cs_input = desired_level;
+
+  ESP_LOGD(TAG, "CS->%s via IOEXT4 (shadow=%d)", level_high ? "HIGH" : "LOW",
+           desired_level);
+
+  // Post-toggle delay for IO expander propagation
   if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
   }
 
+  // I2C settle time
   if (SD_EXTCS_CS_I2C_SETTLE_US > 0) {
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
   }
 
+  // Direction-specific settling
   if (desired_level == 0) {
     ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
   } else {
@@ -422,7 +405,7 @@ static esp_err_t sd_extcs_set_cs_level(bool level_high) {
     ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
   }
 
-  return err;
+  return ESP_OK;
 }
 
 static inline esp_err_t sd_extcs_assert_cs(void) {

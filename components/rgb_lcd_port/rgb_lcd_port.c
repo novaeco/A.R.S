@@ -182,34 +182,41 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   ESP_LOGI(
       TAG,
       "Creating RGB Panel (Ensure this task is on CPU0 for optimal ISR usage)");
-  
+
   // Try to create panel with progressively smaller bounce buffers on failure
   int bounce_lines = BOARD_LCD_RGB_BOUNCE_BUFFER_LINES;
-  const int bounce_fallbacks[] = {BOARD_LCD_RGB_BOUNCE_BUFFER_LINES, 
-                                   BOARD_LCD_RGB_BOUNCE_BUFFER_LINES / 2,
-                                   10, 5, 0};
+  const int bounce_fallbacks[] = {BOARD_LCD_RGB_BOUNCE_BUFFER_LINES,
+                                  BOARD_LCD_RGB_BOUNCE_BUFFER_LINES / 2, 10, 5,
+                                  0};
   esp_err_t err = ESP_ERR_NO_MEM;
-  
-  for (size_t i = 0; i < sizeof(bounce_fallbacks)/sizeof(bounce_fallbacks[0]); i++) {
+
+  for (size_t i = 0; i < sizeof(bounce_fallbacks) / sizeof(bounce_fallbacks[0]);
+       i++) {
     bounce_lines = bounce_fallbacks[i];
-    panel_config.bounce_buffer_size_px = (bounce_lines > 0) ? (ARS_LCD_H_RES * bounce_lines) : 0;
-    
-    size_t try_bounce_bytes = (size_t)panel_config.bounce_buffer_size_px * (ARS_LCD_BIT_PER_PIXEL / 8);
-    size_t try_largest_dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    
+    panel_config.bounce_buffer_size_px =
+        (bounce_lines > 0) ? (ARS_LCD_H_RES * bounce_lines) : 0;
+
+    size_t try_bounce_bytes = (size_t)panel_config.bounce_buffer_size_px *
+                              (ARS_LCD_BIT_PER_PIXEL / 8);
+    size_t try_largest_dma =
+        heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
     ESP_LOGI(TAG, "Trying bounce_lines=%d (px=%u, ~%uKB), DMA largest=%uKB",
              bounce_lines, (unsigned)panel_config.bounce_buffer_size_px,
-             (unsigned)(try_bounce_bytes / 1024), (unsigned)(try_largest_dma / 1024));
-    
+             (unsigned)(try_bounce_bytes / 1024),
+             (unsigned)(try_largest_dma / 1024));
+
     err = esp_lcd_new_rgb_panel(&panel_config, &panel_handle);
     if (err == ESP_OK) {
       if (bounce_lines != BOARD_LCD_RGB_BOUNCE_BUFFER_LINES) {
-        ESP_LOGW(TAG, "RGB panel created with fallback bounce_lines=%d (original=%d)",
-                 bounce_lines, BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+        ESP_LOGW(
+            TAG,
+            "RGB panel created with fallback bounce_lines=%d (original=%d)",
+            bounce_lines, BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
       }
       break;
     }
-    
+
     if (err == ESP_ERR_NO_MEM && bounce_lines > 0) {
       ESP_LOGW(TAG, "Bounce buffer alloc failed (%s), trying smaller size...",
                esp_err_to_name(err));
@@ -218,9 +225,10 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
       break;
     }
   }
-  
+
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_lcd_new_rgb_panel failed after all fallbacks: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "esp_lcd_new_rgb_panel failed after all fallbacks: %s",
+             esp_err_to_name(err));
     return NULL;
   }
 
@@ -234,7 +242,19 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
            "RGB panel ready: handle=%p fbs=%d stride_bytes=%d bounce_lines=%d",
            panel_handle, ARS_LCD_RGB_BUFFER_NUMS,
            (int)(ARS_LCD_H_RES * (ARS_LCD_BIT_PER_PIXEL / 8)),
-           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+           bounce_lines);
+
+  // P0-A Diagnostic: Log critical cache configuration for bounce buffer stability
+#ifdef CONFIG_ESP32S3_DATA_CACHE_LINE_64B
+  ESP_LOGI(TAG, "Cache config: DATA_CACHE_LINE_SIZE=64B (OK for bounce buffer with Octal PSRAM)");
+#elif defined(CONFIG_ESP32S3_DATA_CACHE_LINE_32B)
+  ESP_LOGW(TAG, "Cache config: DATA_CACHE_LINE_SIZE=32B (SHOULD BE 64B for bounce buffer stability!)");
+#else
+  ESP_LOGW(TAG, "Cache config: DATA_CACHE_LINE_SIZE=unknown");
+#endif
+
+  // Log core affinity for RGB ISR
+  ESP_LOGI(TAG, "RGB init on Core %d (ISRs pinned here)", xPortGetCoreID());
 
   if (ARS_LCD_WAIT_VSYNC_ENABLED) {
     esp_lcd_rgb_panel_event_callbacks_t cbs = {
@@ -246,11 +266,15 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
     esp_err_t cb_ret =
         esp_lcd_rgb_panel_register_event_callbacks(panel_handle, &cbs, NULL);
     if (cb_ret != ESP_OK) {
-      ESP_LOGW(TAG, "VSYNC callback unsupported; wait will be disabled: %s",
+      ESP_LOGW(TAG,
+               "RGB VSYNC callback registration failed: %s (VSYNC sync will be "
+               "disabled)",
                esp_err_to_name(cb_ret));
+    } else {
+      ESP_LOGI(TAG, "RGB VSYNC callback registered successfully");
     }
   } else {
-    ESP_LOGI(TAG, "VSYNC wait disabled; skipping RGB VSYNC callback");
+    ESP_LOGI(TAG, "RGB VSYNC callback skipped (CONFIG disabled)");
   }
 
   return panel_handle;

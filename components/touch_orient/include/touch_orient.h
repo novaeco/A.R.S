@@ -2,9 +2,9 @@
 
 #include "esp_err.h"
 #include "esp_lcd_touch.h"
+#include "lvgl.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "lvgl.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,16 +17,25 @@ extern "C" {
 #define TOUCH_ORIENT_MAGIC 0x544F4348u // 'T', 'O', 'C', 'H'
 #define TOUCH_ORIENT_VERSION 2
 
+/**
+ * @brief Touch orientation configuration stored in NVS.
+ *
+ * P0-B Architecture (Single Source of Truth):
+ * - swap_xy, mirror_x, mirror_y: Applied to GT911 driver at boot
+ * - scale_x, scale_y, offset_x, offset_y: DEPRECATED - kept for NVS
+ * compatibility Calibration is now handled exclusively by touch_transform
+ * module. Do NOT use these fields for calibration; they will be ignored.
+ */
 typedef struct {
   uint32_t magic;
   uint32_t version;
-  bool swap_xy;
-  bool mirror_x;
-  bool mirror_y;
-  float scale_x;
-  float scale_y;
-  int32_t offset_x;
-  int32_t offset_y;
+  bool swap_xy;     // Applied to driver
+  bool mirror_x;    // Applied to driver
+  bool mirror_y;    // Applied to driver
+  float scale_x;    // DEPRECATED: Use touch_transform instead
+  float scale_y;    // DEPRECATED: Use touch_transform instead
+  int32_t offset_x; // DEPRECATED: Use touch_transform instead
+  int32_t offset_y; // DEPRECATED: Use touch_transform instead
   uint32_t crc32;
 } touch_orient_config_t;
 
