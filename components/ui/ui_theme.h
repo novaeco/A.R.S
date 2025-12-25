@@ -40,9 +40,28 @@
 // =============================================================================
 // Typography
 // =============================================================================
+#if defined(LV_FONT_MONTSERRAT_20) && (LV_FONT_MONTSERRAT_20)
 #define UI_FONT_BODY (&lv_font_montserrat_20)
 #define UI_FONT_TITLE (&lv_font_montserrat_20)
+#elif defined(LV_FONT_MONTSERRAT_18) && (LV_FONT_MONTSERRAT_18)
+#define UI_FONT_BODY (&lv_font_montserrat_18)
+#define UI_FONT_TITLE (&lv_font_montserrat_18)
+#elif defined(LV_FONT_MONTSERRAT_16) && (LV_FONT_MONTSERRAT_16)
+#define UI_FONT_BODY (&lv_font_montserrat_16)
+#define UI_FONT_TITLE (&lv_font_montserrat_16)
+#elif defined(LV_FONT_MONTSERRAT_14) && (LV_FONT_MONTSERRAT_14)
+// Fallback to 14 if 20/18/16 are missing
+#define UI_FONT_BODY (&lv_font_montserrat_14)
+#define UI_FONT_TITLE (&lv_font_montserrat_14)
+#else
+#define UI_FONT_BODY LV_FONT_DEFAULT
+#define UI_FONT_TITLE LV_FONT_DEFAULT
+#endif
+#if defined(LV_FONT_MONTSERRAT_14) && (LV_FONT_MONTSERRAT_14)
 #define UI_FONT_SMALL (&lv_font_montserrat_14)
+#else
+#define UI_FONT_SMALL LV_FONT_DEFAULT
+#endif
 
 // =============================================================================
 // Spacing / Radii / Elevation

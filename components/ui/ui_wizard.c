@@ -114,7 +114,7 @@ static lv_obj_t *wizard_create_result_screen(const char *title, const char *body
   lv_label_set_text_fmt(icon, "#%06x %s#", (unsigned int)accent_hex,
                         success_icon ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
   lv_label_set_recolor(icon, true);
-  lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(icon, &lv_font_montserrat_14, 0);
 
   lv_obj_t *lbl_body = lv_label_create(body_cont);
   lv_label_set_text(lbl_body, body);
