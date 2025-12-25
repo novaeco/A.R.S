@@ -83,22 +83,31 @@ static void apply_config_to_driver(bool reset_scale) {
     tf.mirror_x = s_current_record.transform.mirror_x;
     tf.mirror_y = s_current_record.transform.mirror_y;
   }
-  touch_orient_config_t orient_cfg;
-  if (touch_orient_load(&orient_cfg) != ESP_OK) {
-    touch_orient_get_defaults(&orient_cfg);
-  }
-  orient_cfg.swap_xy = tf.swap_xy;
-  orient_cfg.mirror_x = tf.mirror_x;
-  orient_cfg.mirror_y = tf.mirror_y;
-  touch_orient_save(&orient_cfg);
-  touch_orient_apply(tp, &orient_cfg);
 
-  tf.swap_xy = false;
-  tf.mirror_x = false;
-  tf.mirror_y = false;
-  touch_transform_set_active(&tf);
+  // ARS FIX (B): Unified touch transformation - touch_transform is the SINGLE
+  // source of truth. We only apply orientation flags to the driver, but do NOT
+  // save to touch_orient NVS. This prevents contradictory NVS writes between
+  // touch_orient and touch_transform namespaces.
+  //
+  // The transformation pipeline is:
+  //   1. Driver applies swap/mirror via esp_lcd_touch_set_* (live, not persisted)
+  //   2. touch_transform stores and persists the complete calibration (incl. flags)
+  //   3. On next boot, touch_transform_storage_load() restores everything
+  
+  // Apply to driver (runtime only, no NVS save)
+  esp_lcd_touch_set_swap_xy(tp, tf.swap_xy);
+  esp_lcd_touch_set_mirror_x(tp, tf.mirror_x);
+  esp_lcd_touch_set_mirror_y(tp, tf.mirror_y);
+
+  // Set the affine matrix (with swap/mirror flags cleared since driver handles them)
+  touch_transform_t tf_affine = tf;
+  tf_affine.swap_xy = false;
+  tf_affine.mirror_x = false;
+  tf_affine.mirror_y = false;
+  touch_transform_set_active(&tf_affine);
+  
   ESP_LOGI(TAG,
-           "Applied transform swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",
+           "TOUCH CONFIG FINAL: swap=%d mirX=%d mirY=%d a=[[%.4f %.4f %.2f];[%.4f %.4f %.2f]]",
            tf.swap_xy, tf.mirror_x, tf.mirror_y, (double)tf.a11, (double)tf.a12,
            (double)tf.a13, (double)tf.a21, (double)tf.a22, (double)tf.a23);
 }

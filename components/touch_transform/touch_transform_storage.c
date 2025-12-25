@@ -1,11 +1,11 @@
-#include "touch_transform.h"
+#include "esp_check.h"
 #include "esp_crc.h"
 #include "esp_log.h"
-#include "esp_check.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "touch_orient.h"
 #include "sdkconfig.h"
+#include "touch_orient.h"
+#include "touch_transform.h"
 #include <inttypes.h>
 #include <string.h>
 
@@ -44,15 +44,17 @@ static void touch_transform_set_defaults(touch_transform_record_t *rec) {
 }
 
 __attribute__((weak)) esp_err_t touch_orient_load(touch_orient_config_t *cfg) {
-  ESP_LOGW(TAG,
-           "touch_orient_load weak stub invoked (component not linked); skipping "
-           "legacy migration");
+  ESP_LOGW(
+      TAG,
+      "touch_orient_load weak stub invoked (component not linked); skipping "
+      "legacy migration");
   if (cfg)
     touch_orient_get_defaults(cfg);
   return ESP_ERR_NOT_SUPPORTED;
 }
 
-__attribute__((weak)) void touch_orient_get_defaults(touch_orient_config_t *cfg) {
+__attribute__((weak)) void
+touch_orient_get_defaults(touch_orient_config_t *cfg) {
   if (!cfg)
     return;
 
@@ -69,8 +71,8 @@ __attribute__((weak)) void touch_orient_get_defaults(touch_orient_config_t *cfg)
       .crc32 = 0,
   };
 
-  cfg->crc32 = esp_crc32_le(0, (const uint8_t *)cfg,
-                             sizeof(*cfg) - sizeof(cfg->crc32));
+  cfg->crc32 =
+      esp_crc32_le(0, (const uint8_t *)cfg, sizeof(*cfg) - sizeof(cfg->crc32));
 }
 
 static uint32_t calc_crc(const touch_transform_record_t *rec) {
@@ -104,7 +106,8 @@ static bool nvs_read_record(nvs_handle_t h, const char *key,
   }
   uint32_t crc_calc = calc_crc(out);
   if (crc_calc != out->crc32) {
-    ESP_LOGE(TAG, "Slot %s CRC mismatch calc=0x%08" PRIx32 " stored=0x%08" PRIx32,
+    ESP_LOGE(TAG,
+             "Slot %s CRC mismatch calc=0x%08" PRIx32 " stored=0x%08" PRIx32,
              key, crc_calc, out->crc32);
     return false;
   }
@@ -238,9 +241,10 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
   if (has_b && slot_b.generation >= next_gen)
     next_gen = slot_b.generation + 1;
 
-  const char *target_key = (!has_a || (has_b && slot_b.generation < slot_a.generation))
-                               ? TOUCHCAL_SLOT_B
-                               : TOUCHCAL_SLOT_A;
+  const char *target_key =
+      (!has_a || (has_b && slot_b.generation < slot_a.generation))
+          ? TOUCHCAL_SLOT_B
+          : TOUCHCAL_SLOT_A;
 
   touch_transform_record_t to_store = *rec;
   if (!to_store.transform.swap_xy && !to_store.transform.mirror_x &&
@@ -262,8 +266,8 @@ esp_err_t touch_transform_storage_save(const touch_transform_record_t *rec) {
   if (err == ESP_OK) {
     sync_touch_orient_flags(&to_store.transform);
     ESP_LOGI(TAG,
-             "Stored transform into %s gen=%" PRIu32
-             " crc=0x%08" PRIx32 " swap=%d mirX=%d mirY=%d",
+             "Stored transform into %s gen=%" PRIu32 " crc=0x%08" PRIx32
+             " swap=%d mirX=%d mirY=%d",
              target_key, to_store.generation, to_store.crc32,
              to_store.transform.swap_xy, to_store.transform.mirror_x,
              to_store.transform.mirror_y);
@@ -318,22 +322,18 @@ static void sync_touch_orient_flags(const touch_transform_t *tf) {
   if (!tf)
     return;
 
-  touch_orient_config_t orient_cfg;
-  if (touch_orient_load(&orient_cfg) != ESP_OK) {
-    touch_orient_get_defaults(&orient_cfg);
-  }
+  // ARS FIX: Remove bidirectional sync to prevent contradictory NVS writes.
+  // touch_transform is now the single source of truth for calibration.
+  // touch_orient namespace is kept READ-ONLY for legacy migration purposes.
+  //
+  // Previously this function would call touch_orient_save() which caused
+  // NVS "touch/orient" to be overwritten every time touchcal was saved,
+  // creating potential race conditions with UI calibration flows.
 
-  orient_cfg.swap_xy = tf->swap_xy;
-  orient_cfg.mirror_x = tf->mirror_x;
-  orient_cfg.mirror_y = tf->mirror_y;
-  orient_cfg.scale_x = 1.0f;
-  orient_cfg.scale_y = 1.0f;
-  orient_cfg.offset_x = 0;
-  orient_cfg.offset_y = 0;
-
-  esp_err_t err = touch_orient_save(&orient_cfg);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Failed to sync touch_orient flags: %s", esp_err_to_name(err));
-  }
+  ESP_LOGD(TAG,
+           "touch_transform active: swap=%d mirX=%d mirY=%d "
+           "a=[%.3f,%.3f,%.1f;%.3f,%.3f,%.1f]",
+           tf->swap_xy, tf->mirror_x, tf->mirror_y, (double)tf->a11,
+           (double)tf->a12, (double)tf->a13, (double)tf->a21, (double)tf->a22,
+           (double)tf->a23);
 }
-
