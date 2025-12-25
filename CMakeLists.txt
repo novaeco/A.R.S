@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
+# Force ESP32-S3 target (P0 Fix)
+set(IDF_TARGET "esp32s3")
+
 # Define project version to avoid git describe warning
 set(PROJECT_VER "1.0.0")
 
