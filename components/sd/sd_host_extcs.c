@@ -130,6 +130,7 @@ static uint8_t s_miso_high_noise_streak = 0;
 static int64_t s_miso_last_diag_us = 0;
 static sd_extcs_sequence_stats_t s_seq_stats = {0};
 static bool s_ioext_cs_locked = false;
+static bool s_cs_i2c_locked = false;
 static bool s_bus_initialized = false;
 
 #define SD_EXTCS_IOEXT_CS_MASK (1 << IO_EXTENSION_IO_4)
@@ -155,7 +156,8 @@ static esp_err_t (*s_original_do_transaction)(int slot,
 static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
                                        TickType_t timeout_ticks,
-                                       sd_extcs_r1_trace_t *trace);
+                                       sd_extcs_r1_trace_t *trace,
+                                       bool init_filter, bool allow_illegal_05);
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
@@ -219,6 +221,72 @@ static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len) {
     return 0;
   size_t n = strnlen(s, max_len);
   return n > max_len ? max_len : n;
+}
+
+static esp_err_t sd_extcs_lock_ioext_bus(void) {
+  if (!s_ioext_ready || s_ioext_handle == NULL) {
+    ESP_LOGE(TAG, "CS lock failed: IO expander not ready");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (!s_ioext_cs_locked) {
+    if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+      ESP_LOGW(TAG, "CS IOEXT mutex busy");
+      return ESP_ERR_TIMEOUT;
+    }
+    s_ioext_cs_locked = true;
+  }
+
+  if (!s_cs_i2c_locked) {
+    if (!i2c_bus_shared_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+      ESP_LOGW(TAG, "CS I2C lock timeout");
+      io_extension_unlock();
+      s_ioext_cs_locked = false;
+      return ESP_ERR_TIMEOUT;
+    }
+    s_cs_i2c_locked = true;
+  }
+
+  return ESP_OK;
+}
+
+static void sd_extcs_unlock_ioext_bus(void) {
+  if (s_cs_i2c_locked) {
+    i2c_bus_shared_unlock();
+    s_cs_i2c_locked = false;
+  }
+  if (s_ioext_cs_locked) {
+    io_extension_unlock();
+    s_ioext_cs_locked = false;
+  }
+}
+
+static esp_err_t sd_extcs_apply_cs_level_locked(bool assert_low,
+                                                const char *ctx) {
+  esp_err_t err = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
+                             : io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG,
+             "%s I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
+             ctx, esp_err_to_name(err), io_extension_get_output_shadow(),
+             i2c_bus_shared_get_error_streak());
+    if (err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_TIMEOUT ||
+        err == ESP_FAIL) {
+      esp_err_t rec = i2c_bus_shared_recover_locked();
+      if (rec != ESP_OK) {
+        ESP_LOGW(TAG, "%s: I2C recover failed: %s", ctx,
+                 esp_err_to_name(rec));
+      }
+    }
+    return err;
+  }
+
+  uint8_t shadow = io_extension_get_output_shadow();
+  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  s_last_cs_latched = s_cs_level;
+  s_last_cs_input = s_cs_level;
+
+  return ESP_OK;
 }
 
 static void sd_extcs_seq_reset(uint32_t init_khz, uint32_t target_khz) {
@@ -365,36 +433,26 @@ static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
 }
 
 // --- GPIO Helpers ---
-// Drive SD CS through the CH32V003 IO extender with a shared IOEXT mutex to
-// prevent concurrent register rewrites while CS is asserted.
 static esp_err_t sd_extcs_assert_cs(void) {
-  if (!s_ioext_ready || s_ioext_handle == NULL) {
-    ESP_LOGE(TAG, "CS LOW failed: IO expander not ready");
-    return ESP_ERR_INVALID_STATE;
-  }
-  if (!s_ioext_cs_locked) {
-    if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
-      ESP_LOGW(TAG, "CS LOW lock timeout");
-      return ESP_ERR_TIMEOUT;
-    }
-    s_ioext_cs_locked = true;
+  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
+  if (lock_ret != ESP_OK) {
+    return lock_ret;
   }
 
-  esp_err_t err = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  esp_err_t err = ESP_FAIL;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    err = sd_extcs_apply_cs_level_locked(true, "CS LOW");
+    if (err == ESP_OK) {
+      break;
+    }
+    ESP_LOGW(TAG, "CS LOW retry %d/2: %s", attempt + 1, esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+
   if (err != ESP_OK) {
-    ESP_LOGW(TAG,
-             "CS LOW I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
-             esp_err_to_name(err), io_extension_get_output_shadow(),
-             i2c_bus_shared_get_error_streak());
-    io_extension_unlock();
-    s_ioext_cs_locked = false;
+    sd_extcs_unlock_ioext_bus();
     return err;
   }
-
-  uint8_t shadow = io_extension_get_output_shadow();
-  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
-  s_last_cs_latched = s_cs_level;
-  s_last_cs_input = s_cs_level;
 
   if (SD_EXTCS_CS_I2C_SETTLE_US > 0)
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
@@ -403,31 +461,21 @@ static esp_err_t sd_extcs_assert_cs(void) {
 }
 
 static inline esp_err_t sd_extcs_deassert_cs(void) {
-  if (!s_ioext_ready || s_ioext_handle == NULL) {
-    ESP_LOGE(TAG, "CS HIGH failed: IO expander not ready");
-    return ESP_ERR_INVALID_STATE;
+  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
+  if (lock_ret != ESP_OK) {
+    return lock_ret;
   }
 
-  if (!s_ioext_cs_locked) {
-    if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
-      ESP_LOGW(TAG, "CS HIGH lock timeout");
-      return ESP_ERR_TIMEOUT;
+  esp_err_t err = ESP_FAIL;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    err = sd_extcs_apply_cs_level_locked(false, "CS HIGH");
+    if (err == ESP_OK) {
+      break;
     }
-    s_ioext_cs_locked = true;
+    ESP_LOGW(TAG, "CS HIGH retry %d/2: %s", attempt + 1,
+             esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
-
-  esp_err_t err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG,
-             "CS HIGH I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
-             esp_err_to_name(err), io_extension_get_output_shadow(),
-             i2c_bus_shared_get_error_streak());
-  }
-
-  uint8_t shadow = io_extension_get_output_shadow();
-  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
-  s_last_cs_latched = s_cs_level;
-  s_last_cs_input = s_cs_level;
 
   if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
@@ -444,10 +492,7 @@ static inline esp_err_t sd_extcs_deassert_cs(void) {
   }
   ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
 
-  if (s_ioext_cs_locked) {
-    io_extension_unlock();
-    s_ioext_cs_locked = false;
-  }
+  sd_extcs_unlock_ioext_bus();
 
   return err;
 }
@@ -536,37 +581,36 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   if (!sd_extcs_lock())
     return ESP_ERR_TIMEOUT;
 
-  if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
+  if (lock_ret != ESP_OK) {
     sd_extcs_unlock();
-    return ESP_ERR_TIMEOUT;
+    return lock_ret;
   }
 
-  esp_err_t err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  esp_err_t err = sd_extcs_apply_cs_level_locked(false, "CS probe HIGH");
   uint8_t shadow = io_extension_get_output_shadow();
   int cs_high = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "CS probe: failed to set high: %s", esp_err_to_name(err));
-    io_extension_unlock();
+    sd_extcs_unlock_ioext_bus();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  err = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  err = sd_extcs_apply_cs_level_locked(true, "CS probe LOW");
   shadow = io_extension_get_output_shadow();
   int cs_low = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "CS probe: failed to set low: %s", esp_err_to_name(err));
-    io_extension_unlock();
+    sd_extcs_unlock_ioext_bus();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  err = sd_extcs_apply_cs_level_locked(false, "CS probe RESTORE");
   shadow = io_extension_get_output_shadow();
   int cs_restore = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
-  io_extension_unlock();
+  sd_extcs_unlock_ioext_bus();
   sd_extcs_unlock();
 
   if (err != ESP_OK) {
@@ -596,19 +640,22 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
   if (!sd_extcs_lock()) {
     return ESP_ERR_TIMEOUT;
   }
-  if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
+  if (lock_ret != ESP_OK) {
     sd_extcs_unlock();
-    return ESP_ERR_TIMEOUT;
+    return lock_ret;
   }
 
   for (int i = 0; i < 10; ++i) {
-    esp_err_t clr_ret = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+    esp_err_t clr_ret =
+        sd_extcs_apply_cs_level_locked(true, "Diag-CS LOW toggle");
     if (clr_ret != ESP_OK) {
       toggle_fail++;
       ret = clr_ret;
     }
     ets_delay_us(80);
-    esp_err_t set_ret = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+    esp_err_t set_ret =
+        sd_extcs_apply_cs_level_locked(false, "Diag-CS HIGH toggle");
     if (set_ret != ESP_OK) {
       toggle_fail++;
       ret = set_ret;
@@ -617,7 +664,7 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
   }
   shadow_after = io_extension_get_output_shadow();
 
-  io_extension_unlock();
+  sd_extcs_unlock_ioext_bus();
   sd_extcs_unlock();
 
   ESP_LOGI(TAG,
@@ -705,7 +752,9 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
 
 static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
                                       size_t max_bytes,
-                                      sd_extcs_r1_trace_t *trace) {
+                                      sd_extcs_r1_trace_t *trace,
+                                      bool init_filter,
+                                      bool allow_illegal_05) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
 
@@ -716,6 +765,7 @@ static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
 
   int64_t deadline = esp_timer_get_time() + timeout_us;
   uint8_t rx = 0xFF;
+  uint8_t last_seen = 0xFF;
   bool invalid_seen = false;
   size_t sampled = 0;
 
@@ -730,6 +780,7 @@ static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
       return err;
 
     rx = t_rx.rx_data[0];
+    last_seen = rx;
     if (trace && trace->raw_len < sizeof(trace->raw)) {
       trace->raw[trace->raw_len++] = rx;
     }
@@ -740,6 +791,29 @@ static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
     if (rx & 0x80) {
       invalid_seen = true;
       continue;
+    }
+
+    if (init_filter) {
+      const bool is_idle = (rx == 0x01);
+      const bool is_ready = (rx == 0x00);
+      const bool is_illegal_cmd = (rx == 0x05);
+      const uint8_t error_bits = rx & 0x7E;
+      const int error_count = __builtin_popcount((unsigned)error_bits);
+      const bool fatal_noise =
+          (rx == 0x5F) || (error_count >= 3) || ((error_bits & 0x60) != 0);
+
+      if (fatal_noise) {
+        invalid_seen = true;
+        continue;
+      }
+
+      if (!is_idle && !is_ready &&
+          !(allow_illegal_05 && is_illegal_cmd)) {
+        if (error_bits != 0) {
+          invalid_seen = true;
+        }
+        continue;
+      }
     }
 
     if (trace)
@@ -754,7 +828,7 @@ static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
   if (trace)
     trace->invalid_seen = invalid_seen;
   if (out)
-    *out = rx;
+    *out = last_seen;
 
   if (invalid_seen)
     return ESP_ERR_INVALID_RESPONSE;
@@ -1276,7 +1350,9 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
 static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
                                        TickType_t timeout_ticks,
-                                       sd_extcs_r1_trace_t *trace) {
+                                       sd_extcs_r1_trace_t *trace,
+                                       bool init_filter,
+                                       bool allow_illegal_05) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
   if (!sd_extcs_lock())
@@ -1317,7 +1393,7 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     timeout_us = SD_EXTCS_R1_TIMEOUT_US;
 
   err = sd_extcs_wait_for_r1(&first_byte, timeout_us, SD_EXTCS_R1_WINDOW_BYTES,
-                             active_trace);
+                             active_trace, init_filter, allow_illegal_05);
   if (err != ESP_OK)
     ESP_LOGW(TAG, "CMD%u wait_r1 err=%s r1=0x%02X", cmd, esp_err_to_name(err),
              first_byte);
@@ -1458,11 +1534,13 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   s_seq_stats.cmd0_seen = true;
 
   uint8_t resp_r1 = 0xFF;
+  bool mmc_detection_mode = false;
+  int illegal_cmd55_streak = 0;
 
   // CMD8: check voltage range
   uint8_t resp_r7[5] = {0};
   err = sd_extcs_send_command(8, 0x000001AA, 0x87, resp_r7, sizeof(resp_r7),
-                              SD_EXTCS_CMD_TIMEOUT_TICKS, NULL);
+                              SD_EXTCS_CMD_TIMEOUT_TICKS, NULL, true, true);
   bool sdhc_candidate = false;
   if (err == ESP_OK && resp_r7[0] == 0x01) {
     uint32_t pattern = ((uint32_t)resp_r7[1] << 24) |
@@ -1471,6 +1549,9 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     sdhc_candidate = (pattern == 0x000001AA);
     ESP_LOGI(TAG, "CMD8 OK (pattern=0x%08" PRIX32 ")", pattern);
     s_seq_stats.cmd8_seen = true;
+  } else if (err == ESP_OK && resp_r7[0] == 0x05) {
+    mmc_detection_mode = true;
+    ESP_LOGW(TAG, "CMD8 illegal (resp=0x05). Enabling MMC/SDv1 detect mode.");
   } else {
     ESP_LOGW(TAG,
              "CMD8 failed/illegal (resp=0x%02X). Assuming SDSC or older card.",
@@ -1492,18 +1573,26 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     acmd41_attempts++;
     sd_extcs_r1_trace_t trace55 = {0};
     err = sd_extcs_send_command(55, 0x00000000, 0x65, &resp_r1, 1,
-                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace55);
+                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace55, true,
+                                mmc_detection_mode);
     bool illegal_cmd55 = (resp_r1 & 0x04) != 0;
     if (err != ESP_OK) {
       ESP_LOGW(TAG, "CMD55 failed (attempt %d): %s", acmd41_attempts,
                esp_err_to_name(err));
     }
     if (illegal_cmd55) {
-      mmc_candidate = true;
-      card_ready = false;
-      ESP_LOGW(TAG, "CMD55 illegal command detected (resp=0x%02X); trying MMC",
-               resp_r1);
-      break;
+      illegal_cmd55_streak++;
+      if (mmc_detection_mode && illegal_cmd55_streak >= 2) {
+        mmc_candidate = true;
+        card_ready = false;
+        ESP_LOGW(TAG,
+                 "CMD55 illegal command confirmed (%d streak, resp=0x%02X); "
+                 "trying MMC",
+                 illegal_cmd55_streak, resp_r1);
+        break;
+      }
+    } else {
+      illegal_cmd55_streak = 0;
     }
 
     if (err != ESP_OK) {
@@ -1513,7 +1602,8 @@ static esp_err_t sd_extcs_low_speed_init(void) {
 
     sd_extcs_r1_trace_t trace41 = {0};
     err = sd_extcs_send_command(41, acmd41_arg, 0x77, &resp_r1, 1,
-                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace41);
+                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace41, true,
+                                false);
     if (err == ESP_OK && resp_r1 == 0x00) {
       s_seq_stats.acmd41_seen = true;
       card_ready = true;
@@ -1532,7 +1622,8 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       while (esp_timer_get_time() < init_deadline) {
         cmd1_attempts++;
         err = sd_extcs_send_command(1, 0x40300000, 0x01, &resp_r1, 1,
-                                    SD_EXTCS_CMD_TIMEOUT_TICKS, NULL);
+                                    SD_EXTCS_CMD_TIMEOUT_TICKS, NULL, true,
+                                    false);
         if (err == ESP_OK && resp_r1 == 0x00) {
           mmc_ready = true;
           break;
@@ -1584,7 +1675,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       memset(resp_r3, 0, sizeof(resp_r3));
       err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3,
                                   sizeof(resp_r3), SD_EXTCS_CMD_TIMEOUT_TICKS,
-                                  NULL);
+                                  NULL, true, false);
       if (err == ESP_OK && resp_r3[0] == 0x00) {
         s_seq_stats.cmd58_seen = true;
         ocr_ok = true;
