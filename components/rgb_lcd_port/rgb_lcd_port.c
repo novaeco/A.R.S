@@ -140,6 +140,23 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
       ARS_LCD_RGB_BUFFER_NUMS, BOARD_LCD_RGB_BOUNCE_BUFFER_LINES,
       BOARD_LCD_PCLK_ACTIVE_NEG, BOARD_LCD_HSYNC_IDLE_LOW,
       BOARD_LCD_VSYNC_IDLE_LOW, BOARD_LCD_DE_IDLE_HIGH);
+  ESP_LOGI(TAG,
+           "RGB timings: HSYNC pw=%d bp=%d fp=%d | VSYNC pw=%d bp=%d fp=%d",
+           panel_config.timings.hsync_pulse_width,
+           panel_config.timings.hsync_back_porch,
+           panel_config.timings.hsync_front_porch,
+           panel_config.timings.vsync_pulse_width,
+           panel_config.timings.vsync_back_porch,
+           panel_config.timings.vsync_front_porch);
+
+#if CONFIG_SPIRAM_MODE_OCT && CONFIG_SPIRAM_SPEED_80M
+  if (panel_config.timings.pclk_hz > 22000000) {
+    ESP_LOGW(TAG,
+             "PCLK (%d Hz) > 22 MHz while using Octal PSRAM@80MHz — risk of "
+             "drift per Espressif FAQ",
+             panel_config.timings.pclk_hz);
+  }
+#endif
 
   // Memory diagnostics before allocation
   size_t fb_size_each =

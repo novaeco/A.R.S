@@ -101,6 +101,14 @@ config ARS_LCD_BOOT_TEST_PATTERN_MS
         de poursuivre le flux normal. Exécuté dans une tâche dédiée pour ne pas
         bloquer le boot.
 
+config ARS_LCD_STABILITY_SELFTEST
+    bool "Auto-test stabilité LCD (barres + repère 60s)"
+    default n
+    help
+        Affiche un motif fixe (bandes verticales + rectangle repère) via le
+        framebuffer natif du driver RGB pendant 60s pour valider l'absence de
+        drift/shift. Tâche dédiée, peut rallonger le démarrage si activé.
+
 choice ARS_DISPLAY_ROTATION
     prompt "Rotation de l'affichage (LVGL)"
     default ARS_DISPLAY_ROTATION_180
