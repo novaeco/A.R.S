@@ -23,6 +23,7 @@ static uint32_t s_i2c_error_streak = 0;
 static uint32_t s_i2c_error_total = 0;
 static uint32_t s_i2c_success_after_error = 0;
 static TickType_t s_i2c_backoff_ticks = 0;
+static int64_t s_last_recover_us = 0;
 
 // Forward declaration
 static esp_err_t i2c_bus_shared_recover_internal(void);
@@ -194,9 +195,18 @@ bool i2c_bus_shared_is_ready(void) {
 }
 
 static esp_err_t i2c_bus_shared_recover_internal(void) {
-  if (s_shared_bus) {
-    i2c_del_master_bus(s_shared_bus);
-    s_shared_bus = NULL;
+  const int64_t now = esp_timer_get_time();
+  if (s_last_recover_us != 0 &&
+      (now - s_last_recover_us) < 200000) { // 200 ms backoff
+    ESP_LOGW(TAG, "I2C recover skipped (backoff active)");
+    return ESP_ERR_INVALID_STATE;
+  }
+  s_last_recover_us = now;
+
+  if (s_shared_bus == NULL) {
+    // Bus never created yet: just initialize without attempting to tear down
+    s_initialized = false;
+    return i2c_bus_shared_init();
   }
 
   // Manual bit-bang recovery
@@ -221,10 +231,16 @@ static esp_err_t i2c_bus_shared_recover_internal(void) {
   esp_rom_delay_us(10);
   gpio_set_level(ARS_I2C_SDA, 1);
 
-  vTaskDelay(pdMS_TO_TICKS(10));
+  // Keep the pins in open-drain mode with pull-ups to remain compatible with
+  // the ESP-IDF I2C master driver configuration without destroying the bus.
+  gpio_set_direction(ARS_I2C_SDA, GPIO_MODE_INPUT_OUTPUT_OD);
+  gpio_set_direction(ARS_I2C_SCL, GPIO_MODE_INPUT_OUTPUT_OD);
+  gpio_set_pull_mode(ARS_I2C_SDA, GPIO_PULLUP_ONLY);
+  gpio_set_pull_mode(ARS_I2C_SCL, GPIO_PULLUP_ONLY);
 
-  s_initialized = false;
-  return i2c_bus_shared_init();
+  vTaskDelay(pdMS_TO_TICKS(5));
+
+  return ESP_OK;
 }
 
 esp_err_t i2c_bus_shared_recover(void) {
