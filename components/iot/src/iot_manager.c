@@ -86,30 +86,69 @@ void iot_init(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
+    esp_err_t erase_ret = nvs_flash_erase();
+    if (erase_ret != ESP_OK) {
+      ESP_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(erase_ret));
+      return;
+    }
     ret = nvs_flash_init();
   }
-  ESP_ERROR_CHECK(ret);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(ret));
+    return;
+  }
 
   // Initialize Netif and Event Loop
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  ret = esp_netif_init();
+  if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
+    return;
+  }
+
+  ret = esp_event_loop_create_default();
+  if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(TAG, "event loop init failed: %s", esp_err_to_name(ret));
+    return;
+  }
+
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-  (void)sta_netif;
+  if (sta_netif == NULL) {
+    ESP_LOGE(TAG, "Failed to create default Wi-Fi STA netif");
+    return;
+  }
 
   s_wifi_event_group = xEventGroupCreate();
+  if (!s_wifi_event_group) {
+    ESP_LOGE(TAG, "Failed to create Wi-Fi event group");
+    return;
+  }
 
   // Register Event Handlers
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+  ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            &wifi_event_handler, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Register WIFI_EVENT handler failed: %s",
+             esp_err_to_name(ret));
+    return;
+  }
+
+  ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            &wifi_event_handler, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Register IP_EVENT handler failed: %s",
+             esp_err_to_name(ret));
+    return;
+  }
 
   ESP_LOGI(TAG, "IoT Core Initialized.");
 
 #ifdef CONFIG_IOT_WIFI_ENABLED
   ESP_LOGI(TAG, "Wi-Fi Enabled in Kconfig. Starting...");
-  iot_wifi_start(CONFIG_IOT_WIFI_SSID, CONFIG_IOT_WIFI_PASSWORD);
+  esp_err_t wifi_ret =
+      iot_wifi_start(CONFIG_IOT_WIFI_SSID, CONFIG_IOT_WIFI_PASSWORD);
+  if (wifi_ret != ESP_OK) {
+    ESP_LOGE(TAG, "Wi-Fi start failed: %s", esp_err_to_name(wifi_ret));
+  }
 #else
   ESP_LOGI(TAG, "Wi-Fi Disabled in Kconfig. To enable: 'idf.py menuconfig' -> "
                 "'Project Configuration' -> 'Enable Wi-Fi'");
@@ -129,7 +168,11 @@ esp_err_t iot_wifi_start(const char *ssid, const char *password) {
   }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  esp_err_t err = esp_wifi_init(&cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
+    return err;
+  }
 
   wifi_config_t wifi_config = {0};
   strlcpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
@@ -139,11 +182,24 @@ esp_err_t iot_wifi_start(const char *ssid, const char *password) {
   wifi_config.sta.pmf_cfg.capable = true;
   wifi_config.sta.pmf_cfg.required = false;
 
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  err = esp_wifi_set_mode(WIFI_MODE_STA);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_set_mode failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_set_config failed: %s", esp_err_to_name(err));
+    return err;
+  }
 
   s_retry_num = 0;
-  ESP_ERROR_CHECK(esp_wifi_start());
+  err = esp_wifi_start();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+    return err;
+  }
   s_wifi_initialized = true;
 
   ESP_LOGI(TAG, "Wi-Fi Started. Connecting to %s...", ssid);

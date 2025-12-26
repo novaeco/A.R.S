@@ -114,8 +114,13 @@ void DEV_GPIO_PWM(uint16_t Pin, uint16_t frequency) {
       .freq_hz = frequency,                 // Set the PWM frequency
       .clk_cfg = LEDC_AUTO_CLK // Automatically select the clock source
   };
-  ESP_ERROR_CHECK(ledc_timer_config(
-      &ledc_timer)); // Check and apply the timer configuration
+  esp_err_t err =
+      ledc_timer_config(&ledc_timer); // Check and apply the timer configuration
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "PWM timer config failed (pin=%u freq=%u): %s", Pin,
+             (unsigned)frequency, esp_err_to_name(err));
+    return;
+  }
 
   // Initialize and configure the LEDC PWM channel
   ledc_channel_config_t ledc_channel = {
@@ -128,8 +133,12 @@ void DEV_GPIO_PWM(uint16_t Pin, uint16_t frequency) {
       .duty = 0,                      // Set the initial duty cycle to 0%
       .hpoint = 0                     // Set the high point of the PWM signal
   };
-  ESP_ERROR_CHECK(ledc_channel_config(
-      &ledc_channel)); // Check and apply the channel configuration
+  err = ledc_channel_config(
+      &ledc_channel); // Check and apply the channel configuration
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "PWM channel config failed (pin=%u): %s", Pin,
+             esp_err_to_name(err));
+  }
 }
 
 /**
@@ -149,9 +158,17 @@ void DEV_SET_PWM(uint8_t Value) {
     ESP_LOGI(TAG, "Duty cycle: %lu", (unsigned long)duty);
 
     // Set the new duty cycle for the PWM signal
-    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty));
+    esp_err_t err =
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "PWM duty update failed: %s", esp_err_to_name(err));
+      return;
+    }
     // Apply the updated duty cycle
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0));
+    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "PWM duty latch failed: %s", esp_err_to_name(err));
+    }
   }
 }
 
