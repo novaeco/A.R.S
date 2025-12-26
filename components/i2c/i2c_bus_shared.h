@@ -48,6 +48,12 @@ bool i2c_bus_shared_lock(TickType_t timeout_ticks);
 void i2c_bus_shared_unlock(void);
 
 /**
+ * @brief Convenience wrappers using millisecond timeouts for global I2C mutex.
+ */
+bool ars_i2c_lock(uint32_t timeout_ms);
+void ars_i2c_unlock(void);
+
+/**
  * @brief Get the shared I2C master bus handle once initialized.
  */
 i2c_master_bus_handle_t i2c_bus_shared_get_handle(void);

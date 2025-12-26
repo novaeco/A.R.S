@@ -12,10 +12,10 @@
  * |                 GPIO pins using I2C communication with IO_EXTENSION.
  *
  * P0-C Concurrency:
- * - All IOEXT operations use i2c_bus_shared_lock() for I2C bus access
+ * - All IOEXT operations use ars_i2c_lock() for I2C bus access
  * - Lock order to avoid deadlock:
  *   1. sd_extcs_lock() (if SD transaction)
- *   2. i2c_bus_shared_lock() (always for I2C access)
+ *   2. ars_i2c_lock() (always for I2C access)
  * - NEVER acquire locks in reverse order!
  * - CH32V003 does NOT support reliable I2C readback; use shadow state.
  *
@@ -45,7 +45,7 @@ static bool ioext_take_bus(TickType_t wait_ticks, const char *ctx) {
   if (backoff > 0) {
     vTaskDelay(backoff);
   }
-  if (!i2c_bus_shared_lock(wait_ticks)) {
+  if (!ars_i2c_lock(pdTICKS_TO_MS(wait_ticks))) {
     int64_t now = esp_timer_get_time();
     if ((now - s_ioext_last_busy_log_us) > 200000) { // 200 ms
       ESP_LOGW(TAG, "%s: I2C bus busy", ctx);
@@ -113,7 +113,7 @@ static esp_err_t io_extension_write_shadow_unsafe(void) {
   }
 
   ret = i2c_master_transmit(s_ioext_handle, data, 2, pdMS_TO_TICKS(100));
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   return ret;
 }
 
@@ -150,7 +150,7 @@ void IO_EXTENSION_IO_Mode(uint8_t pin) {
   }
 
   ret = i2c_master_transmit(s_ioext_handle, data, 2, pdMS_TO_TICKS(100));
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   io_extension_unlock();
 
   if (ret != ESP_OK) {
@@ -220,7 +220,7 @@ esp_err_t IO_EXTENSION_Init(void) {
     }
 
     ret = i2c_master_transmit(s_ioext_handle, data, 2, pdMS_TO_TICKS(100));
-    i2c_bus_shared_unlock();
+    ars_i2c_unlock();
 
     if (ret == ESP_OK) {
       break;
@@ -293,7 +293,7 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
     } else {
       ESP_LOGW(TAG, "Output readback failed: %s", esp_err_to_name(ret));
     }
-    i2c_bus_shared_unlock();
+    ars_i2c_unlock();
   }
 
   if (ret == ESP_OK && input_level) {
@@ -310,7 +310,7 @@ esp_err_t IO_EXTENSION_Output_With_Readback(uint8_t pin, uint8_t value,
     } else {
       ESP_LOGW(TAG, "Input sample failed: %s", esp_err_to_name(ret));
     }
-    i2c_bus_shared_unlock();
+    ars_i2c_unlock();
   }
 
 cleanup:
@@ -348,7 +348,7 @@ esp_err_t IO_EXTENSION_Read_Output_Latch(uint8_t pin, uint8_t *latched_level) {
   ret = i2c_master_transmit_receive(s_ioext_handle, &reg_addr, 1, &out_reg, 1,
                                     pdMS_TO_TICKS(100));
 
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   io_extension_unlock();
 
   if (ret == ESP_OK) {
@@ -383,7 +383,7 @@ uint8_t IO_EXTENSION_Input(uint8_t pin) {
 
   ret = i2c_master_transmit_receive(s_ioext_handle, &reg_addr, 1, &value, 1,
                                     pdMS_TO_TICKS(100));
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   io_extension_unlock();
 
   if (ret != ESP_OK) {
@@ -423,7 +423,7 @@ esp_err_t IO_EXTENSION_Pwm_Output(uint8_t Value) {
   }
 
   ret = i2c_master_transmit(s_ioext_handle, data, 2, pdMS_TO_TICKS(100));
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   io_extension_unlock();
 
   if (ret != ESP_OK) {
@@ -459,7 +459,7 @@ uint16_t IO_EXTENSION_Adc_Input(void) {
   if (ret == ESP_OK) {
     value = (data[1] << 8) | data[0];
   }
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   io_extension_unlock();
 
   if (ret != ESP_OK) {

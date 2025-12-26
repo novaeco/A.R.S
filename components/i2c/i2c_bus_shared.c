@@ -181,6 +181,12 @@ void i2c_bus_shared_unlock(void) {
   }
 }
 
+bool ars_i2c_lock(uint32_t timeout_ms) {
+  return i2c_bus_shared_lock(pdMS_TO_TICKS(timeout_ms));
+}
+
+void ars_i2c_unlock(void) { i2c_bus_shared_unlock(); }
+
 i2c_master_bus_handle_t i2c_bus_shared_get_handle(void) { return s_shared_bus; }
 
 bool i2c_bus_shared_is_ready(void) {
