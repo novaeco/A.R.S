@@ -99,6 +99,11 @@ static void sd_extcs_free_bus_if_idle(void);
 #define SD_EXTCS_CS_READBACK_RETRY_US 600
 #define SD_EXTCS_POST_DEASSERT_DUMMY_BYTES 2
 #define SD_EXTCS_CMD0_MISO_PROBE_BYTES 4
+#define SD_EXTCS_R1_WINDOW_BYTES 64
+#define SD_EXTCS_R1_TRACE_BYTES 16
+#define SD_EXTCS_R1_TIMEOUT_US                                            \
+  ((uint32_t)((SD_EXTCS_CMD_TIMEOUT_TICKS * 1000000ULL) / configTICK_RATE_HZ))
+#define SD_EXTCS_INIT_TIMEOUT_US 1500000
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -136,13 +141,21 @@ typedef struct {
   bool low_all_ff;
 } sd_extcs_miso_diag_t;
 
+typedef struct {
+  uint8_t raw[SD_EXTCS_R1_TRACE_BYTES];
+  size_t raw_len;
+  int r1_index; // 1-based index of accepted R1, -1 if none
+  bool invalid_seen;
+} sd_extcs_r1_trace_t;
+
 // Pointer to original implementation
 static esp_err_t (*s_original_do_transaction)(int slot,
                                               sdmmc_command_t *cmdinfo) = NULL;
 
 static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
-                                       TickType_t timeout_ticks);
+                                       TickType_t timeout_ticks,
+                                       sd_extcs_r1_trace_t *trace);
 static esp_err_t sd_extcs_low_speed_init(void);
 static esp_err_t sd_extcs_probe_cs_line(void);
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
@@ -690,13 +703,23 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
   return (cmd_ret == ESP_OK) ? ret : cmd_ret;
 }
 
-static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
+static esp_err_t sd_extcs_wait_for_r1(uint8_t *out, uint32_t timeout_us,
+                                      size_t max_bytes,
+                                      sd_extcs_r1_trace_t *trace) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
 
-  TickType_t start = xTaskGetTickCount();
+  if (trace) {
+    memset(trace, 0, sizeof(*trace));
+    trace->r1_index = -1;
+  }
+
+  int64_t deadline = esp_timer_get_time() + timeout_us;
   uint8_t rx = 0xFF;
-  do {
+  bool invalid_seen = false;
+  size_t sampled = 0;
+
+  while (sampled < max_bytes && esp_timer_get_time() < deadline) {
     spi_transaction_t t_rx = {
         .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
         .length = 8,
@@ -707,12 +730,35 @@ static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
       return err;
 
     rx = t_rx.rx_data[0];
-    if (rx != 0xFF)
-      break;
-  } while ((xTaskGetTickCount() - start) < timeout);
+    if (trace && trace->raw_len < sizeof(trace->raw)) {
+      trace->raw[trace->raw_len++] = rx;
+    }
+    sampled++;
 
-  *out = rx;
-  return (rx == 0xFF) ? ESP_ERR_TIMEOUT : ESP_OK;
+    if (rx == 0xFF)
+      continue;
+    if (rx & 0x80) {
+      invalid_seen = true;
+      continue;
+    }
+
+    if (trace)
+      trace->invalid_seen = invalid_seen;
+    if (trace)
+      trace->r1_index = (int)sampled;
+    if (out)
+      *out = rx;
+    return ESP_OK;
+  }
+
+  if (trace)
+    trace->invalid_seen = invalid_seen;
+  if (out)
+    *out = rx;
+
+  if (invalid_seen)
+    return ESP_ERR_INVALID_RESPONSE;
+  return ESP_ERR_TIMEOUT;
 }
 
 static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
@@ -1229,7 +1275,8 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
 
 static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
                                        uint8_t *response, size_t response_len,
-                                       TickType_t timeout_ticks) {
+                                       TickType_t timeout_ticks,
+                                       sd_extcs_r1_trace_t *trace) {
   if (!s_cleanup_handle)
     return ESP_ERR_INVALID_STATE;
   if (!sd_extcs_lock())
@@ -1260,11 +1307,20 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
     return err;
   }
 
+  sd_extcs_r1_trace_t local_trace = {0};
+  sd_extcs_r1_trace_t *active_trace = trace ? trace : &local_trace;
+
   uint8_t first_byte = 0xFF;
-  err = sd_extcs_wait_for_response(&first_byte, timeout_ticks);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CMD%u timeout waiting R1", cmd);
-  }
+  uint32_t timeout_us =
+      (uint32_t)((timeout_ticks * 1000000ULL) / configTICK_RATE_HZ);
+  if (timeout_us == 0)
+    timeout_us = SD_EXTCS_R1_TIMEOUT_US;
+
+  err = sd_extcs_wait_for_r1(&first_byte, timeout_us, SD_EXTCS_R1_WINDOW_BYTES,
+                             active_trace);
+  if (err != ESP_OK)
+    ESP_LOGW(TAG, "CMD%u wait_r1 err=%s r1=0x%02X", cmd, esp_err_to_name(err),
+             first_byte);
 
   ESP_LOGD(TAG, "CMD%u resp0=0x%02X (len=%zu)", cmd, first_byte, response_len);
 
@@ -1286,6 +1342,19 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   }
 
   sd_extcs_deassert_cs();
+
+  if (cmd == 55 || cmd == 41) {
+    char trace_hex[SD_EXTCS_R1_TRACE_BYTES * 3 + 1];
+    size_t dump_len = sd_extcs_safe_hex_dump(active_trace->raw,
+                                             active_trace->raw_len, trace_hex,
+                                             sizeof(trace_hex), true);
+    const char *dump_ptr = dump_len ? trace_hex : "<none>";
+    ESP_LOGI(TAG,
+             "CMD%u diag: r1=0x%02X idx=%d bytes=%zu/%d invalid=%d rx%s",
+             cmd, first_byte, active_trace->r1_index, active_trace->raw_len,
+             SD_EXTCS_R1_WINDOW_BYTES, active_trace->invalid_seen ? 1 : 0,
+             dump_ptr);
+  }
 
   ESP_LOGI(TAG,
            "CMD%u arg=0x%08" PRIX32 " r1=0x%02X len=%zu freq=%u kHz ret=%s",
@@ -1393,7 +1462,7 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   // CMD8: check voltage range
   uint8_t resp_r7[5] = {0};
   err = sd_extcs_send_command(8, 0x000001AA, 0x87, resp_r7, sizeof(resp_r7),
-                              SD_EXTCS_CMD_TIMEOUT_TICKS);
+                              SD_EXTCS_CMD_TIMEOUT_TICKS, NULL);
   bool sdhc_candidate = false;
   if (err == ESP_OK && resp_r7[0] == 0x01) {
     uint32_t pattern = ((uint32_t)resp_r7[1] << 24) |
@@ -1416,29 +1485,74 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   const uint32_t acmd41_arg = sdhc_candidate ? 0x40000000 : 0x00000000;
   bool card_ready = false;
   int acmd41_attempts = 0;
-  for (int i = 0; i < 200; ++i) {
-    acmd41_attempts = i + 1;
+  bool mmc_candidate = false;
+  bool mmc_ready = false;
+  int64_t init_deadline = esp_timer_get_time() + SD_EXTCS_INIT_TIMEOUT_US;
+  while (esp_timer_get_time() < init_deadline) {
+    acmd41_attempts++;
+    sd_extcs_r1_trace_t trace55 = {0};
     err = sd_extcs_send_command(55, 0x00000000, 0x65, &resp_r1, 1,
-                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace55);
+    bool illegal_cmd55 = (resp_r1 & 0x04) != 0;
     if (err != ESP_OK) {
-      ESP_LOGW(TAG, "CMD55 failed (attempt %d): %s", i + 1,
+      ESP_LOGW(TAG, "CMD55 failed (attempt %d): %s", acmd41_attempts,
                esp_err_to_name(err));
+    }
+    if (illegal_cmd55) {
+      mmc_candidate = true;
+      card_ready = false;
+      ESP_LOGW(TAG, "CMD55 illegal command detected (resp=0x%02X); trying MMC",
+               resp_r1);
+      break;
+    }
+
+    if (err != ESP_OK) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
 
+    sd_extcs_r1_trace_t trace41 = {0};
     err = sd_extcs_send_command(41, acmd41_arg, 0x77, &resp_r1, 1,
-                                SD_EXTCS_CMD_TIMEOUT_TICKS);
+                                SD_EXTCS_CMD_TIMEOUT_TICKS, &trace41);
     if (err == ESP_OK && resp_r1 == 0x00) {
       s_seq_stats.acmd41_seen = true;
       card_ready = true;
       break;
     }
 
-    ESP_LOGI(TAG, "ACMD41 attempt %d resp=0x%02X err=%s", i + 1, resp_r1,
-             esp_err_to_name(err));
+    ESP_LOGI(TAG, "ACMD41 attempt %d resp=0x%02X err=%s", acmd41_attempts,
+             resp_r1, esp_err_to_name(err));
 
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (!card_ready && mmc_candidate) {
+    if (mmc_candidate) {
+      int cmd1_attempts = 0;
+      while (esp_timer_get_time() < init_deadline) {
+        cmd1_attempts++;
+        err = sd_extcs_send_command(1, 0x40300000, 0x01, &resp_r1, 1,
+                                    SD_EXTCS_CMD_TIMEOUT_TICKS, NULL);
+        if (err == ESP_OK && resp_r1 == 0x00) {
+          mmc_ready = true;
+          break;
+        }
+        ESP_LOGI(TAG, "CMD1 attempt %d resp=0x%02X err=%s", cmd1_attempts,
+                 resp_r1, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(50));
+      }
+      if (!mmc_ready) {
+        ESP_LOGE(TAG,
+                 "CMD1 (MMC init) timeout after %d attempts. Card not ready.",
+                 cmd1_attempts);
+        s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
+        sd_extcs_seq_mark_state(s_extcs_state);
+        return ESP_ERR_TIMEOUT;
+      }
+      card_ready = true;
+      ESP_LOGI(TAG, "MMC init via CMD1 completed in %d attempt(s)",
+               cmd1_attempts);
+    }
   }
 
   if (!card_ready) {
@@ -1449,26 +1563,40 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     sd_extcs_seq_mark_state(s_extcs_state);
     return ESP_ERR_TIMEOUT;
   }
-  ESP_LOGI(TAG, "ACMD41 completed in %d attempt(s), card ready",
-           acmd41_attempts);
+
+  if (mmc_ready) {
+    ESP_LOGI(TAG, "Card initialized via MMC flow (CMD1)");
+  } else {
+    ESP_LOGI(TAG, "ACMD41 completed in %d attempt(s), card ready",
+             acmd41_attempts);
+  }
 
   // CMD58: read OCR with bounded retries for deterministic behavior
   uint8_t resp_r3[5] = {0};
   bool ocr_ok = false;
   int ocr_attempt = 0;
-  for (int attempt = 0; attempt < SD_EXTCS_CMD58_RETRIES; ++attempt) {
-    ocr_attempt = attempt + 1;
-    memset(resp_r3, 0, sizeof(resp_r3));
-    err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3, sizeof(resp_r3),
-                                SD_EXTCS_CMD_TIMEOUT_TICKS);
-    if (err == ESP_OK && resp_r3[0] == 0x00) {
-      s_seq_stats.cmd58_seen = true;
-      ocr_ok = true;
-      break;
+  bool skip_cmd58 = mmc_ready;
+  uint32_t ocr = 0;
+  bool high_capacity = false;
+  if (!skip_cmd58) {
+    for (int attempt = 0; attempt < SD_EXTCS_CMD58_RETRIES; ++attempt) {
+      ocr_attempt = attempt + 1;
+      memset(resp_r3, 0, sizeof(resp_r3));
+      err = sd_extcs_send_command(58, 0x00000000, 0xFD, resp_r3,
+                                  sizeof(resp_r3), SD_EXTCS_CMD_TIMEOUT_TICKS,
+                                  NULL);
+      if (err == ESP_OK && resp_r3[0] == 0x00) {
+        s_seq_stats.cmd58_seen = true;
+        ocr_ok = true;
+        break;
+      }
+      ESP_LOGW(TAG, "CMD58 attempt %d/%d resp=0x%02X err=%s", ocr_attempt,
+               SD_EXTCS_CMD58_RETRIES, resp_r3[0], esp_err_to_name(err));
+      vTaskDelay(pdMS_TO_TICKS(25));
     }
-    ESP_LOGW(TAG, "CMD58 attempt %d/%d resp=0x%02X err=%s", ocr_attempt,
-             SD_EXTCS_CMD58_RETRIES, resp_r3[0], esp_err_to_name(err));
-    vTaskDelay(pdMS_TO_TICKS(25));
+  } else {
+    ocr_ok = true;
+    ESP_LOGW(TAG, "CMD58 skipped (MMC path)");
   }
 
   if (!ocr_ok) {
@@ -1481,11 +1609,15 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     return err != ESP_OK ? err : ESP_ERR_TIMEOUT;
   }
 
-  uint32_t ocr = ((uint32_t)resp_r3[1] << 24) | ((uint32_t)resp_r3[2] << 16) |
-                 ((uint32_t)resp_r3[3] << 8) | resp_r3[4];
-  bool high_capacity = (ocr & (1 << 30)) != 0;
-  ESP_LOGI(TAG, "OCR=0x%08" PRIX32 " (CCS=%d) (attempt=%d)", ocr, high_capacity,
-           ocr_attempt);
+  if (!skip_cmd58) {
+    ocr = ((uint32_t)resp_r3[1] << 24) | ((uint32_t)resp_r3[2] << 16) |
+          ((uint32_t)resp_r3[3] << 8) | resp_r3[4];
+    high_capacity = (ocr & (1 << 30)) != 0;
+    ESP_LOGI(TAG, "OCR=0x%08" PRIX32 " (CCS=%d) (attempt=%d)", ocr,
+             high_capacity, ocr_attempt);
+  } else {
+    ESP_LOGI(TAG, "OCR read skipped (MMC path, CCS unknown)");
+  }
 
   return ESP_OK;
 }
