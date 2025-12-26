@@ -35,6 +35,8 @@ static adc_oneshot_unit_handle_t s_adc_handle = NULL;
 static adc_cali_handle_t s_adc_cali_handle = NULL;
 static bool s_adc_cali_enabled = false;
 static float s_bat_divider = 1.0f;
+static bool s_ioext_ready = false;
+static bool s_i2c_ready = false;
 
 static void ars_cache_writeback(void *addr, size_t size) {
   // Writeback (C2M) to ensure CPU writes (memset) reach the RAM for DMA
@@ -58,6 +60,45 @@ static void ars_cache_writeback(void *addr, size_t size) {
 
 static SemaphoreHandle_t s_lcd_init_done = NULL;
 
+esp_err_t board_i2c_init(void) {
+  if (s_i2c_ready && i2c_bus_shared_is_ready()) {
+    return ESP_OK;
+  }
+
+  i2c_bus_shared_config_t cfg = {
+      .port = ARS_I2C_PORT,
+      .sda_io_num = ARS_I2C_SDA,
+      .scl_io_num = ARS_I2C_SCL,
+      .clk_speed_hz = ARS_I2C_FREQUENCY,
+      .mutex_timeout_ticks = I2C_BUS_SHARED_DEFAULT_MUTEX_TIMEOUT_TICKS,
+  };
+  esp_err_t err = i2c_bus_shared_init_with_config(&cfg);
+  if (err == ESP_OK) {
+    s_i2c_ready = true;
+  }
+  return err;
+}
+
+esp_err_t board_ioext_init(void) {
+  ESP_RETURN_ON_FALSE(i2c_bus_shared_is_ready(), ESP_ERR_INVALID_STATE, TAG,
+                      "I2C bus not ready for IO extender");
+  esp_err_t err = IO_EXTENSION_Init();
+  if (err == ESP_OK) {
+    s_ioext_ready = true;
+  }
+  return err;
+}
+
+esp_err_t board_touch_init(void) {
+  ESP_RETURN_ON_FALSE(i2c_bus_shared_is_ready(), ESP_ERR_INVALID_STATE, TAG,
+                      "I2C bus not ready for touch");
+  if (!s_ioext_ready) {
+    ESP_LOGW(TAG, "IO extender not initialized; touch reset may fail");
+  }
+  g_tp_handle = touch_gt911_init();
+  return g_tp_handle ? ESP_OK : ESP_FAIL;
+}
+
 static void lcd_init_task(void *arg) {
   ESP_LOGI(TAG, "LCD Init Task running on Core %d", xPortGetCoreID());
   g_panel_handle = waveshare_esp32_s3_rgb_lcd_init();
@@ -70,7 +111,7 @@ static void lcd_init_task(void *arg) {
 esp_err_t app_board_init(void) {
   ESP_LOGI(TAG, "Initializing Board via BSP...");
 
-  esp_err_t err = i2c_bus_shared_init();
+  esp_err_t err = board_i2c_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "I2C init failed: %s", esp_err_to_name(err));
     return err;
@@ -94,7 +135,7 @@ esp_err_t app_board_init(void) {
 #endif
 
   bool ioext_ok = false;
-  err = IO_EXTENSION_Init(); // IO Expander (CH32V003, Waveshare)
+  err = board_ioext_init(); // IO Expander (CH32V003, Waveshare)
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "IO expander init failed: %s", esp_err_to_name(err));
   } else {
@@ -112,8 +153,8 @@ esp_err_t app_board_init(void) {
   bool orient_cfg_ready = false;
 
   if (ioext_ok) {
-    g_tp_handle = touch_gt911_init();
-    if (g_tp_handle == NULL) {
+    err = board_touch_init();
+    if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to locate GT911/I2C - Check connections!");
     } else {
       board_orientation_t orient_defaults;
