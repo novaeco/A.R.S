@@ -112,6 +112,11 @@
 // DOES NOT initialize SD card (moved to app_board_init_sd)
 esp_err_t app_board_init(void);
 
+// Explicit init steps for shared I2C chain
+esp_err_t board_i2c_init(void);
+esp_err_t board_ioext_init(void);
+esp_err_t board_touch_init(void);
+
 // Initialize SD Card (Blocking or separate task)
 esp_err_t app_board_init_sd(void);
 
