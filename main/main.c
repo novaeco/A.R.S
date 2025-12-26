@@ -22,8 +22,16 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 static const char *TAG = "main";
+
+static void log_main_stack_hwm(const char *stage) {
+  UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(NULL);
+  size_t hwm_bytes = hwm_words * sizeof(StackType_t);
+  ESP_LOGI(TAG, "[stack] %s: HWM=%lu words (%u bytes)", stage,
+           (unsigned long)hwm_words, (unsigned int)hwm_bytes);
+}
 
 void app_main(void) {
   esp_rom_printf("ARS: app_main reached (build=%s %s, idf=%s)\n", __DATE__,
@@ -37,6 +45,8 @@ void app_main(void) {
   bool lvgl_ok = false;
   bool storage_ok = false;
   bool base_net_stack_ok = false;
+
+  log_main_stack_hwm("app_main entry");
 
   // Boot order guard rails:
   // 0) Persistent storage + base network stack (NVS, esp_netif, events) so
@@ -65,6 +75,7 @@ void app_main(void) {
 
   esp_rom_printf("ARS: checkpoint 2 after NVS (idf=%s)\n", esp_get_idf_version());
   ESP_LOGI(TAG, "Checkpoint: NVS init complete, proceeding to board bring-up");
+  log_main_stack_hwm("after NVS + base stack prep");
 
   // Initialize Network Infrastructure
   esp_err_t netif_ret = esp_netif_init();
@@ -115,12 +126,14 @@ void app_main(void) {
   }
 
   if (display_ok || touch_ok) {
+    log_main_stack_hwm("before LVGL port init");
     if (lvgl_port_init(app_board_get_panel_handle(),
                        app_board_get_touch_handle()) != ESP_OK) {
       ESP_LOGE(TAG, "Failed to init LVGL Port");
     } else {
       lvgl_ok = true;
     }
+    log_main_stack_hwm("after LVGL port init");
   } else {
     ESP_LOGW(TAG, "LVGL init skipped (display or touch missing)");
   }
@@ -132,13 +145,16 @@ void app_main(void) {
 
   esp_rom_printf("ARS: checkpoint 3 before LVGL/UI dispatch\n");
   ESP_LOGI(TAG, "Checkpoint: LVGL/UI dispatch about to run");
+  log_main_stack_hwm("before UI dispatch");
 
   // 4. Initialize SD Card (Async-like, after UI is up)
   // This ensures a missing SD card doesn't block the UI from showing
   // ARS: Swapped to dedicated Waveshare component fix
   sd_state_t sd_state = SD_STATE_UNINITIALIZED;
+  log_main_stack_hwm("before SD init");
   esp_err_t sd_ret = sd_card_init();
   sd_state = sd_get_state();
+  log_main_stack_hwm("after SD init");
   if (sd_ret != ESP_OK) {
     ESP_LOGW(TAG, "SD Card mounting failed or card not present (state=%s)",
              sd_state_str(sd_state));
