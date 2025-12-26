@@ -16,7 +16,9 @@
 #include "sd.h"
 #include "ui_wizard.h"
 #include <esp_err.h>
+#include <esp_idf_version.h>
 #include <esp_log.h>
+#include <esp_rom_printf.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdbool.h>
@@ -24,6 +26,10 @@
 static const char *TAG = "main";
 
 void app_main(void) {
+  esp_rom_printf("ARS: app_main reached (build=%s %s, idf=%s)\n", __DATE__,
+                 __TIME__, esp_get_idf_version());
+  ESP_LOGI(TAG, "app_main reached (build=%s %s, idf=%s)", __DATE__, __TIME__,
+           esp_get_idf_version());
   ESP_LOGI(TAG, "Starting Reptiles Assistant");
 
   bool display_ok = false;
@@ -56,6 +62,9 @@ void app_main(void) {
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "NVS init failed: %s (continuing without NVS)", esp_err_to_name(ret));
   }
+
+  esp_rom_printf("ARS: checkpoint 2 after NVS (idf=%s)\n", esp_get_idf_version());
+  ESP_LOGI(TAG, "Checkpoint: NVS init complete, proceeding to board bring-up");
 
   // Initialize Network Infrastructure
   esp_err_t netif_ret = esp_netif_init();
@@ -120,6 +129,9 @@ void app_main(void) {
   // 3. UI & Application Flow
   // Moved to LVGL task in lvgl_port.c to prevent WDT on Main Task
   ESP_LOGI(TAG, "UI creation delegated to LVGL task");
+
+  esp_rom_printf("ARS: checkpoint 3 before LVGL/UI dispatch\n");
+  ESP_LOGI(TAG, "Checkpoint: LVGL/UI dispatch about to run");
 
   // 4. Initialize SD Card (Async-like, after UI is up)
   // This ensures a missing SD card doesn't block the UI from showing
