@@ -20,6 +20,7 @@
 #include <string.h>
 
 static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
+static void sd_extcs_free_bus_if_idle(void);
 
 #ifndef SD_EXTCS_CS_I2C_SETTLE_US
 #define SD_EXTCS_CS_I2C_SETTLE_US SD_EXTCS_CS_ASSERT_SETTLE_US
@@ -124,6 +125,7 @@ static uint8_t s_miso_high_noise_streak = 0;
 static int64_t s_miso_last_diag_us = 0;
 static sd_extcs_sequence_stats_t s_seq_stats = {0};
 static bool s_ioext_cs_locked = false;
+static bool s_bus_initialized = false;
 
 #define SD_EXTCS_IOEXT_CS_MASK (1 << IO_EXTENSION_IO_4)
 
@@ -460,6 +462,10 @@ static void sd_extcs_send_dummy_clocks(size_t byte_count) {
 }
 
 static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz) {
+  if (!s_bus_initialized) {
+    ESP_LOGE(TAG, "Cleanup device add failed: SPI bus not initialized");
+    return ESP_ERR_INVALID_STATE;
+  }
   uint32_t effective_khz = freq_khz ? freq_khz : SD_EXTCS_INIT_FREQ_KHZ;
   if (s_cleanup_handle) {
     spi_bus_remove_device(s_cleanup_handle);
@@ -486,6 +492,17 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz) {
              effective_khz, esp_err_to_name(ret));
   }
   return ret;
+}
+
+static void sd_extcs_free_bus_if_idle(void) {
+  if (s_cleanup_handle) {
+    spi_bus_remove_device(s_cleanup_handle);
+    s_cleanup_handle = NULL;
+  }
+  if (s_bus_initialized) {
+    spi_bus_free(s_host_id);
+    s_bus_initialized = false;
+  }
 }
 
 static esp_err_t sd_extcs_probe_cs_line(void) {
@@ -1436,7 +1453,14 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
            s_host_id, SDSPI_DEFAULT_DMA, init_freq_khz);
 
   ret = spi_bus_initialize(s_host_id, &bus_cfg, SDSPI_DEFAULT_DMA);
-  if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+  if (ret == ESP_OK) {
+    s_bus_initialized = true;
+  } else if (ret == ESP_ERR_INVALID_STATE) {
+    if (!s_bus_initialized) {
+      s_bus_initialized = true; // already initialized by previous attempt
+    }
+    ESP_LOGW(TAG, "SPI bus already initialized, reusing existing bus");
+  } else {
     ESP_LOGE(TAG, "SPI Bus Init Failed: %s", esp_err_to_name(ret));
     return ret;
   }
@@ -1518,6 +1542,7 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     if (s_extcs_state == SD_EXTCS_STATE_IDLE_READY)
       s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
     sd_extcs_seq_mark_state(s_extcs_state);
+    sd_extcs_free_bus_if_idle();
   }
 
   sd_extcs_seq_mark_state(s_extcs_state);
@@ -1534,15 +1559,8 @@ esp_err_t sd_extcs_unmount_card(const char *mount_point) {
     s_mounted = false;
     s_cs_level = -1;
 
-    // Remove cleanup device
-    if (s_cleanup_handle) {
-      spi_bus_remove_device(s_cleanup_handle);
-      s_cleanup_handle = NULL;
-    }
-
-    // Note: We do NOT free the SPI bus because other devices (LCD?) might
-    // technically use it But here SPI2_HOST is exclusively for SD in most
-    // setups. If we want to free: spi_bus_free(s_host_id);
+    // Remove cleanup device and free bus for deterministic re-mount attempts
+    sd_extcs_free_bus_if_idle();
   }
   return ret;
 }

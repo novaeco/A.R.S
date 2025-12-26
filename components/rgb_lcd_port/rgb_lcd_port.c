@@ -84,13 +84,14 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
                   ARS_LCD_PIXEL_CLOCK_HZ, // Pixel clock (Configured in Kconfig)
               .h_res = ARS_LCD_H_RES,     // 1024
               .v_res = ARS_LCD_V_RES,     // 600
-              // ST7262 Wavershare 7B Timings (1024x600)
-              .hsync_pulse_width = 20,
-              .hsync_back_porch = 140,
-              .hsync_front_porch = 160,
-              .vsync_pulse_width = 3,
-              .vsync_back_porch = 12,
-              .vsync_front_porch = 12,
+              // ST7262 datasheet (sec. 7.3.4, typ): pulse=4, back=8, front=8
+              // Applied to 1024x600 -> Htot=1044, Vtot=620
+              .hsync_pulse_width = 4,
+              .hsync_back_porch = 8,
+              .hsync_front_porch = 8,
+              .vsync_pulse_width = 4,
+              .vsync_back_porch = 8,
+              .vsync_front_porch = 8,
               .flags =
                   {
                       .pclk_active_neg = BOARD_LCD_PCLK_ACTIVE_NEG,
@@ -143,6 +144,22 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
       ARS_LCD_RGB_BUFFER_NUMS, BOARD_LCD_RGB_BOUNCE_BUFFER_LINES,
       BOARD_LCD_PCLK_ACTIVE_NEG, BOARD_LCD_HSYNC_IDLE_LOW,
       BOARD_LCD_VSYNC_IDLE_LOW, BOARD_LCD_DE_IDLE_HIGH);
+  const uint32_t h_total = panel_config.timings.h_res +
+                           panel_config.timings.hsync_front_porch +
+                           panel_config.timings.hsync_back_porch +
+                           panel_config.timings.hsync_pulse_width;
+  const uint32_t v_total = panel_config.timings.v_res +
+                           panel_config.timings.vsync_front_porch +
+                           panel_config.timings.vsync_back_porch +
+                           panel_config.timings.vsync_pulse_width;
+  uint32_t expected_fps = 0;
+  if (h_total && v_total) {
+    expected_fps = panel_config.timings.pclk_hz / (h_total * v_total);
+  }
+  ESP_LOGI(TAG,
+           "RGB timing totals: h_total=%u v_total=%u -> est_fps=%u "
+           "(ST7262 typ porch/pulse 8/8/4, datasheet 7.3.4)",
+           (unsigned)h_total, (unsigned)v_total, (unsigned)expected_fps);
 
   // Memory diagnostics before allocation
   size_t fb_size_each =
