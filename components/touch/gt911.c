@@ -82,6 +82,7 @@ static int64_t s_next_ioext_reset_after_us = 0;
 static int64_t s_gt911_next_recover_us = 0;
 static uint32_t s_gt911_recover_backoff_ms = 50;
 static int s_gt911_int_gpio = -1;
+static bool s_gt911_paused = false;
 static uint16_t s_gt911_last_raw_x = 0;
 static uint16_t s_gt911_last_raw_y = 0;
 static uint16_t s_gt911_last_invalid_x = 0;
@@ -200,6 +201,20 @@ static inline void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
   (void)status;
   (void)buf;
   (void)len;
+}
+
+void gt911_set_paused(bool paused) {
+  portENTER_CRITICAL(&s_gt911_error_lock);
+  s_gt911_paused = paused;
+  portEXIT_CRITICAL(&s_gt911_error_lock);
+
+  if (s_gt911_int_gpio >= 0) {
+    if (paused) {
+      gpio_intr_disable(s_gt911_int_gpio);
+    } else {
+      gt911_enable_irq_guarded();
+    }
+  }
 }
 #endif
 
@@ -1716,6 +1731,14 @@ static void gt911_irq_task(void *arg) {
 
   while (1) {
     TickType_t wait_ticks = portMAX_DELAY;
+
+    if (s_gt911_paused) {
+      if (s_gt911_int_gpio >= 0) {
+        gpio_intr_disable(s_gt911_int_gpio);
+      }
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
 
     // Use polling fallback if enabled or required
     if (s_poll_mode || GT911_POLL_INTERVAL_MS_FALLBACK > 0) {

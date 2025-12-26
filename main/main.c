@@ -12,6 +12,7 @@
 #include "iot_manager.h"
 #include "lvgl_port.h" // For lock/unlock
 #include "ui.h"
+#include "touch.h"
 // #include "ui_calibration.h"
 #include "sd.h"
 #include "ui_wizard.h"
@@ -155,7 +156,13 @@ void app_main(void) {
   // ARS: Swapped to dedicated Waveshare component fix
   sd_state_t sd_state = SD_STATE_UNINITIALIZED;
   log_main_stack_hwm("before SD init");
+#if CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
+  touch_pause_for_sd_init(true);
+#endif
   esp_err_t sd_ret = sd_card_init();
+#if CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
+  touch_pause_for_sd_init(false);
+#endif
   sd_state = sd_get_state();
   log_main_stack_hwm("after SD init");
   if (sd_ret != ESP_OK) {

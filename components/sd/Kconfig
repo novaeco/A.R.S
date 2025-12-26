@@ -117,6 +117,24 @@ menu "SD Card Configuration"
             Number of 0xFF bytes clocked while CS is forced low in the MISO
             stuck debug sampler.
 
+    config ARS_SD_EXTCS_CS_READBACK
+        bool "Read back IO extender latch after CS writes"
+        default n
+        help
+            When enabled, the driver re-reads the IO extender output latch
+            after asserting/deasserting CS to confirm the level. Adds a small
+            I2C transaction per CS toggle; keep disabled in production unless
+            debugging CS reliability.
+
+    config ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
+        bool "Pause GT911 touch polling during SD init (ExtCS debug aid)"
+        default n
+        help
+            When enabled, the GT911 touch task is temporarily paused around the
+            SD init/mount sequence to eliminate I2C contention while toggling
+            the IO expander for SD CS. Use for diagnostics; disable for normal
+            operation.
+
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"
         default n

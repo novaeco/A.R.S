@@ -135,6 +135,13 @@ void gt911_get_stats(gt911_stats_t *stats);
 void gt911_reset_stats(void);
 
 /**
+ * @brief Pause/resume GT911 IRQ/polling to éviter la contention I2C (ex: init SD).
+ *
+ * @param paused true pour suspendre, false pour reprendre.
+ */
+void gt911_set_paused(bool paused);
+
+/**
  * @brief Dump GT911 configuration registers for debugging
  *
  * This function reads and logs the key GT911 configuration registers

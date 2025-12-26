@@ -59,3 +59,11 @@ void ars_touch_debug_feed(int16_t raw_x, int16_t raw_y, int16_t x, int16_t y,
                           bool pressed);
 esp_err_t ars_touch_debug_get(ars_touch_debug_info_t *info);
 void ars_touch_debug_reset(void);
+
+/**
+ * @brief Pause/resume GT911 processing to éviter la contention I2C pendant
+ *        l'init SD (ext-CS).
+ *
+ * @param pause true pour suspendre la tâche touch, false pour reprendre.
+ */
+void touch_pause_for_sd_init(bool pause);
