@@ -30,6 +30,7 @@ void app_main(void) {
   bool touch_ok = false;
   bool lvgl_ok = false;
   bool storage_ok = false;
+  bool base_net_stack_ok = false;
 
   // Boot order guard rails:
   // 0) Persistent storage + base network stack (NVS, esp_netif, events) so
@@ -45,19 +46,36 @@ void app_main(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
+    ESP_LOGW(TAG, "NVS init needs erase: %s", esp_err_to_name(ret));
+    esp_err_t erase_ret = nvs_flash_erase();
+    if (erase_ret != ESP_OK) {
+      ESP_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(erase_ret));
+    }
     ret = nvs_flash_init();
   }
-  ESP_ERROR_CHECK(ret);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "NVS init failed: %s (continuing without NVS)", esp_err_to_name(ret));
+  }
 
   // Initialize Network Infrastructure
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_err_t netif_ret = esp_netif_init();
+  if (netif_ret != ESP_OK && netif_ret != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(netif_ret));
+  }
+  esp_err_t loop_ret = esp_event_loop_create_default();
+  if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(loop_ret));
+  }
+  base_net_stack_ok = (ret == ESP_OK) &&
+                      (netif_ret == ESP_OK || netif_ret == ESP_ERR_INVALID_STATE) &&
+                      (loop_ret == ESP_OK || loop_ret == ESP_ERR_INVALID_STATE);
+
   // Create default STA netif and check for success
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   if (sta_netif == NULL) {
     ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
-    return;
+  } else {
+    base_net_stack_ok = base_net_stack_ok && true;
   }
 
   // 1. Filesystem
@@ -120,16 +138,21 @@ void app_main(void) {
   // net_init() is safe to call, it will auto-connect if credentials exist in
   // NVS from a previous setup or manual config.
   vTaskDelay(pdMS_TO_TICKS(10)); // Yield to allow IDLE task to reset watchdog
-  net_init();
+  const char *wifi_state = "net_stack_unavailable";
+  if (base_net_stack_ok) {
+    net_init();
 
-  vTaskDelay(pdMS_TO_TICKS(10)); // Yield after net_init for stability
-  net_status_t net_status = net_get_status();
-  bool wifi_provisioned = net_manager_is_provisioned();
-  bool wifi_connected = net_status.is_connected;
-  const char *wifi_state = wifi_provisioned
-                               ? (wifi_connected ? "provisioned_connected"
-                                                 : "provisioned_not_connected")
-                               : "not_provisioned";
+    vTaskDelay(pdMS_TO_TICKS(10)); // Yield after net_init for stability
+    net_status_t net_status = net_get_status();
+    bool wifi_provisioned = net_manager_is_provisioned();
+    bool wifi_connected = net_status.is_connected;
+    wifi_state = wifi_provisioned
+                     ? (wifi_connected ? "provisioned_connected"
+                                       : "provisioned_not_connected")
+                     : "not_provisioned";
+  } else {
+    ESP_LOGW(TAG, "Network init skipped: base stack unavailable");
+  }
 
   ESP_LOGI(TAG,
            "BOOT-SUMMARY storage=%s display=%s touch=%s lvgl=%s sd=%s wifi=%s",
