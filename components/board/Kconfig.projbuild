@@ -1,0 +1,118 @@
+menu "BSP / Board"
+
+config ARS_LCD_PCLK_HZ
+    int "Fréquence pixel clock (Hz)"
+    default 26000000
+    help
+        Fréquence du pclk pour le panneau RGB 1024x600. Valeur recommandée
+        pour 60 Hz avec timings 1344x635 : ~51.2 MHz. Ajustable pour A/B test.
+    
+    config ARS_LCD_BOUNCE_BUFFER_LINES
+        int "Lignes du bounce buffer RGB"
+        default 4
+        range 2 100
+        help
+            Taille du bounce buffer en nombre de lignes. Augmenter réduit les risques
+            d'underrun PSRAM (artefacts) mais consomme de la SRAM interne.
+            Recommandé > 2 pour PCLK > 40MHz. 10 lignes * 1024 * 2B = 20KB SRAM.
+
+config ARS_LCD_PCLK_ACTIVE_NEG
+    bool "PCLK actif sur front descendant"
+    default y
+    help
+        Active l'horloge pixel sur front descendant (recommandé ST7262). Permet
+        d'inverser pour diagnostic.
+
+config ARS_LCD_HSYNC_IDLE_LOW
+    bool "HSYNC idle bas"
+    default n
+    help
+        Niveau idle pour HSYNC. Off = idle haut (comportement actuel).
+
+config ARS_LCD_VSYNC_IDLE_LOW
+    bool "VSYNC idle bas"
+    default n
+    help
+        Niveau idle pour VSYNC. Off = idle haut (comportement actuel).
+
+config ARS_LCD_DE_IDLE_HIGH
+    bool "DE idle haut"
+    default n
+    help
+        Niveau idle pour DE. Off = idle bas (comportement actuel).
+
+config ARS_BACKLIGHT_USE_IO_EXPANDER
+    bool "Piloter le rétroéclairage via l'IO expander"
+    default y
+    help
+        Utiliser l'IO expander CH32V003 (Waveshare) pour activer le
+        rétroéclairage (IO_2). Désactiver pour forcer l'usage d'un GPIO direct.
+
+config ARS_BACKLIGHT_GPIO
+    int "GPIO de secours pour le rétroéclairage (LEDC)"
+    default -1
+    range -1 48
+    help
+        GPIO optionnel pour piloter le rétroéclairage via LEDC. Laisser -1 si
+        aucun GPIO direct n'est câblé.
+
+config ARS_BAT_ADC_UNIT
+    int "ADC unit pour la batterie"
+    default 1
+    range 1 2
+
+config ARS_BAT_ADC_CHANNEL
+    int "Canal ADC pour la batterie"
+    default 7
+    range 0 9
+
+config ARS_BAT_DIV_NUM
+    int "Diviseur de tension - numérateur"
+    default 2
+
+config ARS_BAT_DIV_DEN
+    int "Diviseur de tension - dénominateur"
+    default 1
+    help
+        Rapport du pont diviseur utilisé en entrée de l'ADC (num/den).
+
+config ARS_SKIP_TEST_PATTERN
+    bool "Ignorer le motif de test LCD au boot"
+    default n
+    help
+        Désactive l'affichage systématique du motif de test (barres RGBWB)
+        pour éviter une allocation PSRAM importante et accélérer le démarrage.
+
+config ARS_LCD_BOOT_TEST_PATTERN
+    bool "Afficher le motif de test LCD au boot (~2s)"
+    default n
+    help
+        Force l'affichage d'un motif de test (barres RGBWB) pendant environ
+        2 secondes au démarrage, même si LVGL n'est pas initialisé. Ignoré si
+        ARS_SKIP_TEST_PATTERN est actif.
+
+config ARS_LCD_BOOT_TEST_PATTERN_MS
+    int "Durée du motif de test (ms)"
+    depends on ARS_LCD_BOOT_TEST_PATTERN
+    range 200 5000
+    default 2000
+    help
+        Durée indicative pendant laquelle le motif de test reste affiché avant
+        de poursuivre le flux normal. Exécuté dans une tâche dédiée pour ne pas
+        bloquer le boot.
+
+choice ARS_DISPLAY_ROTATION
+    prompt "Rotation de l'affichage (LVGL)"
+    default ARS_DISPLAY_ROTATION_180
+
+    config ARS_DISPLAY_ROTATION_0
+        bool "0° (origine en haut/gauche)"
+    config ARS_DISPLAY_ROTATION_90
+        bool "90°"
+    config ARS_DISPLAY_ROTATION_180
+        bool "180°"
+    config ARS_DISPLAY_ROTATION_270
+        bool "270°"
+endchoice
+
+endmenu
