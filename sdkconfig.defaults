@@ -26,11 +26,12 @@ CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE=y
 CONFIG_ARS_LCD_WAIT_VSYNC=y
 CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS=80
 
-# --- LCD RGB Panel (P0-A FIX: PCLK ≤22MHz for Octal PSRAM@80MHz) ---
-# Source: FAQ Espressif - max PCLK ~22MHz with Octal PSRAM at 80MHz
-CONFIG_ARS_LCD_PCLK_HZ=22000000
-# Bounce buffer: 10 lines minimum for stability (10*1024*2 = ~20KB SRAM)
-CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES=10
+# --- LCD RGB Panel (ST7262 RGB 1024x600) ---
+# Datasheet ST7262 (7.3.4 Parallel 24-bit RGB Timing): typ H/V porch=8/8, pulse=4.
+# With Htotal=1044 and Vtotal=620, a 40 MHz PCLK yields ~61.7 Hz refresh.
+CONFIG_ARS_LCD_PCLK_HZ=40000000
+# Bounce buffer: 20 lines to keep DMA bursts stable at higher PCLK.
+CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES=20
 CONFIG_ARS_LCD_PCLK_ACTIVE_NEG=y
 
 # --- LVGL Task ---
