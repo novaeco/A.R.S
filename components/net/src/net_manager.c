@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "rgb_lcd_port.h"
 #include "sdkconfig.h"
 #include "web_server.h"
 #include <inttypes.h>
@@ -56,6 +57,28 @@ static void schedule_wifi_retry(uint32_t delay_ms);
 static esp_err_t start_wifi_station_if_provisioned(void);
 static void wifi_provisioning_task(void *arg);
 ESP_EVENT_DEFINE_BASE(NET_MANAGER_EVENT);
+
+static inline void net_display_guard_enter(const char *reason) {
+  rgb_lcd_port_pclk_guard_enter(reason, NULL);
+}
+
+static inline void net_display_guard_exit(void) {
+  rgb_lcd_port_pclk_guard_exit();
+}
+
+static esp_err_t net_guarded_wifi_start(const char *reason) {
+  net_display_guard_enter(reason);
+  esp_err_t err = esp_wifi_start();
+  net_display_guard_exit();
+  return err;
+}
+
+static esp_err_t net_guarded_wifi_connect(const char *reason) {
+  net_display_guard_enter(reason);
+  esp_err_t err = esp_wifi_connect();
+  net_display_guard_exit();
+  return err;
+}
 
 static wifi_prov_state_t disc_reason_to_state(wifi_err_reason_t reason,
                                               wifi_err_reason_t *out_reason) {
@@ -126,7 +149,7 @@ apply_sta_config_with_recovery(const wifi_config_t *wifi_config_in) {
       return err;
     }
 
-    err = esp_wifi_start();
+    err = net_guarded_wifi_start("wifi_recover_start");
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to start Wi-Fi during recovery: %s",
                esp_err_to_name(err));
@@ -149,7 +172,7 @@ apply_sta_config_with_recovery(const wifi_config_t *wifi_config_in) {
 
 static void wifi_retry_execute(void) {
   ESP_LOGI(TAG, "Wi-Fi reconnect attempt (backoff %ums)", s_wifi_backoff_ms);
-  esp_err_t err = esp_wifi_connect();
+  esp_err_t err = net_guarded_wifi_connect("wifi_retry");
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "esp_wifi_connect failed during retry: %s",
              esp_err_to_name(err));
@@ -271,7 +294,7 @@ static esp_err_t start_wifi_station_if_provisioned(void) {
     return ESP_OK;
   }
 
-  esp_err_t err = esp_wifi_start();
+  esp_err_t err = net_guarded_wifi_start("wifi_start");
   if (err == ESP_ERR_WIFI_CONN) {
     s_wifi_started = true;
     return ESP_OK; // Already started
@@ -360,7 +383,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
     net_manager_update_state(WIFI_PROV_STATE_CONNECTING,
                              WIFI_REASON_UNSPECIFIED);
-    esp_err_t err = esp_wifi_connect();
+    esp_err_t err = net_guarded_wifi_connect("wifi_sta_start");
     if (err != ESP_OK) {
       ESP_LOGW(TAG, "esp_wifi_connect failed on STA start: %s",
                esp_err_to_name(err));
@@ -528,7 +551,7 @@ esp_err_t net_manager_set_credentials(const char *ssid, const char *password,
         schedule_wifi_retry(10);
       }
     } else if (start_err == ESP_OK) {
-      esp_err_t connect_err = esp_wifi_connect();
+      esp_err_t connect_err = net_guarded_wifi_connect("wifi_manual_connect");
       if (connect_err != ESP_OK) {
         ESP_LOGW(TAG, "esp_wifi_connect (manual) failed: %s",
                  esp_err_to_name(connect_err));

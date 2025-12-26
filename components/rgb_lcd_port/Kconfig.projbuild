@@ -1,0 +1,30 @@
+menu "RGB LCD Guard"
+
+    config ARS_LCD_PCLK_GUARD_ENABLE
+        bool "Activer la baisse temporaire du PCLK pendant les opérations sensibles"
+        default n
+        help
+            Ajoute un garde facultatif autour des phases Wi‑Fi/flash/NVS qui
+            réduit le pixel clock via esp_lcd_rgb_panel_set_pclk(), attend une
+            frame, puis restaure la fréquence nominale. Utile pour limiter le
+            drift observé pendant les accès radio/flash (voir ESP FAQ LCD).
+
+    config ARS_LCD_PCLK_GUARD_SAFE_HZ
+        int "Fréquence PCLK réduite (Hz)"
+        depends on ARS_LCD_PCLK_GUARD_ENABLE
+        default 12000000
+        range 1000000 40000000
+        help
+            Fréquence PCLK appliquée durant le garde. Doit rester compatible
+            avec les timings du panneau (valeur recommandée: ~12 MHz pour 1024x600).
+
+    config ARS_LCD_PCLK_GUARD_SETTLE_MS
+        int "Temps de stabilisation PCLK (ms)"
+        depends on ARS_LCD_PCLK_GUARD_ENABLE
+        default 50
+        range 1 200
+        help
+            Délai minimal (en ms) laissé après chaque changement de fréquence
+            avant de poursuivre l'opération critique (≈1 frame à ~20–30 Hz).
+
+endmenu

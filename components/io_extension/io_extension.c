@@ -38,6 +38,10 @@ static int64_t s_ioext_next_recover_us = 0;
 static int64_t s_ioext_last_busy_log_us = 0;
 
 static bool ioext_take_bus(TickType_t wait_ticks, const char *ctx) {
+  TickType_t backoff = i2c_bus_shared_backoff_ticks();
+  if (backoff > 0) {
+    vTaskDelay(backoff);
+  }
   if (!i2c_bus_shared_lock(wait_ticks)) {
     int64_t now = esp_timer_get_time();
     if ((now - s_ioext_last_busy_log_us) > 200000) { // 200 ms
@@ -52,6 +56,7 @@ static bool ioext_take_bus(TickType_t wait_ticks, const char *ctx) {
 static void ioext_on_error(const char *ctx, esp_err_t err) {
   s_ioext_error_streak++;
   int64_t now = esp_timer_get_time();
+  i2c_bus_shared_note_error(ctx, err);
   if (s_ioext_error_streak >= 3 && s_ioext_error_streak <= 6 &&
       now >= s_ioext_next_recover_us) {
     ESP_LOGW(TAG,
@@ -67,7 +72,10 @@ static void ioext_on_error(const char *ctx, esp_err_t err) {
   }
 }
 
-static void ioext_on_success(void) { s_ioext_error_streak = 0; }
+static void ioext_on_success(void) {
+  s_ioext_error_streak = 0;
+  i2c_bus_shared_note_success();
+}
 
 /**
  * @brief Set the IO mode for the specified pins.

@@ -44,6 +44,9 @@ static esp_lcd_panel_handle_t panel_handle =
 static void *s_framebuffers[ARS_LCD_RGB_BUFFER_NUMS] = {0};
 static size_t s_framebuffer_count = 0;
 static size_t s_stride_bytes = 0;
+static SemaphoreHandle_t s_pclk_guard_lock = NULL;
+static uint32_t s_pclk_guard_depth = 0;
+static uint32_t s_pclk_current_hz = ARS_LCD_PIXEL_CLOCK_HZ;
 
 // Frame buffer complete event callback function
 IRAM_ATTR static bool
@@ -243,6 +246,15 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
            panel_handle, ARS_LCD_RGB_BUFFER_NUMS,
            (int)(ARS_LCD_H_RES * (ARS_LCD_BIT_PER_PIXEL / 8)),
            bounce_lines);
+  s_pclk_current_hz = panel_config.timings.pclk_hz;
+#if CONFIG_ARS_LCD_PCLK_GUARD_ENABLE
+  ESP_LOGI(TAG,
+           "PCLK guard: ENABLED base=%u Hz safe=%u Hz settle=%d ms (esp_lcd_rgb_panel_set_pclk)",
+           s_pclk_current_hz, CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ,
+           CONFIG_ARS_LCD_PCLK_GUARD_SETTLE_MS);
+#else
+  ESP_LOGI(TAG, "PCLK guard: disabled (CONFIG_ARS_LCD_PCLK_GUARD_ENABLE=n)");
+#endif
 
   // P0-A Diagnostic: Log critical cache configuration for bounce buffer stability
 #ifdef CONFIG_ESP32S3_DATA_CACHE_LINE_64B
@@ -312,6 +324,96 @@ void waveshare_rgb_lcd_bl_on() {
  */
 void waveshare_rgb_lcd_bl_off() {
   IO_EXTENSION_Output(IO_EXTENSION_IO_2, 0); // Backlight OFF configuration
+}
+
+static SemaphoreHandle_t rgb_lcd_pclk_guard_lock_get(void) {
+  if (!s_pclk_guard_lock) {
+    s_pclk_guard_lock = xSemaphoreCreateMutex();
+  }
+  return s_pclk_guard_lock;
+}
+
+esp_err_t rgb_lcd_port_pclk_guard_enter(const char *reason,
+                                        uint32_t *applied_hz) {
+#if CONFIG_ARS_LCD_PCLK_GUARD_ENABLE
+  (void)reason;
+  if (!panel_handle) {
+    return ESP_OK;
+  }
+
+  SemaphoreHandle_t lock = rgb_lcd_pclk_guard_lock_get();
+  if (!lock) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  if (xSemaphoreTake(lock, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t ret = ESP_OK;
+  if (s_pclk_guard_depth++ == 0 &&
+      CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ > 0 &&
+      CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ < s_pclk_current_hz) {
+    ret = esp_lcd_rgb_panel_set_pclk(panel_handle,
+                                     CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ);
+    if (ret == ESP_OK) {
+      s_pclk_current_hz = CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ;
+      if (applied_hz) {
+        *applied_hz = s_pclk_current_hz;
+      }
+      vTaskDelay(pdMS_TO_TICKS(CONFIG_ARS_LCD_PCLK_GUARD_SETTLE_MS));
+    } else {
+      ESP_LOGW(TAG, "PCLK guard enter failed: %s", esp_err_to_name(ret));
+    }
+  } else {
+    if (applied_hz) {
+      *applied_hz = s_pclk_current_hz;
+    }
+  }
+
+  xSemaphoreGive(lock);
+  return ret;
+#else
+  (void)applied_hz;
+  (void)reason;
+  return ESP_OK;
+#endif
+}
+
+esp_err_t rgb_lcd_port_pclk_guard_exit(void) {
+#if CONFIG_ARS_LCD_PCLK_GUARD_ENABLE
+  if (!panel_handle) {
+    return ESP_OK;
+  }
+  SemaphoreHandle_t lock = rgb_lcd_pclk_guard_lock_get();
+  if (!lock) {
+    return ESP_ERR_NO_MEM;
+  }
+  if (xSemaphoreTake(lock, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t ret = ESP_OK;
+  if (s_pclk_guard_depth > 0) {
+    s_pclk_guard_depth--;
+  }
+
+  if (s_pclk_guard_depth == 0 &&
+      s_pclk_current_hz != ARS_LCD_PIXEL_CLOCK_HZ) {
+    ret = esp_lcd_rgb_panel_set_pclk(panel_handle, ARS_LCD_PIXEL_CLOCK_HZ);
+    if (ret == ESP_OK) {
+      s_pclk_current_hz = ARS_LCD_PIXEL_CLOCK_HZ;
+      vTaskDelay(pdMS_TO_TICKS(CONFIG_ARS_LCD_PCLK_GUARD_SETTLE_MS));
+    } else {
+      ESP_LOGW(TAG, "PCLK guard restore failed: %s", esp_err_to_name(ret));
+    }
+  }
+
+  xSemaphoreGive(lock);
+  return ret;
+#else
+  return ESP_OK;
+#endif
 }
 
 esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,

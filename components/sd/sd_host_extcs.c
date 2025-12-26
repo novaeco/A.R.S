@@ -49,6 +49,10 @@ static esp_err_t sd_extcs_configure_cleanup_device(uint32_t freq_khz);
 #define CONFIG_ARS_SD_EXTCS_DEBUG_CMD0 0
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES
+#define CONFIG_ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES 8
+#endif
+
 #ifndef CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
 #define CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES 20
 #endif
@@ -641,6 +645,73 @@ static bool sd_extcs_check_miso_health(bool *cs_low_all_ff,
 
   return true;
 }
+
+#if CONFIG_ARS_SD_EXTCS_MISO_STUCK_DEBUG
+static void sd_extcs_force_cs_low_miso_debug(void) {
+  if (!s_cleanup_handle) {
+    ESP_LOGW(TAG, "MISO debug skipped: cleanup handle missing");
+    return;
+  }
+  if (!sd_extcs_lock()) {
+    ESP_LOGW(TAG, "MISO debug skipped: CS lock busy");
+    return;
+  }
+
+  esp_err_t err = sd_extcs_assert_cs();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "MISO debug: CS assert failed: %s", esp_err_to_name(err));
+    sd_extcs_unlock();
+    return;
+  }
+
+  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US + 80);
+
+  uint8_t rx[CONFIG_ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES] = {0};
+  bool all_same = true;
+  uint8_t first = 0xFF;
+  size_t sampled = 0;
+
+  for (size_t i = 0; i < CONFIG_ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES; ++i) {
+    spi_transaction_t t_rx = {
+        .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+        .length = 8,
+        .tx_data = {0xFF},
+    };
+    err = spi_device_polling_transmit(s_cleanup_handle, &t_rx);
+    if (err != ESP_OK)
+      break;
+    rx[i] = t_rx.rx_data[0];
+    if (i == 0) {
+      first = rx[i];
+    } else if (rx[i] != first) {
+      all_same = false;
+    }
+    sampled++;
+  }
+
+  int miso_gpio = gpio_get_level(CONFIG_ARS_SD_MISO);
+  sd_extcs_deassert_cs();
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+  sd_extcs_send_dummy_clocks(1);
+  sd_extcs_unlock();
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "MISO debug aborted after %u sample(s): %s", (unsigned)sampled,
+             esp_err_to_name(err));
+    return;
+  }
+
+  char dump[CONFIG_ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES * 3 + 1];
+  size_t dump_len = sd_extcs_safe_hex_dump(rx, sampled, dump, sizeof(dump), true);
+  const char *dump_ptr = dump_len ? dump : "<none>";
+  ESP_LOGI(TAG,
+           "MISO debug (CS forced LOW): gpio=%d sampled=%u rx=%.*s %s",
+           miso_gpio, (unsigned)sampled, (int)dump_len, dump_ptr,
+           all_same ? "[CONST]" : "[VAR]");
+}
+#else
+static inline void sd_extcs_force_cs_low_miso_debug(void) {}
+#endif
 
 static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
                                          bool *cs_low_stuck_warning,
@@ -1256,6 +1327,9 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     return ESP_ERR_INVALID_STATE;
   }
   IO_EXTENSION_IO_Mode(0xFF); // ensure outputs (push-pull)
+  ESP_LOGI(TAG,
+           "SD ExtCS: IOEXT outputs configured (mask=0xFF, CS=IO%d push-pull)",
+           IO_EXTENSION_IO_4);
   s_cs_level = -1;
   if (sd_extcs_lock()) {
     sd_extcs_deassert_cs();
@@ -1298,6 +1372,8 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     if (ret != ESP_OK)
       return ret;
   }
+
+  sd_extcs_force_cs_low_miso_debug();
 
   // 4. Strict low-speed init sequence
   ret = sd_extcs_low_speed_init();
