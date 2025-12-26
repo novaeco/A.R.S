@@ -2,7 +2,7 @@ menu "BSP / Board"
 
 config ARS_LCD_PCLK_HZ
     int "Fréquence pixel clock (Hz)"
-    default 26000000
+    default 22000000
     help
         Fréquence du pclk pour le panneau RGB 1024x600. Valeur recommandée
         pour 60 Hz avec timings 1344x635 : ~51.2 MHz. Ajustable pour A/B test.

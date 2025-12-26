@@ -187,9 +187,10 @@ esp_err_t app_board_init(void) {
     return ESP_FAIL;
   }
 
-  // Spawn init task on CPU0
-  BaseType_t task_ret = xTaskCreatePinnedToCore(lcd_init_task, "lcd_init", 4096,
-                                                NULL, 5, NULL, 0);
+  // Spawn init task on the same core as LVGL task to align RGB init and flush
+  BaseType_t task_ret = xTaskCreatePinnedToCore(
+      lcd_init_task, "lcd_init", 4096, NULL, 5, NULL,
+      CONFIG_ARS_LVGL_TASK_CORE);
   if (task_ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create LCD init task");
     vSemaphoreDelete(s_lcd_init_done);
