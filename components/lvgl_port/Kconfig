@@ -78,11 +78,12 @@ menu "LVGL Port Configuration"
     config ARS_LCD_WAIT_VSYNC_TIMEOUT_MS
         int "VSYNC wait timeout (ms)"
         depends on ARS_LCD_WAIT_VSYNC
-        default 40
+        default 80
         range 5 100
         help
-            Maximum time to wait for an RGB VSYNC notification before
-            disabling VSYNC wait to avoid stalls.
+            Maximum time to wait for an RGB VSYNC notification before releasing
+            the flush in degraded mode. Waiting is retried; not permanently
+            disabled.
 
     config ARS_LVGL_DEBUG_SCREEN
         bool "Enable Debug Screen"
