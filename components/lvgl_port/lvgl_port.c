@@ -175,6 +175,7 @@ typedef struct {
   volatile uint32_t isr_count;
   volatile uint32_t wait_wakeups;
   volatile int64_t last_vsync_us;
+  volatile int64_t last_period_us;
   int64_t last_log_us;
   uint32_t last_log_count;
   uint32_t wait_log_budget;
@@ -190,6 +191,7 @@ static vsync_sync_t s_vsync = {.wait_task = NULL,
                                .isr_count = 0,
                                .wait_wakeups = 0,
                                .last_vsync_us = 0,
+                               .last_period_us = 0,
                                .last_log_us = 0,
                                .last_log_count = 0,
                                .wait_log_budget = 3,
@@ -228,17 +230,29 @@ static void vsync_diag_timer_cb(void *arg) {
 
   ESP_LOGI(TAG,
            "VSYNC diag: total=%" PRIu32 " wakeups=%" PRIu32 " rate=%" PRIu32
-           "/s last=%" PRId64 "us wait=%d",
-           count, wakeups, rate_hz, last_us, (int)s_vsync.wait_enabled);
+           "/s last=%" PRId64 "us wait=%d derived=%" PRId64 "us",
+           count, wakeups, rate_hz, last_us, (int)s_vsync.wait_enabled,
+           s_vsync.last_period_us);
 }
 
 IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
   if (s_vsync.wait_supported) {
+    const int64_t now_us = esp_timer_get_time();
     portENTER_CRITICAL_ISR(&s_vsync_spinlock);
+    if (s_vsync.last_vsync_us > 0) {
+      int64_t period = now_us - s_vsync.last_vsync_us;
+      if (period > 0) {
+        if (s_vsync.last_period_us == 0) {
+          s_vsync.last_period_us = period;
+        } else {
+          s_vsync.last_period_us = (s_vsync.last_period_us * 3 + period) / 4;
+        }
+      }
+    }
     s_vsync.isr_count++;
     s_vsync.wait_wakeups++;
-    s_vsync.last_vsync_us = esp_timer_get_time();
+    s_vsync.last_vsync_us = now_us;
     portEXIT_CRITICAL_ISR(&s_vsync_spinlock);
 
     TaskHandle_t target = s_vsync.wait_task;
@@ -263,6 +277,35 @@ static int framebuffer_index_for_ptr(const uint8_t *ptr) {
 }
 
 static bool s_direct_mode = false;
+
+static uint32_t vsync_wait_timeout_ms(void) {
+  const uint32_t min_timeout_ms = 50;
+  const uint32_t max_timeout_ms = 150;
+  uint32_t cfg_timeout = ARS_LCD_WAIT_VSYNC_TIMEOUT_MS;
+  int64_t measured_period_us = 0;
+
+  portENTER_CRITICAL(&s_vsync_spinlock);
+  measured_period_us = s_vsync.last_period_us;
+  portEXIT_CRITICAL(&s_vsync_spinlock);
+
+  uint32_t derived_ms = 0;
+  if (measured_period_us > 0) {
+    derived_ms = (uint32_t)((measured_period_us * 3) / 2000);
+  }
+
+  uint32_t timeout_ms = cfg_timeout;
+  if (derived_ms > timeout_ms) {
+    timeout_ms = derived_ms;
+  }
+  if (timeout_ms < min_timeout_ms) {
+    timeout_ms = min_timeout_ms;
+  }
+  if (timeout_ms > max_timeout_ms) {
+    timeout_ms = max_timeout_ms;
+  }
+
+  return timeout_ms;
+}
 
 static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                            uint8_t *px_map) {
@@ -327,8 +370,9 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
 
     ulTaskNotifyTake(pdTRUE, 0);
 
-    const uint32_t notified = ulTaskNotifyTake(
-        pdTRUE, pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS));
+    const uint32_t timeout_ms = vsync_wait_timeout_ms();
+    const uint32_t notified =
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
     if (notified == 0) {
       uint32_t isr_count = 0;
       int64_t last_us = 0;
@@ -344,7 +388,7 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
       ESP_LOGW(TAG,
                "VSYNC wait result: timeout after %dms (isr_count=%" PRIu32
                " last_us=%" PRId64 ")",
-               ARS_LCD_WAIT_VSYNC_TIMEOUT_MS, isr_count, last_us);
+               timeout_ms, isr_count, last_us);
     } else {
       const int64_t now_us = esp_timer_get_time();
       uint32_t wakeups = 0;
@@ -392,6 +436,7 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   s_vsync.isr_count = 0;
   s_vsync.wait_wakeups = 0;
   s_vsync.last_vsync_us = 0;
+  s_vsync.last_period_us = 0;
   s_vsync.wait_log_budget = 3;
   s_vsync.wait_task = NULL;
 
