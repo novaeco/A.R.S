@@ -78,7 +78,7 @@ menu "LVGL Port Configuration"
     config ARS_LCD_WAIT_VSYNC_TIMEOUT_MS
         int "VSYNC wait timeout (ms)"
         depends on ARS_LCD_WAIT_VSYNC
-        default 20
+        default 40
         range 5 100
         help
             Maximum time to wait for an RGB VSYNC notification before

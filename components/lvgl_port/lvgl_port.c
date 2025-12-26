@@ -29,7 +29,7 @@
 #if defined(CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)
 #define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS
 #else
-#define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS 20
+#define ARS_LCD_WAIT_VSYNC_TIMEOUT_MS 40
 #endif
 
 static const char *TAG = "lv_port";          // Tag for logging
@@ -169,26 +169,83 @@ static void lvgl_port_task(void *arg) {
 // --- 4. Initialization & API ---
 
 typedef struct {
+  TaskHandle_t wait_task;
   SemaphoreHandle_t sem;
-  uint32_t events_seen;
+  esp_timer_handle_t diag_timer;
+  volatile uint32_t isr_count;
+  volatile uint32_t wait_wakeups;
+  volatile int64_t last_vsync_us;
+  int64_t last_log_us;
+  uint32_t last_log_count;
+  uint32_t wait_log_budget;
   bool wait_enabled;
   bool wait_supported;
   bool timeout_logged;
 } vsync_sync_t;
 
-static vsync_sync_t s_vsync = {.sem = NULL,
-                               .events_seen = 0,
+static portMUX_TYPE s_vsync_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static vsync_sync_t s_vsync = {.wait_task = NULL,
+                               .sem = NULL,
+                               .diag_timer = NULL,
+                               .isr_count = 0,
+                               .wait_wakeups = 0,
+                               .last_vsync_us = 0,
+                               .last_log_us = 0,
+                               .last_log_count = 0,
+                               .wait_log_budget = 3,
                                .wait_enabled = ARS_LCD_WAIT_VSYNC_ENABLED,
                                .wait_supported = ARS_LCD_WAIT_VSYNC_ENABLED,
                                .timeout_logged = false};
 
 void lvgl_port_set_ui_init_cb(lvgl_port_ui_init_cb_t cb) { s_ui_init_cb = cb; }
 
+static void vsync_diag_timer_cb(void *arg) {
+  LV_UNUSED(arg);
+  uint32_t count = 0;
+  uint32_t wakeups = 0;
+  int64_t last_us = 0;
+
+  portENTER_CRITICAL(&s_vsync_spinlock);
+  count = s_vsync.isr_count;
+  wakeups = s_vsync.wait_wakeups;
+  last_us = s_vsync.last_vsync_us;
+  portEXIT_CRITICAL(&s_vsync_spinlock);
+
+  const int64_t now_us = esp_timer_get_time();
+  if (s_vsync.last_log_us == 0) {
+    s_vsync.last_log_us = now_us;
+    s_vsync.last_log_count = count;
+    return;
+  }
+
+  const uint32_t delta_count = count - s_vsync.last_log_count;
+  const int64_t delta_us = now_us - s_vsync.last_log_us;
+  const uint32_t rate_hz =
+      (delta_us > 0) ? (uint32_t)((delta_count * 1000000ULL) / delta_us) : 0;
+
+  s_vsync.last_log_us = now_us;
+  s_vsync.last_log_count = count;
+
+  ESP_LOGI(TAG,
+           "VSYNC diag: total=%" PRIu32 " wakeups=%" PRIu32 " rate=%" PRIu32
+           "/s last=%" PRId64 "us wait=%d",
+           count, wakeups, rate_hz, last_us, (int)s_vsync.wait_enabled);
+}
+
 IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   BaseType_t high_task_awoken = pdFALSE;
-  if (s_vsync.sem && s_vsync.wait_supported) {
-    s_vsync.events_seen++;
-    xSemaphoreGiveFromISR(s_vsync.sem, &high_task_awoken);
+  if (s_vsync.wait_supported) {
+    portENTER_CRITICAL_ISR(&s_vsync_spinlock);
+    s_vsync.isr_count++;
+    s_vsync.last_vsync_us = esp_timer_get_time();
+    portEXIT_CRITICAL_ISR(&s_vsync_spinlock);
+
+    TaskHandle_t target = s_vsync.wait_task;
+    if (target) {
+      vTaskNotifyGiveFromISR(target, &high_task_awoken);
+    } else if (s_vsync.sem) {
+      xSemaphoreGiveFromISR(s_vsync.sem, &high_task_awoken);
+    }
   }
   return high_task_awoken == pdTRUE;
 }
@@ -263,15 +320,46 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   // VSYNC Handshake: Wait for next VSYNC to ensure we don't tear. Timeout is
   // small (configurable) to avoid blocking if the callback is missing.
   if (wait_vsync) {
-    xSemaphoreTake(s_vsync.sem, 0);
+    if (!s_vsync.wait_task) {
+      s_vsync.wait_task = xTaskGetCurrentTaskHandle();
+    }
 
-    if (xSemaphoreTake(s_vsync.sem,
-                       pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS)) !=
-        pdTRUE) {
+    ulTaskNotifyTake(pdTRUE, 0);
+
+    const uint32_t notified = ulTaskNotifyTake(
+        pdTRUE, pdMS_TO_TICKS(ARS_LCD_WAIT_VSYNC_TIMEOUT_MS));
+    if (notified == 0) {
+      uint32_t isr_count = 0;
+      int64_t last_us = 0;
+      portENTER_CRITICAL(&s_vsync_spinlock);
+      isr_count = s_vsync.isr_count;
+      last_us = s_vsync.last_vsync_us;
+      portEXIT_CRITICAL(&s_vsync_spinlock);
+
       s_vsync.wait_enabled = false;
       if (!s_vsync.timeout_logged) {
         ESP_LOGW(TAG, "VSYNC wait timeout — disabling wait");
         s_vsync.timeout_logged = true;
+      }
+      ESP_LOGW(TAG,
+               "VSYNC wait result: timeout after %dms (isr_count=%" PRIu32
+               " last_us=%" PRId64 ")",
+               ARS_LCD_WAIT_VSYNC_TIMEOUT_MS, isr_count, last_us);
+    } else {
+      uint32_t wakeups = 0;
+      const int64_t now_us = esp_timer_get_time();
+      portENTER_CRITICAL(&s_vsync_spinlock);
+      s_vsync.wait_wakeups += notified;
+      wakeups = s_vsync.wait_wakeups;
+      s_vsync.last_vsync_us = now_us;
+      portEXIT_CRITICAL(&s_vsync_spinlock);
+
+      if (s_vsync.wait_log_budget) {
+        ESP_LOGI(TAG,
+                 "VSYNC wait result: notified=%" PRIu32
+                 " wakeups=%" PRIu32 " last_us=%" PRId64,
+                 notified, wakeups, now_us);
+        s_vsync.wait_log_budget--;
       }
     }
   }
@@ -301,7 +389,11 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
   s_vsync.wait_enabled = ARS_LCD_WAIT_VSYNC_ENABLED;
   s_vsync.wait_supported = ARS_LCD_WAIT_VSYNC_ENABLED;
   s_vsync.timeout_logged = false;
-  s_vsync.events_seen = 0;
+  s_vsync.isr_count = 0;
+  s_vsync.wait_wakeups = 0;
+  s_vsync.last_vsync_us = 0;
+  s_vsync.wait_log_budget = 3;
+  s_vsync.wait_task = NULL;
 
   if (s_vsync.wait_supported) {
     s_vsync.sem = xSemaphoreCreateBinary();
@@ -313,6 +405,25 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle) {
     } else {
       s_vsync.wait_enabled = s_vsync.wait_enabled && s_vsync.wait_supported;
       ESP_LOGI(TAG, "VSYNC sync: ACTIVE (timeout=%dms)", ARS_LCD_WAIT_VSYNC_TIMEOUT_MS);
+      if (!s_vsync.diag_timer) {
+        const esp_timer_create_args_t diag_args = {
+            .callback = vsync_diag_timer_cb, .name = "vsync_diag"};
+        esp_err_t diag_ret =
+            esp_timer_create(&diag_args, &s_vsync.diag_timer);
+        if (diag_ret != ESP_OK) {
+          ESP_LOGW(TAG, "VSYNC diag timer create failed: %s",
+                   esp_err_to_name(diag_ret));
+        } else {
+          s_vsync.last_log_us = 0;
+          s_vsync.last_log_count = 0;
+          esp_err_t start_ret =
+              esp_timer_start_periodic(s_vsync.diag_timer, 1000000);
+          if (start_ret != ESP_OK) {
+            ESP_LOGW(TAG, "VSYNC diag timer start failed: %s",
+                     esp_err_to_name(start_ret));
+          }
+        }
+      }
     }
   } else {
     ESP_LOGI(TAG, "VSYNC sync: DISABLED (CONFIG_ARS_LCD_VSYNC_WAIT_ENABLE=n)");
@@ -704,6 +815,7 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
     esp_timer_stop(s_lvgl_tick_timer);
     return ESP_FAIL;
   }
+  s_vsync.wait_task = lvgl_task_handle;
 
   // Debug Screen creation moved to lvgl_port_task to execute on correct core
   // lv_port_create_debug_screen();
