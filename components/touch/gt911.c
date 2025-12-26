@@ -552,10 +552,8 @@ esp_err_t esp_lcd_touch_new_i2c_gt911(const esp_lcd_panel_io_handle_t io,
   ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 init failed");
 
   // Ensure shared I2C mutex is available
-  if (!i2c_bus_shared_is_ready()) {
-    ret = ESP_ERR_INVALID_STATE;
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 shared I2C not ready");
-  }
+  ret = i2c_bus_shared_init();
+  ESP_GOTO_ON_ERROR(ret, err, TAG, "GT911 shared I2C init failed");
 
   // Create IRQ task to handle I2C reads outside ISR or run polling fallback
   static bool task_created = false;
@@ -1069,14 +1067,15 @@ static esp_err_t gt911_reset_via_ioext(void) {
 // Function to initialize the GT911 touch controller
 esp_lcd_touch_handle_t touch_gt911_init() {
   esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-  esp_err_t ret = ESP_OK;
 
-  if (!i2c_bus_shared_is_ready()) {
-    ESP_LOGE(TAG, "I2C Bus not ready");
+  // Initialize Shared I2C Bus First (single owner)
+  esp_err_t ret = i2c_bus_shared_init();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "I2C Bus Init Failed: %s", esp_err_to_name(ret));
     return NULL;
   }
 
-  i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_bus();
+  i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_handle();
 
   // 1. Configure I2C IO
   esp_lcd_panel_io_i2c_config_t tp_io_config =
@@ -1086,9 +1085,17 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     ESP_LOGE(TAG, "I2C Bus Init Failed (shared bus not ready)");
     return NULL;
   }
+  ret = DEV_I2C_Init_Bus(&bus_handle);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "I2C Bus Init Failed");
+    return NULL;
+  }
+
   // Ensure IO Extension is ready via safe init/handle
-  if (!IO_EXTENSION_Is_Initialized()) {
-    ESP_LOGE(TAG, "IO extension not initialized for GT911 reset");
+  // Ensure IO Extension is ready via safe init
+  esp_err_t ioext_ret = IO_EXTENSION_Init();
+  if (ioext_ret != ESP_OK) {
+    ESP_LOGE(TAG, "IO extension init failed: %s", esp_err_to_name(ioext_ret));
     return NULL;
   }
 
@@ -1157,16 +1164,9 @@ esp_lcd_touch_handle_t touch_gt911_init() {
   esp_lcd_panel_io_i2c_config_t config_with_addr = tp_io_config;
   config_with_addr.dev_addr = current_addr;
 
-  if (i2c_bus_shared_reserve_address(config_with_addr.dev_addr) != ESP_OK) {
-    ESP_LOGE(TAG, "GT911 address 0x%02X already reserved",
-             config_with_addr.dev_addr);
-    return NULL;
-  }
-
   // Probe before creating IO handle to avoid aborting the boot on absent device
   if (DEV_I2C_Probe(bus_handle, config_with_addr.dev_addr) != ESP_OK) {
     ESP_LOGE(TAG, "GT911 not responding at 0x%02X", config_with_addr.dev_addr);
-    i2c_bus_shared_release_address(config_with_addr.dev_addr);
     return NULL;
   }
 
@@ -1206,7 +1206,6 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
     // Clean up previous IO
     esp_lcd_panel_io_del(tp_io_handle);
-    i2c_bus_shared_release_address(config_with_addr.dev_addr);
 
     // Retry Reset for 0x14 (INT High)
     gpio_set_direction(int_pin, GPIO_MODE_OUTPUT);
@@ -1225,8 +1224,8 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     gpio_set_direction(int_pin, GPIO_MODE_INPUT);
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Retry Init at 0x14 (Fallback)
-    config_with_addr.dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP;
+    // Retry Init at 0x5D (Fallback)
+    config_with_addr.dev_addr = 0x5D; // Fallback to 0x5D
     sanitize_ret =
         DEV_I2C_SanitizeAddr(config_with_addr.dev_addr, &sanitized_addr);
     if (sanitize_ret != ESP_OK) {
@@ -1236,18 +1235,11 @@ esp_lcd_touch_handle_t touch_gt911_init() {
     }
     config_with_addr.dev_addr = sanitized_addr;
 
-    if (i2c_bus_shared_reserve_address(config_with_addr.dev_addr) != ESP_OK) {
-      ESP_LOGE(TAG, "GT911 fallback address 0x%02X already reserved",
-               config_with_addr.dev_addr);
-      return NULL;
-    }
-
     ret =
         esp_lcd_new_panel_io_i2c(bus_handle, &config_with_addr, &tp_io_handle);
     if (ret != ESP_OK) {
       ESP_LOGE(TAG, "Failed to create GT911 panel IO fallback 0x%02X: %s",
                config_with_addr.dev_addr, esp_err_to_name(ret));
-      i2c_bus_shared_release_address(config_with_addr.dev_addr);
       return NULL;
     }
 
@@ -1257,7 +1249,6 @@ esp_lcd_touch_handle_t touch_gt911_init() {
 
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "GT911 Initialization Failed even after retry.");
-    i2c_bus_shared_release_address(config_with_addr.dev_addr);
     return NULL;
   }
 
