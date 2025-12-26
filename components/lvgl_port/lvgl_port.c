@@ -237,6 +237,7 @@ IRAM_ATTR bool lvgl_port_notify_rgb_vsync(void) {
   if (s_vsync.wait_supported) {
     portENTER_CRITICAL_ISR(&s_vsync_spinlock);
     s_vsync.isr_count++;
+    s_vsync.wait_wakeups++;
     s_vsync.last_vsync_us = esp_timer_get_time();
     portEXIT_CRITICAL_ISR(&s_vsync_spinlock);
 
@@ -336,9 +337,8 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
       last_us = s_vsync.last_vsync_us;
       portEXIT_CRITICAL(&s_vsync_spinlock);
 
-      s_vsync.wait_enabled = false;
       if (!s_vsync.timeout_logged) {
-        ESP_LOGW(TAG, "VSYNC wait timeout — disabling wait");
+        ESP_LOGW(TAG, "VSYNC wait timeout — retrying");
         s_vsync.timeout_logged = true;
       }
       ESP_LOGW(TAG,
@@ -346,12 +346,12 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                " last_us=%" PRId64 ")",
                ARS_LCD_WAIT_VSYNC_TIMEOUT_MS, isr_count, last_us);
     } else {
-      uint32_t wakeups = 0;
       const int64_t now_us = esp_timer_get_time();
+      uint32_t wakeups = 0;
       portENTER_CRITICAL(&s_vsync_spinlock);
-      s_vsync.wait_wakeups += notified;
       wakeups = s_vsync.wait_wakeups;
       s_vsync.last_vsync_us = now_us;
+      s_vsync.timeout_logged = false;
       portEXIT_CRITICAL(&s_vsync_spinlock);
 
       if (s_vsync.wait_log_budget) {
