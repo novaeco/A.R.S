@@ -18,6 +18,7 @@
 #define __IO_EXTENSION_H
 
 #include "i2c.h"  // Include I2C header for I2C communication functions
+#include "freertos/FreeRTOS.h"
 
 /* 
  * IO EXTENSION GPIO control via I2C - Register and Command Definitions
@@ -54,6 +55,14 @@ typedef struct _io_extension_obj_t {
     uint8_t Last_io_value;
     uint8_t Last_od_value;
 } io_extension_obj_t;
+
+// Thread-safe shadowed control helpers (CH32V003 has unreliable readback)
+bool io_extension_lock(TickType_t timeout_ticks);
+void io_extension_unlock(void);
+esp_err_t io_extension_set_bits_locked(uint8_t mask);
+esp_err_t io_extension_clear_bits_locked(uint8_t mask);
+esp_err_t io_extension_write_shadow_locked(void);
+uint8_t io_extension_get_output_shadow(void);
 
 
 /* Function declarations */
