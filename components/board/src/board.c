@@ -309,7 +309,11 @@ esp_err_t app_board_init(void) {
 
   // Debug: Run Test Pattern (Color Bars) to verify display independently of
   // LVGL
+#if CONFIG_ARS_LCD_STABILITY_SELFTEST
+  board_lcd_stability_selftest_start();
+#else
   board_lcd_test_pattern();
+#endif
   // Yield to IDLE task before printing final pipeline status to prevent WDT if
   // UART is slow
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -652,3 +656,84 @@ void board_lcd_test_pattern(void) {
     // Do NOT run inline - this would block and trigger WDT
   }
 }
+
+#if CONFIG_ARS_LCD_STABILITY_SELFTEST
+static void board_lcd_fill_stability_pattern(uint16_t *fb, size_t stride_bytes,
+                                             uint16_t width, uint16_t height) {
+  const uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000}; // R,G,B,W,K
+  const size_t color_count = sizeof(colors) / sizeof(colors[0]);
+  const uint16_t band_px = width / color_count;
+  const uint16_t rect_size = 120;
+  const uint16_t rect_color = 0xFFE0; // Yellow reference square
+  const uint16_t rect_x = (width - rect_size) / 2;
+  const uint16_t rect_y = (height - rect_size) / 2;
+
+  for (uint16_t y = 0; y < height; y++) {
+    uint16_t *row =
+        (uint16_t *)((uint8_t *)fb + (size_t)y * stride_bytes);
+    for (uint16_t x = 0; x < width; x++) {
+      uint16_t c = colors[(x / band_px) < color_count ? (x / band_px)
+                                                      : (color_count - 1)];
+      if (x >= rect_x && x < (rect_x + rect_size) && y >= rect_y &&
+          y < (rect_y + rect_size)) {
+        c = rect_color;
+      }
+      row[x] = c;
+    }
+    if ((y % 32) == 0) {
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+}
+
+static void board_lcd_stability_task(void *arg) {
+  ESP_LOGI(TAG, "Starting LCD stability self-test (60s)...");
+  void **buffers = NULL;
+  size_t buf_count = 0;
+  size_t stride = 0;
+
+  if (rgb_lcd_port_get_framebuffers(&buffers, &buf_count, &stride) != ESP_OK ||
+      buf_count == 0 || !buffers || !buffers[0]) {
+    ESP_LOGE(TAG, "Self-test aborted: no framebuffer available");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  uint16_t *fb = (uint16_t *)buffers[0];
+  size_t stride_bytes = (stride > 0) ? stride : (BOARD_LCD_HRES * 2);
+
+  board_lcd_fill_stability_pattern(fb, stride_bytes, BOARD_LCD_HRES,
+                                   BOARD_LCD_VRES);
+  if (esp_ptr_external_ram(fb)) {
+    ars_cache_writeback(fb, (size_t)BOARD_LCD_VRES * stride_bytes);
+  }
+
+  esp_err_t draw_ret =
+      esp_lcd_panel_draw_bitmap(g_panel_handle, 0, 0, BOARD_LCD_HRES,
+                                BOARD_LCD_VRES, fb);
+  if (draw_ret != ESP_OK) {
+    ESP_LOGE(TAG, "Self-test draw failed: %s", esp_err_to_name(draw_ret));
+    vTaskDelete(NULL);
+    return;
+  }
+
+  const TickType_t duration_ticks = pdMS_TO_TICKS(60000);
+  TickType_t start = xTaskGetTickCount();
+  while ((xTaskGetTickCount() - start) < duration_ticks) {
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
+  ESP_LOGI(TAG, "LCD stability self-test complete (60s elapsed)");
+  vTaskDelete(NULL);
+}
+
+static void board_lcd_stability_selftest_start(void) {
+  if (!g_panel_handle) {
+    ESP_LOGE(TAG, "LCD self-test skipped: Panel handle is NULL");
+    return;
+  }
+  if (xTaskCreatePinnedToCore(board_lcd_stability_task, "lcd_stab", 4096, NULL,
+                              2, NULL, 1) != pdPASS) {
+    ESP_LOGW(TAG, "LCD self-test task creation failed");
+  }
+}
+#endif // CONFIG_ARS_LCD_STABILITY_SELFTEST
