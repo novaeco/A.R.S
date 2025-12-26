@@ -18,7 +18,7 @@
 #include <esp_err.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
-#include <esp_rom_printf.h>
+#include <esp_rom_sys.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdbool.h>
