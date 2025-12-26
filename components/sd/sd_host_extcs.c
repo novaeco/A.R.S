@@ -1566,30 +1566,58 @@ static esp_err_t sd_extcs_low_speed_init(void) {
 
   // CMD8: check voltage range
   uint8_t resp_r7[5] = {0};
-  err = sd_extcs_send_command(8, 0x000001AA, 0x87, resp_r7, sizeof(resp_r7),
-                              SD_EXTCS_CMD_TIMEOUT_TICKS, NULL, true, true);
   bool sdhc_candidate = false;
-  if (err == ESP_OK && resp_r7[0] == 0x01) {
-    uint32_t pattern = ((uint32_t)resp_r7[1] << 24) |
-                       ((uint32_t)resp_r7[2] << 16) |
-                       ((uint32_t)resp_r7[3] << 8) | resp_r7[4];
-    sdhc_candidate = (pattern == 0x000001AA);
-    ESP_LOGI(TAG, "CMD8 OK (pattern=0x%08" PRIX32 ")", pattern);
-    s_seq_stats.cmd8_seen = true;
-  } else if (err == ESP_OK && resp_r7[0] == 0x05) {
-    mmc_detection_mode = true;
-    ESP_LOGW(TAG, "CMD8 illegal (resp=0x05). Enabling MMC/SDv1 detect mode.");
-  } else {
-    ESP_LOGW(TAG,
-             "CMD8 failed/illegal (resp=0x%02X). Assuming SDSC or older card.",
-             resp_r7[0]);
-    if (err != ESP_OK) {
-      ESP_LOGW(TAG, "CMD8 error: %s. Insert SD card or verify 3.3V wiring.",
-               esp_err_to_name(err));
+  bool cmd8_unstable = false;
+  bool cmd8_illegal = false;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    memset(resp_r7, 0, sizeof(resp_r7));
+    err = sd_extcs_send_command(8, 0x000001AA, 0x87, resp_r7, sizeof(resp_r7),
+                                SD_EXTCS_CMD_TIMEOUT_TICKS, NULL, true, true);
+    if (err == ESP_OK && resp_r7[0] == 0x01) {
+      uint32_t pattern = ((uint32_t)resp_r7[1] << 24) |
+                         ((uint32_t)resp_r7[2] << 16) |
+                         ((uint32_t)resp_r7[3] << 8) | resp_r7[4];
+      sdhc_candidate = (pattern == 0x000001AA);
+      ESP_LOGI(TAG, "CMD8 OK (pattern=0x%08" PRIX32 " attempt=%d)", pattern,
+               attempt + 1);
+      s_seq_stats.cmd8_seen = true;
+      break;
     }
+
+    if (err == ESP_OK && (resp_r7[0] & 0x04)) {
+      cmd8_illegal = true;
+      mmc_detection_mode = true;
+      ESP_LOGW(
+          TAG,
+          "CMD8 illegal command (r1=0x%02X attempt=%d). Enabling MMC/SDv1 detect mode.",
+          resp_r7[0], attempt + 1);
+      break;
+    }
+
+    if (resp_r7[0] == 0xFF || err == ESP_ERR_TIMEOUT) {
+      cmd8_unstable = true;
+      ESP_LOGW(TAG,
+               "CMD8 timeout/unreliable (r1=0x%02X err=%s attempt=%d). Keeping "
+               "HCS=0 and retrying once.",
+               resp_r7[0], esp_err_to_name(err), attempt + 1);
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    ESP_LOGW(TAG,
+             "CMD8 unexpected response (r1=0x%02X err=%s attempt=%d). "
+             "Proceeding without SDHC hint.",
+             resp_r7[0], esp_err_to_name(err), attempt + 1);
+    break;
   }
 
   // ACMD41 loop with HCS if supported
+  if (cmd8_illegal) {
+    ESP_LOGI(TAG, "CMD8 ILLEGAL: assuming legacy/SDSC flow (HCS=0)");
+  } else if (cmd8_unstable) {
+    vTaskDelay(pdMS_TO_TICKS(30));
+    ESP_LOGW(TAG, "CMD8 unstable: giving extra settle time before ACMD41");
+  }
   const uint32_t acmd41_arg = sdhc_candidate ? 0x40000000 : 0x00000000;
   bool card_ready = false;
   int acmd41_attempts = 0;
