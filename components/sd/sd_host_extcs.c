@@ -74,6 +74,10 @@ static void sd_extcs_free_bus_if_idle(void);
 #define CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US 0
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_CS_READBACK
+#define CONFIG_ARS_SD_EXTCS_CS_READBACK 0
+#endif
+
 #define SD_EXTCS_INIT_FREQ_KHZ CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define SD_EXTCS_TARGET_FREQ_KHZ CONFIG_ARS_SD_EXTCS_TARGET_FREQ_KHZ
 #define SD_EXTCS_CMD0_PRE_CLKS_BYTES CONFIG_ARS_SD_EXTCS_CMD0_PRE_CLKS_BYTES
@@ -261,15 +265,59 @@ static void sd_extcs_unlock_ioext_bus(void) {
   }
 }
 
+static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched) {
+#if CONFIG_ARS_SD_EXTCS_CS_READBACK
+  if (matched)
+    *matched = false;
+  uint8_t latched = 0xFF;
+  esp_err_t rb =
+      IO_EXTENSION_Read_Output_Latch(IO_EXTENSION_IO_4, &latched);
+  if (rb == ESP_OK && matched) {
+    *matched = (((latched & SD_EXTCS_IOEXT_CS_MASK) != 0) == (!assert_low));
+  }
+  return rb;
+#else
+  if (matched)
+    *matched = true;
+  return ESP_OK;
+#endif
+}
+
 static esp_err_t sd_extcs_apply_cs_level_locked(bool assert_low,
                                                 const char *ctx) {
-  esp_err_t err = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
-                             : io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
-  if (err != ESP_OK) {
+  const uint8_t shadow_before = io_extension_get_output_shadow();
+  esp_err_t err = ESP_FAIL;
+  bool latched_ok = false;
+
+  for (int attempt = 0; attempt < SD_EXTCS_CS_READBACK_RETRIES; ++attempt) {
+    err = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
+                     : io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+
+    const uint8_t shadow_after = io_extension_get_output_shadow();
+    esp_err_t rb = sd_extcs_readback_cs_locked(assert_low, &latched_ok);
+    const bool shadow_level = (shadow_after & SD_EXTCS_IOEXT_CS_MASK) != 0;
+    const bool want_level = !assert_low;
+
+    if (err == ESP_OK && (!CONFIG_ARS_SD_EXTCS_CS_READBACK || latched_ok)) {
+      s_cs_level = shadow_level ? 1 : 0;
+      s_last_cs_latched = latched_ok ? (want_level ? 1 : 0) : s_cs_level;
+      s_last_cs_input = s_last_cs_latched;
+      ESP_LOGD(TAG,
+               "%s OK (attempt=%d shadow %02X->%02X latched=%d streak=%" PRIu32
+               ")",
+               ctx, attempt + 1, shadow_before, shadow_after,
+               latched_ok ? (want_level ? 1 : 0) : -1,
+               i2c_bus_shared_get_error_streak());
+      return ESP_OK;
+    }
+
     ESP_LOGW(TAG,
-             "%s I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
-             ctx, esp_err_to_name(err), io_extension_get_output_shadow(),
+             "%s attempt %d: err=%s rb=%s shadow %02X->%02X latched_ok=%d "
+             "i2c_streak=%" PRIu32,
+             ctx, attempt + 1, esp_err_to_name(err), esp_err_to_name(rb),
+             shadow_before, shadow_after, latched_ok ? 1 : 0,
              i2c_bus_shared_get_error_streak());
+
     if (err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_TIMEOUT ||
         err == ESP_FAIL) {
       esp_err_t rec = i2c_bus_shared_recover_locked();
@@ -278,15 +326,11 @@ static esp_err_t sd_extcs_apply_cs_level_locked(bool assert_low,
                  esp_err_to_name(rec));
       }
     }
-    return err;
+
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  uint8_t shadow = io_extension_get_output_shadow();
-  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
-  s_last_cs_latched = s_cs_level;
-  s_last_cs_input = s_cs_level;
-
-  return ESP_OK;
+  return err;
 }
 
 static void sd_extcs_seq_reset(uint32_t init_khz, uint32_t target_khz) {
@@ -439,15 +483,7 @@ static esp_err_t sd_extcs_assert_cs(void) {
     return lock_ret;
   }
 
-  esp_err_t err = ESP_FAIL;
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    err = sd_extcs_apply_cs_level_locked(true, "CS LOW");
-    if (err == ESP_OK) {
-      break;
-    }
-    ESP_LOGW(TAG, "CS LOW retry %d/2: %s", attempt + 1, esp_err_to_name(err));
-    vTaskDelay(pdMS_TO_TICKS(2));
-  }
+  esp_err_t err = sd_extcs_apply_cs_level_locked(true, "CS LOW");
 
   if (err != ESP_OK) {
     sd_extcs_unlock_ioext_bus();
@@ -466,16 +502,7 @@ static inline esp_err_t sd_extcs_deassert_cs(void) {
     return lock_ret;
   }
 
-  esp_err_t err = ESP_FAIL;
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    err = sd_extcs_apply_cs_level_locked(false, "CS HIGH");
-    if (err == ESP_OK) {
-      break;
-    }
-    ESP_LOGW(TAG, "CS HIGH retry %d/2: %s", attempt + 1,
-             esp_err_to_name(err));
-    vTaskDelay(pdMS_TO_TICKS(2));
-  }
+  esp_err_t err = sd_extcs_apply_cs_level_locked(false, "CS HIGH");
 
   if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));

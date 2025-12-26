@@ -141,3 +141,7 @@ void ars_touch_debug_reset(void) {
   memset(&s_touch_debug_info, 0, sizeof(s_touch_debug_info));
   portEXIT_CRITICAL(&s_touch_debug_mux);
 }
+
+void touch_pause_for_sd_init(bool pause) {
+  gt911_set_paused(pause);
+}
