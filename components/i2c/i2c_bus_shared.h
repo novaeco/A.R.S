@@ -82,6 +82,38 @@ esp_err_t i2c_bus_shared_recover_locked(void);
  */
 bool i2c_bus_shared_is_locked_by_me(void);
 
+/**
+ * @brief Track a successful I2C transaction on the shared bus.
+ *
+ * Resets consecutive-error streak and gradually relaxes any backoff that may
+ * have been introduced after previous errors.
+ */
+void i2c_bus_shared_note_success(void);
+
+/**
+ * @brief Track an I2C error on the shared bus.
+ *
+ * @param ctx Short context string (component/tag) for diagnostics.
+ * @param err esp_err_t returned by the failing operation.
+ *
+ * Increments error counters and updates a dynamic backoff hint that callers
+ * can use to slow down polling when the bus is unhealthy.
+ */
+void i2c_bus_shared_note_error(const char *ctx, esp_err_t err);
+
+/**
+ * @brief Return the current consecutive-error streak.
+ */
+uint32_t i2c_bus_shared_get_error_streak(void);
+
+/**
+ * @brief Suggested delay (ticks) after an error burst to ease bus contention.
+ *
+ * The hint decays automatically when calls to i2c_bus_shared_note_success() are
+ * observed.
+ */
+TickType_t i2c_bus_shared_backoff_ticks(void);
+
 #ifdef __cplusplus
 }
 #endif

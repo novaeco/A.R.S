@@ -4,10 +4,12 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "i2c.h"
 #include <assert.h>
+#include <inttypes.h>
 
 static const char *TAG = "i2c_bus_shared";
 
@@ -16,6 +18,11 @@ SemaphoreHandle_t g_i2c_bus_mutex = NULL;
 static i2c_master_bus_handle_t s_shared_bus = NULL;
 static uint32_t s_consecutive_recover_fails = 0;
 static bool s_initialized = false;
+static portMUX_TYPE s_i2c_stats_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_i2c_error_streak = 0;
+static uint32_t s_i2c_error_total = 0;
+static uint32_t s_i2c_success_after_error = 0;
+static TickType_t s_i2c_backoff_ticks = 0;
 
 // Forward declaration
 static esp_err_t i2c_bus_shared_recover_internal(void);
@@ -26,6 +33,61 @@ bool i2c_bus_shared_is_locked_by_me(void) {
     return false;
   return xSemaphoreGetMutexHolder(g_i2c_bus_mutex) ==
          xTaskGetCurrentTaskHandle();
+}
+
+void i2c_bus_shared_note_success(void) {
+  portENTER_CRITICAL(&s_i2c_stats_spinlock);
+  if (s_i2c_error_streak > 0) {
+    s_i2c_success_after_error++;
+    if (s_i2c_success_after_error >= 4) {
+      s_i2c_backoff_ticks = 0;
+      s_i2c_error_streak = 0;
+      s_i2c_success_after_error = 0;
+    }
+  }
+  portEXIT_CRITICAL(&s_i2c_stats_spinlock);
+}
+
+void i2c_bus_shared_note_error(const char *ctx, esp_err_t err) {
+  portENTER_CRITICAL(&s_i2c_stats_spinlock);
+  s_i2c_error_streak++;
+  s_i2c_error_total++;
+  s_i2c_success_after_error = 0;
+  TickType_t next = (s_i2c_backoff_ticks == 0) ? pdMS_TO_TICKS(10)
+                                               : (s_i2c_backoff_ticks << 1);
+  if (next > pdMS_TO_TICKS(200)) {
+    next = pdMS_TO_TICKS(200);
+  }
+  s_i2c_backoff_ticks = next;
+  portEXIT_CRITICAL(&s_i2c_stats_spinlock);
+
+  static int64_t s_last_error_log_us = 0;
+  int64_t now = esp_timer_get_time();
+  if ((now - s_last_error_log_us) > 500000) { // 500 ms
+    s_last_error_log_us = now;
+    ESP_LOGW(TAG,
+             "I2C shared bus error%s%s%s: %s (streak=%" PRIu32
+             " backoff=%" PRIu32 "ms total=%" PRIu32 ")",
+             ctx ? " [" : "", ctx ? ctx : "", ctx ? "]" : "",
+             esp_err_to_name(err), s_i2c_error_streak,
+             (uint32_t)pdTICKS_TO_MS(s_i2c_backoff_ticks), s_i2c_error_total);
+  }
+}
+
+uint32_t i2c_bus_shared_get_error_streak(void) {
+  uint32_t streak = 0;
+  portENTER_CRITICAL(&s_i2c_stats_spinlock);
+  streak = s_i2c_error_streak;
+  portEXIT_CRITICAL(&s_i2c_stats_spinlock);
+  return streak;
+}
+
+TickType_t i2c_bus_shared_backoff_ticks(void) {
+  TickType_t ticks = 0;
+  portENTER_CRITICAL(&s_i2c_stats_spinlock);
+  ticks = s_i2c_backoff_ticks;
+  portEXIT_CRITICAL(&s_i2c_stats_spinlock);
+  return ticks;
 }
 
 esp_err_t i2c_bus_shared_init(void) {

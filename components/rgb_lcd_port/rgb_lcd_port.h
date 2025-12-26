@@ -122,4 +122,22 @@ esp_err_t rgb_lcd_port_get_framebuffers(void ***buffers, size_t *buffer_count,
 
 void waveshare_rgb_lcd_bl_on();
 void waveshare_rgb_lcd_bl_off();
+
+/**
+ * @brief Baisse temporaire du PCLK autour d'opérations sensibles.
+ *
+ * Quand CONFIG_ARS_LCD_PCLK_GUARD_ENABLE=y, réduit la fréquence PCLK à la
+ * valeur CONFIG_ARS_LCD_PCLK_GUARD_SAFE_HZ, attend un délai de stabilisation,
+ * puis laisse l'appelant exécuter l'opération critique.
+ *
+ * @param reason Texte optionnel pour les logs (peut être NULL).
+ * @param applied_hz Si non NULL, reçoit la fréquence appliquée.
+ */
+esp_err_t rgb_lcd_port_pclk_guard_enter(const char *reason,
+                                        uint32_t *applied_hz);
+
+/**
+ * @brief Restaure le PCLK nominal après rgb_lcd_port_pclk_guard_enter().
+ */
+esp_err_t rgb_lcd_port_pclk_guard_exit(void);
 #endif // _RGB_LCD_H_

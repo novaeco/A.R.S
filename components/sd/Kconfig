@@ -99,6 +99,24 @@ menu "SD Card Configuration"
             stuck CS lines or floating MISO. Logs warnings but does not block
             init.
 
+    config ARS_SD_EXTCS_MISO_STUCK_DEBUG
+        bool "Force-CS MISO debug sampler"
+        default n
+        help
+            When enabled, run an extra diagnostic before CMD0 that forces CS
+            low via the IO extender, clocks the bus, and samples MISO/GPIO
+            multiple times to detect lines stuck high. The check is non-blocking
+            and only logs the observed pattern.
+
+    config ARS_SD_EXTCS_MISO_STUCK_SAMPLE_BYTES
+        int "Bytes to clock during MISO stuck debug"
+        depends on ARS_SD_EXTCS_MISO_STUCK_DEBUG
+        default 8
+        range 1 32
+        help
+            Number of 0xFF bytes clocked while CS is forced low in the MISO
+            stuck debug sampler.
+
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"
         default n

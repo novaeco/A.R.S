@@ -1644,6 +1644,11 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
   }
 
   i2c_bus_shared_unlock();
+  if (err == ESP_OK) {
+    i2c_bus_shared_note_success();
+  } else {
+    i2c_bus_shared_note_error("gt911_read", err);
+  }
   return err;
 }
 
@@ -1670,6 +1675,11 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
   }
 
   i2c_bus_shared_unlock();
+  if (err == ESP_OK) {
+    i2c_bus_shared_note_success();
+  } else {
+    i2c_bus_shared_note_error("gt911_write", err);
+  }
   return err;
 }
 
@@ -1754,8 +1764,13 @@ static void gt911_irq_task(void *arg) {
 
     if (err != ESP_OK) {
       gt911_mark_i2c_error();
-      // Backoff on error
-      vTaskDelay(pdMS_TO_TICKS(error_backoff_ms));
+      // Backoff on error, honor shared bus hint if higher
+      TickType_t delay_ticks = pdMS_TO_TICKS(error_backoff_ms);
+      TickType_t bus_backoff = i2c_bus_shared_backoff_ticks();
+      if (bus_backoff > delay_ticks) {
+        delay_ticks = bus_backoff;
+      }
+      vTaskDelay(delay_ticks);
       if (error_backoff_ms < 500) {
         error_backoff_ms *= 2;
       }

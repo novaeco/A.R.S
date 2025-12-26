@@ -320,6 +320,8 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   static bool s_first_flush = true;
   const bool first_flush = s_first_flush;
   const int64_t flush_start_us = esp_timer_get_time();
+  int64_t copy_done_us = flush_start_us;
+  int64_t wait_done_us = flush_start_us;
   int fb_idx = framebuffer_index_for_ptr(px_map);
   if (s_first_flush) {
     ESP_LOGI(TAG,
@@ -357,6 +359,8 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
       }
     }
   }
+  copy_done_us = esp_timer_get_time();
+  wait_done_us = copy_done_us;
 
   const bool wait_vsync = s_direct_mode && s_vsync.sem &&
                           s_vsync.wait_supported && s_vsync.wait_enabled;
@@ -373,6 +377,7 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
     const uint32_t timeout_ms = vsync_wait_timeout_ms();
     const uint32_t notified =
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
+    wait_done_us = esp_timer_get_time();
     if (notified == 0) {
       uint32_t isr_count = 0;
       int64_t last_us = 0;
@@ -403,7 +408,7 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
                  "VSYNC wait result: notified=%" PRIu32
                  " wakeups=%" PRIu32 " last_us=%" PRId64,
                  notified, wakeups, now_us);
-        s_vsync.wait_log_budget--;
+      s_vsync.wait_log_budget--;
       }
     }
   }
@@ -411,12 +416,21 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area,
   // Notify LVGL we are done
   lv_display_flush_ready(disp);
 
-  const int64_t flush_duration_us = esp_timer_get_time() - flush_start_us;
-  if (!first_flush && flush_duration_us > 5000) {
+  const int64_t flush_end_us = esp_timer_get_time();
+  const int64_t copy_us = copy_done_us - flush_start_us;
+  const int64_t wait_us = wait_vsync ? (wait_done_us - copy_done_us) : 0;
+  const int64_t total_us = flush_end_us - flush_start_us;
+
+  const bool warn_copy = copy_us > 8000;
+  const bool warn_wait =
+      wait_vsync && wait_us > ((int64_t)ARS_LCD_WAIT_VSYNC_TIMEOUT_MS * 1000);
+  const bool warn_total = !wait_vsync && total_us > 5000;
+  if (!first_flush && (warn_copy || warn_wait || warn_total)) {
     ESP_LOGW(TAG,
-             "Flush duration high: area(%d,%d)-(%d,%d) fb_idx=%d time=%" PRId64
-             "us",
-             offsetx1, offsety1, offsetx2, offsety2, fb_idx, flush_duration_us);
+             "Flush slow: area(%d,%d)-(%d,%d) fb_idx=%d total=%" PRId64
+             "us copy=%" PRId64 "us wait_vsync=%" PRId64 "us (vsync=%d)",
+             offsetx1, offsety1, offsetx2, offsety2, fb_idx, total_us, copy_us,
+             wait_us, (int)wait_vsync);
   }
 }
 

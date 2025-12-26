@@ -15,6 +15,7 @@
 // #include "ui_calibration.h"
 #include "sd.h"
 #include "ui_wizard.h"
+#include "rgb_lcd_port.h"
 #include <esp_err.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
@@ -59,6 +60,7 @@ void app_main(void) {
 
   // 0. System Initialization (Critical: NVS & Network before anything else)
   // Initialize NVS
+  rgb_lcd_port_pclk_guard_enter("nvs_init", NULL);
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -69,6 +71,7 @@ void app_main(void) {
     }
     ret = nvs_flash_init();
   }
+  rgb_lcd_port_pclk_guard_exit();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "NVS init failed: %s (continuing without NVS)", esp_err_to_name(ret));
   }
