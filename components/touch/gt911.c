@@ -1032,12 +1032,12 @@ static esp_err_t gt911_reset_via_ioext(void) {
   }
 
   // Pre-check I2C bus availability with short timeout
-  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(50))) {
+  if (!ars_i2c_lock(50)) {
     ESP_LOGW(TAG, "GT911 IOEXT reset skipped: I2C bus busy");
     s_next_ioext_reset_after_us = esp_timer_get_time() + 500000;
     return ESP_ERR_TIMEOUT;
   }
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
 
   esp_err_t ret = IO_EXTENSION_Output(s_gt911_ioext_reset_pin, 0);
   if (ret != ESP_OK) {
@@ -1541,7 +1541,7 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
   ESP_LOGI(TAG, "Checking GT911 Configuration...");
 
   // Lock once for the entire sequence to prevent interruption and recursion
-  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(500))) {
+  if (!ars_i2c_lock(500)) {
     ESP_LOGE(TAG, "Failed to acquire lock for config update");
     return ESP_ERR_TIMEOUT;
   }
@@ -1551,7 +1551,7 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
                                       config, sizeof(config));
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to read GT911 config");
-    i2c_bus_shared_unlock();
+    ars_i2c_unlock();
     return ret;
   }
 
@@ -1588,7 +1588,7 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
 
   if (!changed) {
     ESP_LOGI(TAG, "GT911 Configuration is already correct.");
-    i2c_bus_shared_unlock();
+    ars_i2c_unlock();
     return ESP_OK;
   }
 
@@ -1603,7 +1603,7 @@ static esp_err_t gt911_update_config(esp_lcd_touch_handle_t tp) {
   ret = esp_lcd_panel_io_tx_param(tp->io, ESP_LCD_TOUCH_GT911_CONFIG_REG,
                                   config, 186);
 
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
 
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to write GT911 config: %s", esp_err_to_name(ret));
@@ -1630,7 +1630,7 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
   assert(data != NULL);
 
   // Finite timeout: 100ms to allow for IO Expander contention
-  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(100))) {
+  if (!ars_i2c_lock(100)) {
     return ESP_ERR_TIMEOUT;
   }
 
@@ -1643,7 +1643,7 @@ static esp_err_t touch_gt911_i2c_read(esp_lcd_touch_handle_t tp, uint16_t reg,
     esp_rom_delay_us(500); // Short delay before retry
   }
 
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   if (err == ESP_OK) {
     i2c_bus_shared_note_success();
   } else {
@@ -1661,7 +1661,7 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
                                        uint8_t data) {
   assert(tp != NULL);
 
-  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(100))) {
+  if (!ars_i2c_lock(100)) {
     return ESP_ERR_TIMEOUT;
   }
 
@@ -1674,7 +1674,7 @@ static esp_err_t touch_gt911_i2c_write(esp_lcd_touch_handle_t tp, uint16_t reg,
     esp_rom_delay_us(500);
   }
 
-  i2c_bus_shared_unlock();
+  ars_i2c_unlock();
   if (err == ESP_OK) {
     i2c_bus_shared_note_success();
   } else {

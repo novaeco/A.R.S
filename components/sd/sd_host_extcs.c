@@ -369,7 +369,10 @@ static esp_err_t sd_extcs_assert_cs(void) {
 
   esp_err_t err = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CS LOW I2C write failed: %s", esp_err_to_name(err));
+    ESP_LOGW(TAG,
+             "CS LOW I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
+             esp_err_to_name(err), io_extension_get_output_shadow(),
+             i2c_bus_shared_get_error_streak());
     io_extension_unlock();
     s_ioext_cs_locked = false;
     return err;
@@ -402,7 +405,10 @@ static inline esp_err_t sd_extcs_deassert_cs(void) {
 
   esp_err_t err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CS HIGH I2C write failed: %s", esp_err_to_name(err));
+    ESP_LOGW(TAG,
+             "CS HIGH I2C write failed: %s shadow=0x%02X i2c_streak=%" PRIu32,
+             esp_err_to_name(err), io_extension_get_output_shadow(),
+             i2c_bus_shared_get_error_streak());
   }
 
   uint8_t shadow = io_extension_get_output_shadow();
@@ -562,6 +568,126 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
            "CS probe: IOEXT4 toggle OK (I2C writes successful shadow=%d/%d/%d)",
            cs_high, cs_low, cs_restore);
   return ESP_OK;
+}
+
+static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
+  if (!s_ioext_ready || s_ioext_handle == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  esp_err_t ret = ESP_OK;
+  int toggle_fail = 0;
+  uint8_t shadow_before = io_extension_get_output_shadow();
+  uint8_t shadow_after = shadow_before;
+
+  if (!sd_extcs_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
+  if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+    sd_extcs_unlock();
+    return ESP_ERR_TIMEOUT;
+  }
+
+  for (int i = 0; i < 10; ++i) {
+    esp_err_t clr_ret = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+    if (clr_ret != ESP_OK) {
+      toggle_fail++;
+      ret = clr_ret;
+    }
+    ets_delay_us(80);
+    esp_err_t set_ret = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+    if (set_ret != ESP_OK) {
+      toggle_fail++;
+      ret = set_ret;
+    }
+    ets_delay_us(80);
+  }
+  shadow_after = io_extension_get_output_shadow();
+
+  io_extension_unlock();
+  sd_extcs_unlock();
+
+  ESP_LOGI(TAG,
+           "Diag-CS: toggled 10x fail=%d shadow_before=0x%02X shadow_after=0x%02X "
+           "i2c_streak=%" PRIu32,
+           toggle_fail, shadow_before, shadow_after,
+           i2c_bus_shared_get_error_streak());
+
+  if (!s_cleanup_handle) {
+    return (ret == ESP_OK) ? ESP_ERR_INVALID_STATE : ret;
+  }
+
+  uint8_t rx[16] = {0xFF};
+  uint8_t first_r1 = 0xFF;
+  int first_idx = -1;
+  esp_err_t cmd_ret = ESP_OK;
+
+  if (!sd_extcs_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t cs_high_ret = sd_extcs_deassert_cs();
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_SETTLE_US);
+
+  uint8_t dummy = 0xFF;
+  for (size_t i = 0; i < SD_EXTCS_CMD0_PRE_CLKS_BYTES; ++i) {
+    spi_transaction_t t_dummy = {.length = 8, .tx_buffer = &dummy};
+    esp_err_t tx_ret = spi_device_polling_transmit(s_cleanup_handle, &t_dummy);
+    if (tx_ret != ESP_OK && cmd_ret == ESP_OK) {
+      cmd_ret = tx_ret;
+    }
+  }
+
+  esp_err_t cs_low_ret = sd_extcs_assert_cs();
+  ets_delay_us(SD_EXTCS_CS_ASSERT_SETTLE_US + SD_EXTCS_CS_ASSERT_WAIT_US);
+
+  uint8_t frame[6] = {0x40, 0x00, 0x00, 0x00, 0x00, 0x95};
+  spi_transaction_t t_cmd = {.length = 48, .tx_buffer = frame};
+  esp_err_t cmd_tx_ret = spi_device_polling_transmit(s_cleanup_handle, &t_cmd);
+  if (cmd_tx_ret != ESP_OK && cmd_ret == ESP_OK) {
+    cmd_ret = cmd_tx_ret;
+  }
+
+  for (size_t i = 0; i < sizeof(rx); ++i) {
+    spi_transaction_t t_rx = {
+        .flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA,
+        .length = 8,
+        .tx_data = {0xFF},
+    };
+    if (spi_device_polling_transmit(s_cleanup_handle, &t_rx) != ESP_OK) {
+      if (cmd_ret == ESP_OK)
+        cmd_ret = ESP_ERR_TIMEOUT;
+      break;
+    }
+    rx[i] = t_rx.rx_data[0];
+    if (first_idx < 0 && rx[i] != 0xFF) {
+      first_idx = (int)(i + 1);
+      first_r1 = rx[i];
+    }
+  }
+
+  sd_extcs_deassert_cs();
+  spi_transaction_t t_post = {.length = 8, .tx_buffer = &dummy};
+  spi_device_polling_transmit(s_cleanup_handle, &t_post);
+
+  sd_extcs_unlock();
+
+  char dump[64];
+  size_t dump_len =
+      sd_extcs_safe_hex_dump(rx, sizeof(rx), dump, sizeof(dump), true);
+  const char *dump_ptr = dump_len ? dump : "<none>";
+
+  ESP_LOGI(TAG,
+           "Diag-CMD0 once: cs_high=%s cs_low=%s r1=0x%02X idx=%d rx=%s "
+           "shadow=0x%02X i2c_streak=%" PRIu32,
+           esp_err_to_name(cs_high_ret), esp_err_to_name(cs_low_ret), first_r1,
+           first_idx, dump_ptr, io_extension_get_output_shadow(),
+           i2c_bus_shared_get_error_streak());
+
+  if (cmd_ret == ESP_OK && (cs_high_ret != ESP_OK || cs_low_ret != ESP_OK)) {
+    cmd_ret = (cs_high_ret != ESP_OK) ? cs_high_ret : cs_low_ret;
+  }
+  return (cmd_ret == ESP_OK) ? ret : cmd_ret;
 }
 
 static esp_err_t sd_extcs_wait_for_response(uint8_t *out, TickType_t timeout) {
@@ -1474,6 +1600,11 @@ esp_err_t sd_extcs_mount_card(const char *mount_point, size_t max_files) {
     ret = sd_extcs_configure_cleanup_device(init_freq_khz);
     if (ret != ESP_OK)
       return ret;
+  }
+
+  esp_err_t diag_ret = sd_extcs_diag_toggle_and_cmd0();
+  if (diag_ret != ESP_OK) {
+    ESP_LOGW(TAG, "SD diag (CS+CMD0) failed: %s", esp_err_to_name(diag_ret));
   }
 
   sd_extcs_force_cs_low_miso_debug();
