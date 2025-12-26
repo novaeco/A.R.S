@@ -1,4 +1,5 @@
 idf_component_register(SRCS "i2c_bus_shared.c" "i2c.c"
                         INCLUDE_DIRS "."
                         REQUIRES esp_driver_i2c gpio freertos log board
+                        PRIV_REQUIRES esp_timer
                     )
