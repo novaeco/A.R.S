@@ -101,15 +101,28 @@ esp_err_t IO_EXTENSION_Init(void) {
   }
 
   esp_err_t ret = ESP_OK;
-  if (!i2c_bus_shared_is_ready()) {
-    ESP_LOGE(TAG, "Shared I2C bus not ready for IO ext");
+  esp_err_t bus_ret = i2c_bus_shared_init();
+  if (bus_ret != ESP_OK) {
+    ESP_LOGE(TAG, "Shared I2C init failed: %s", esp_err_to_name(bus_ret));
+    return bus_ret;
+  }
+
+  i2c_master_bus_handle_t bus_handle = i2c_bus_shared_get_handle();
+  if (!bus_handle) {
+    ESP_LOGE(TAG, "Shared I2C bus handle is NULL");
     return ESP_ERR_INVALID_STATE;
   }
 
+  // Add device to shared bus
+  i2c_device_config_t dev_cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = IO_EXTENSION_ADDR,
+      .scl_speed_hz = 400000,
+  };
+
   if (s_ioext_handle == NULL) {
     esp_err_t add_ret =
-        i2c_bus_shared_add_device(I2C_ADDR_IO_EXTENSION, 400000,
-                                  &s_ioext_handle);
+        i2c_master_bus_add_device(bus_handle, &dev_cfg, &s_ioext_handle);
     if (add_ret != ESP_OK) {
       ESP_LOGE(TAG, "Failed to add IOEXT device: %s", esp_err_to_name(add_ret));
       return add_ret;

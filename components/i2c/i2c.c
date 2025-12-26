@@ -28,6 +28,25 @@ static i2c_master_bus_handle_t s_bus_handle = NULL;
 #define I2C_PROBE_TIMEOUT_MS 100
 #define I2C_XFER_TIMEOUT_MS 200
 
+// Simple device address registry to warn about duplicate registrations
+#define I2C_MAX_DEVICES 8
+static uint8_t s_registered_addrs[I2C_MAX_DEVICES] = {0};
+static size_t s_registered_count = 0;
+
+static bool is_addr_registered(uint8_t addr) {
+  for (size_t i = 0; i < s_registered_count; i++) {
+    if (s_registered_addrs[i] == addr)
+      return true;
+  }
+  return false;
+}
+
+static void register_addr(uint8_t addr) {
+  if (s_registered_count < I2C_MAX_DEVICES) {
+    s_registered_addrs[s_registered_count++] = addr;
+  }
+}
+
 static inline bool i2c_lock() {
   return DEV_I2C_TakeLock(pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS));
 }
@@ -103,7 +122,7 @@ esp_err_t DEV_I2C_Init_Bus(i2c_master_bus_handle_t *out_p_bus_handle) {
     return ESP_OK;
   }
 
-  s_bus_handle = i2c_bus_shared_get_bus();
+  s_bus_handle = i2c_bus_shared_get_handle();
   if (s_bus_handle == NULL) {
     ESP_LOGE(TAG, "Shared I2C bus handle unavailable after init");
     return ESP_ERR_INVALID_STATE;
@@ -128,8 +147,21 @@ esp_err_t DEV_I2C_Add_Device(uint8_t addr,
     return addr_ok;
   }
 
-  return i2c_bus_shared_add_device(san_addr, ARS_I2C_FREQUENCY,
-                                   out_dev_handle);
+  // Warn if attempting to re-register same address (may indicate driver bug)
+  if (is_addr_registered(san_addr)) {
+    ESP_LOGW(TAG, "Device 0x%02X already registered on bus", san_addr);
+  } else {
+    register_addr(san_addr);
+    ESP_LOGD(TAG, "Registered device 0x%02X on shared bus", san_addr);
+  }
+
+  i2c_device_config_t dev_cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = san_addr,
+      .scl_speed_hz = ARS_I2C_FREQUENCY,
+  };
+
+  return i2c_master_bus_add_device(s_bus_handle, &dev_cfg, out_dev_handle);
 }
 
 // Legacy Init Support
@@ -164,8 +196,12 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
     return ret;
   }
 
+  if (!i2c_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
+
   if (*dev_handle != NULL) {
-    esp_err_t rm_ret = i2c_bus_shared_remove_device(*dev_handle);
+    esp_err_t rm_ret = i2c_master_bus_rm_device(*dev_handle);
     if (rm_ret != ESP_OK) {
       ESP_LOGW(TAG, "Failed to remove previous device handle: %s",
                esp_err_to_name(rm_ret));
@@ -174,6 +210,7 @@ esp_err_t DEV_I2C_Set_Slave_Addr(i2c_master_dev_handle_t *dev_handle,
   }
 
   ret = DEV_I2C_Add_Device(Addr, dev_handle);
+  i2c_unlock();
   return ret;
 }
 
