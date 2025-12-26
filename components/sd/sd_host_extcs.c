@@ -123,6 +123,9 @@ static uint8_t s_miso_low_ff_streak = 0;
 static uint8_t s_miso_high_noise_streak = 0;
 static int64_t s_miso_last_diag_us = 0;
 static sd_extcs_sequence_stats_t s_seq_stats = {0};
+static bool s_ioext_cs_locked = false;
+
+#define SD_EXTCS_IOEXT_CS_MASK (1 << IO_EXTENSION_IO_4)
 
 typedef struct {
   uint8_t sample_high[4];
@@ -347,97 +350,85 @@ static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
 }
 
 // --- GPIO Helpers ---
-// Drive SD CS through the CH32V003 IO extender with readback and bounded
-// settling delays so the card always sees a stable level before/after each SPI
-// transaction.
-static esp_err_t sd_extcs_set_cs_level(bool level_high) {
+// Drive SD CS through the CH32V003 IO extender with a shared IOEXT mutex to
+// prevent concurrent register rewrites while CS is asserted.
+static esp_err_t sd_extcs_assert_cs(void) {
   if (!s_ioext_ready || s_ioext_handle == NULL) {
-    ESP_LOGE(TAG, "CS %s failed: IO expander not ready",
-             level_high ? "HIGH" : "LOW");
+    ESP_LOGE(TAG, "CS LOW failed: IO expander not ready");
     return ESP_ERR_INVALID_STATE;
   }
-
-  const int desired_level = level_high ? 1 : 0; // IO4: 0=assert, 1=deassert
-
-  if (s_cs_level == desired_level) {
-    // Still provide settling window when redundant calls happen to keep timing
-    // expectations consistent.
-    if (desired_level == 0) {
-      ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
-    } else {
-      ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
+  if (!s_ioext_cs_locked) {
+    if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+      ESP_LOGW(TAG, "CS LOW lock timeout");
+      return ESP_ERR_TIMEOUT;
     }
-    return ESP_OK;
+    s_ioext_cs_locked = true;
   }
 
-  // ARS FIX: Simplified CS control without readback verification.
-  // The CH32V003 IO expander does NOT reliably support readback of output
-  // registers via I2C. Previous code attempted to verify the written value
-  // by reading back the latch, which failed intermittently causing the
-  // "CS->LOW verify mismatch" warning on every boot.
-  //
-  // Solution: Trust the shadow state after a successful I2C write.
-  // The IO extension driver maintains Last_io_value which tracks the
-  // intended output state. If the I2C transaction succeeds, we consider
-  // the CS toggle successful.
-
-  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(300))) {
-    ESP_LOGW(TAG, "CS->%s lock timeout", level_high ? "HIGH" : "LOW");
-    return ESP_ERR_TIMEOUT;
-  }
-
-  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, desired_level);
-  i2c_bus_shared_unlock();
-
+  esp_err_t err = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "CS->%s I2C write failed: %s", level_high ? "HIGH" : "LOW",
-             esp_err_to_name(err));
+    ESP_LOGW(TAG, "CS LOW I2C write failed: %s", esp_err_to_name(err));
+    io_extension_unlock();
+    s_ioext_cs_locked = false;
     return err;
   }
 
-  // Update shadow state - this is our source of truth
-  s_cs_level = desired_level;
-  s_last_cs_latched = desired_level;
-  s_last_cs_input = desired_level;
+  uint8_t shadow = io_extension_get_output_shadow();
+  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  s_last_cs_latched = s_cs_level;
+  s_last_cs_input = s_cs_level;
 
-  ESP_LOGD(TAG, "CS->%s via IOEXT4 (shadow=%d)", level_high ? "HIGH" : "LOW",
-           desired_level);
-
-  // Post-toggle delay for IO expander propagation
-  if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
-    vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
-  }
-
-  // I2C settle time
-  if (SD_EXTCS_CS_I2C_SETTLE_US > 0) {
+  if (SD_EXTCS_CS_I2C_SETTLE_US > 0)
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
-  }
-
-  // Direction-specific settling
-  if (desired_level == 0) {
-    ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
-  } else {
-    // Provide post-clocks and a small guard time for clean deassert timing.
-    if (s_cleanup_handle) {
-      uint8_t dummy = 0xFF;
-      for (size_t i = 0; i < SD_EXTCS_POST_DEASSERT_DUMMY_BYTES; ++i) {
-        spi_transaction_t t_cleanup = {
-            .length = 8, .tx_buffer = &dummy, .rx_buffer = NULL};
-        spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
-      }
-    }
-    ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
-  }
-
+  ets_delay_us(SD_EXTCS_CS_ASSERT_WAIT_US);
   return ESP_OK;
 }
 
-static inline esp_err_t sd_extcs_assert_cs(void) {
-  return sd_extcs_set_cs_level(false);
-}
-
 static inline esp_err_t sd_extcs_deassert_cs(void) {
-  return sd_extcs_set_cs_level(true);
+  if (!s_ioext_ready || s_ioext_handle == NULL) {
+    ESP_LOGE(TAG, "CS HIGH failed: IO expander not ready");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (!s_ioext_cs_locked) {
+    if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+      ESP_LOGW(TAG, "CS HIGH lock timeout");
+      return ESP_ERR_TIMEOUT;
+    }
+    s_ioext_cs_locked = true;
+  }
+
+  esp_err_t err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "CS HIGH I2C write failed: %s", esp_err_to_name(err));
+  }
+
+  uint8_t shadow = io_extension_get_output_shadow();
+  s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  s_last_cs_latched = s_cs_level;
+  s_last_cs_input = s_cs_level;
+
+  if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
+    vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
+  }
+  if (SD_EXTCS_CS_I2C_SETTLE_US > 0)
+    ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
+  if (s_cleanup_handle) {
+    uint8_t dummy = 0xFF;
+    for (size_t i = 0; i < SD_EXTCS_POST_DEASSERT_DUMMY_BYTES; ++i) {
+      spi_transaction_t t_cleanup = {
+          .length = 8, .tx_buffer = &dummy, .rx_buffer = NULL};
+      spi_device_polling_transmit(s_cleanup_handle, &t_cleanup);
+    }
+  }
+  ets_delay_us(SD_EXTCS_CS_DEASSERT_WAIT_US);
+
+  if (s_ioext_cs_locked) {
+    io_extension_unlock();
+    s_ioext_cs_locked = false;
+  }
+
+  return err;
 }
 
 static void sd_extcs_send_dummy_clocks(size_t byte_count) {
@@ -509,26 +500,37 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   if (!sd_extcs_lock())
     return ESP_ERR_TIMEOUT;
 
-  // Set CS HIGH (deasserted)
-  esp_err_t err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
+  if (!io_extension_lock(SD_EXTCS_CS_LOCK_TIMEOUT)) {
+    sd_extcs_unlock();
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  uint8_t shadow = io_extension_get_output_shadow();
+  int cs_high = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "CS probe: failed to set high: %s", esp_err_to_name(err));
+    io_extension_unlock();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  // Set CS LOW (asserted)
-  err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 0);
+  err = io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  shadow = io_extension_get_output_shadow();
+  int cs_low = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "CS probe: failed to set low: %s", esp_err_to_name(err));
+    io_extension_unlock();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  // Restore idle high
-  err = IO_EXTENSION_Output(IO_EXTENSION_IO_4, 1);
+  err = io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
+  shadow = io_extension_get_output_shadow();
+  int cs_restore = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  io_extension_unlock();
   sd_extcs_unlock();
 
   if (err != ESP_OK) {
@@ -539,7 +541,9 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   // All I2C writes succeeded - the toggle is considered successful
   // Note: We cannot verify via readback because CH32V003 doesn't reliably
   // support it
-  ESP_LOGI(TAG, "CS probe: IOEXT4 toggle OK (I2C writes successful)");
+  ESP_LOGI(TAG,
+           "CS probe: IOEXT4 toggle OK (I2C writes successful shadow=%d/%d/%d)",
+           cs_high, cs_low, cs_restore);
   return ESP_OK;
 }
 
@@ -761,6 +765,19 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
 
   bool cs_low_all_ff = false;
   bool miso_checked = sd_extcs_check_miso_health(&cs_low_all_ff, miso_diag);
+  if (miso_diag) {
+    uint8_t shadow = io_extension_get_output_shadow();
+    int cs_shadow = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+    ESP_LOGI(TAG,
+             "CMD0 diag pre: shadow=0x%02X cs_shadow=%d MISO idle=%02X %02X "
+             "%02X %02X cs_low=%02X %02X %02X %02X high_ff=%d low_ff=%d",
+             shadow, cs_shadow, miso_diag->sample_high[0],
+             miso_diag->sample_high[1], miso_diag->sample_high[2],
+             miso_diag->sample_high[3], miso_diag->sample_low[0],
+             miso_diag->sample_low[1], miso_diag->sample_low[2],
+             miso_diag->sample_low[3], miso_diag->high_all_ff ? 1 : 0,
+             miso_diag->low_all_ff ? 1 : 0);
+  }
   bool cs_low_stuck_warning_local = miso_checked && cs_low_all_ff;
   bool log_cs_warning = cs_low_stuck_warning_local && !s_warned_cs_low_stuck;
   if (cs_low_stuck_warning)
@@ -911,6 +928,8 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
     const char *cmd_hex_ptr = cmd_hex_len ? cmd_hex : "";
     int first_valid_idx = (idx_valid >= 0) ? (idx_valid + 1) : -1;
 
+    uint8_t cs_shadow_now = io_extension_get_output_shadow();
+    int cs_shadow_level = (cs_shadow_now & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
     char miso_probe_hex[SD_EXTCS_CMD0_MISO_PROBE_BYTES * 3 + 1];
     size_t miso_probe_hex_len = sd_extcs_safe_hex_dump(
         miso_probe, miso_probe_len, miso_probe_hex, sizeof(miso_probe_hex),
@@ -944,7 +963,7 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
              attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
              SD_EXTCS_CMD0_PRE_CMD_DELAY_US, sizeof(frame), cmd_hex_ptr,
              rx_preview_len, (int)dump_width, dump_ptr, first_valid_idx,
-             s_cs_level, miso_probe_ptr, result_str,
+             cs_shadow_level, miso_probe_ptr, result_str,
              esp_err_to_name(cs_rel_err));
 
     sd_extcs_safe_snprintf(last_result, sizeof(last_result), "%s", result_str);
@@ -1043,6 +1062,22 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
                     "across all retries."
                     " Check SD card power, CS wiring, and pull-ups.");
     }
+  }
+
+  uint8_t shadow_post = io_extension_get_output_shadow();
+  int cs_shadow_post = (shadow_post & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  if (miso_diag) {
+    ESP_LOGI(TAG,
+             "CMD0 diag post: shadow=0x%02X cs_shadow=%d MISO idle=%02X %02X "
+             "%02X %02X cs_low=%02X %02X %02X %02X",
+             shadow_post, cs_shadow_post, miso_diag->sample_high[0],
+             miso_diag->sample_high[1], miso_diag->sample_high[2],
+             miso_diag->sample_high[3], miso_diag->sample_low[0],
+             miso_diag->sample_low[1], miso_diag->sample_low[2],
+             miso_diag->sample_low[3]);
+  } else {
+    ESP_LOGI(TAG, "CMD0 diag post: shadow=0x%02X cs_shadow=%d (shadow-only)",
+             shadow_post, cs_shadow_post);
   }
 
   sd_extcs_unlock();
