@@ -45,10 +45,13 @@ static esp_lcd_panel_handle_t panel_handle =
 static void *s_framebuffers[ARS_LCD_RGB_BUFFER_NUMS] = {0};
 static size_t s_framebuffer_count = 0;
 static size_t s_stride_bytes = 0;
-static SemaphoreHandle_t s_pclk_guard_lock = NULL;
-static uint32_t s_pclk_guard_depth = 0;
 static uint32_t s_pclk_current_hz = ARS_LCD_PIXEL_CLOCK_HZ;
 static const int k_bounce_try_default_lines = 30;
+
+#if CONFIG_ARS_LCD_PCLK_GUARD_ENABLE
+static SemaphoreHandle_t s_pclk_guard_lock = NULL;
+static uint32_t s_pclk_guard_depth = 0;
+#endif
 
 // Frame buffer complete event callback function
 IRAM_ATTR static bool
@@ -275,10 +278,10 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   esp_err_t err = ESP_ERR_NO_MEM;
 
   size_t line_bytes = ARS_LCD_H_RES * (ARS_LCD_BIT_PER_PIXEL / 8);
-  size_t largest_dma =
+  size_t largest_dma_after =
       heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   int max_fit_lines =
-      (line_bytes > 0) ? (int)(largest_dma / line_bytes) : bounce_lines;
+      (line_bytes > 0) ? (int)(largest_dma_after / line_bytes) : bounce_lines;
   if (max_fit_lines < 0) {
     max_fit_lines = 0;
   }
@@ -287,7 +290,7 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
            "Bounce sizing: cfg=%d lines line_bytes=%u largest_dma=%u KB "
            "max_fit=%d",
            BOARD_LCD_RGB_BOUNCE_BUFFER_LINES, (unsigned)line_bytes,
-           (unsigned)(largest_dma / 1024), max_fit_lines);
+           (unsigned)(largest_dma_after / 1024), max_fit_lines);
 
   int candidates[9] = {0};
   size_t candidate_count = 0;
@@ -426,12 +429,14 @@ void waveshare_rgb_lcd_bl_off() {
   IO_EXTENSION_Output(IO_EXTENSION_IO_2, 0); // Backlight OFF configuration
 }
 
+#if CONFIG_ARS_LCD_PCLK_GUARD_ENABLE
 static SemaphoreHandle_t rgb_lcd_pclk_guard_lock_get(void) {
   if (!s_pclk_guard_lock) {
     s_pclk_guard_lock = xSemaphoreCreateMutex();
   }
   return s_pclk_guard_lock;
 }
+#endif
 
 esp_err_t rgb_lcd_port_pclk_guard_enter(const char *reason,
                                         uint32_t *applied_hz) {

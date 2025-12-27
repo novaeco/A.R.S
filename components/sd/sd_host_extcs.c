@@ -307,7 +307,11 @@ static void sd_extcs_unlock_ioext_bus(void) {
   }
 }
 
-static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched) {
+static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched)
+#if !CONFIG_ARS_SD_EXTCS_CS_READBACK && !CONFIG_ARS_IOEXT_READBACK_DIAG
+    __attribute__((unused))
+#endif
+{
 #if CONFIG_ARS_SD_EXTCS_CS_READBACK
   if (matched)
     *matched = false;
@@ -1322,12 +1326,15 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
 
     uint8_t cs_shadow_now = io_extension_get_output_shadow();
     int cs_shadow_level = (cs_shadow_now & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+    (void)cs_shadow_level; // used for optional diagnostics
     char miso_probe_hex[SD_EXTCS_CMD0_MISO_PROBE_BYTES * 3 + 1];
     size_t miso_probe_hex_len = sd_extcs_safe_hex_dump(
         miso_probe, miso_probe_len, miso_probe_hex, sizeof(miso_probe_hex),
         true);
+    (void)miso_probe_hex_len;
     const char *miso_probe_ptr =
         miso_probe_hex_len ? miso_probe_hex : "<none>";
+    (void)miso_probe_ptr; // diagnostics only when logged
 
     char result_str[CMD0_RESULT_LEN];
     if (valid_r1) {
