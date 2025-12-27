@@ -136,8 +136,15 @@ static sd_extcs_sequence_stats_t s_seq_stats = {0};
 static bool s_ioext_cs_locked = false;
 static bool s_cs_i2c_locked = false;
 static bool s_bus_initialized = false;
+static bool s_cs_shadow_valid = false;
 
 #define SD_EXTCS_IOEXT_CS_MASK (1 << IO_EXTENSION_IO_4)
+#define SD_EXTCS_LOGV(tag, fmt, ...)                                           \
+  do {                                                                         \
+    if (CONFIG_ARS_SD_DIAG_VERBOSE) {                                          \
+      ESP_LOGI(tag, fmt, ##__VA_ARGS__);                                       \
+    }                                                                          \
+  } while (0)
 
 typedef struct {
   uint8_t sample_high[4];
@@ -283,54 +290,74 @@ static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched) {
 #endif
 }
 
-static esp_err_t sd_extcs_apply_cs_level_locked(bool assert_low,
-                                                const char *ctx) {
-  const uint8_t shadow_before = io_extension_get_output_shadow();
-  esp_err_t err = ESP_FAIL;
-  bool latched_ok = false;
+static esp_err_t sd_extcs_readback_cs_once_locked(bool assert_low,
+                                                  bool *matched) {
+#if CONFIG_ARS_IOEXT_READBACK_DIAG
+  return sd_extcs_readback_cs_locked(assert_low, matched);
+#else
+  if (matched)
+    *matched = true;
+  return ESP_OK;
+#endif
+}
 
-  for (int attempt = 0; attempt < SD_EXTCS_CS_READBACK_RETRIES; ++attempt) {
-    err = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
+static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
+                                 const char *ctx) {
+  esp_err_t ret = ESP_OK;
+  const int want_level = assert_low ? 0 : 1;
+
+  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
+  if (lock_ret != ESP_OK) {
+    return lock_ret;
+  }
+
+  if (s_cs_shadow_valid && s_cs_level == want_level) {
+    sd_extcs_unlock_ioext_bus();
+    return ESP_OK;
+  }
+
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    ret = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
                      : io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
 
-    const uint8_t shadow_after = io_extension_get_output_shadow();
-    esp_err_t rb = sd_extcs_readback_cs_locked(assert_low, &latched_ok);
-    const bool shadow_level = (shadow_after & SD_EXTCS_IOEXT_CS_MASK) != 0;
-    const bool want_level = !assert_low;
-
-    if (err == ESP_OK && (!CONFIG_ARS_SD_EXTCS_CS_READBACK || latched_ok)) {
-      s_cs_level = shadow_level ? 1 : 0;
-      s_last_cs_latched = latched_ok ? (want_level ? 1 : 0) : s_cs_level;
+    uint8_t shadow = io_extension_get_output_shadow();
+    s_cs_shadow_valid = (ret == ESP_OK);
+    if (ret == ESP_OK) {
+      i2c_bus_shared_note_success();
+      bool rb_match = true;
+      if (diag_readback) {
+        sd_extcs_readback_cs_once_locked(assert_low, &rb_match);
+      }
+      s_cs_level = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+      s_last_cs_latched = rb_match ? want_level : s_cs_level;
       s_last_cs_input = s_last_cs_latched;
-      ESP_LOGD(TAG,
-               "%s OK (attempt=%d shadow %02X->%02X latched=%d streak=%" PRIu32
-               ")",
-               ctx, attempt + 1, shadow_before, shadow_after,
-               latched_ok ? (want_level ? 1 : 0) : -1,
-               i2c_bus_shared_get_error_streak());
+      SD_EXTCS_LOGV(TAG,
+                    "%s ok attempt=%d shadow=0x%02X want=%d rb=%d streak=%" PRIu32,
+                    ctx, attempt + 1, shadow, want_level, rb_match ? 1 : 0,
+                    i2c_bus_shared_get_error_streak());
+      sd_extcs_unlock_ioext_bus();
       return ESP_OK;
     }
 
+    i2c_bus_shared_note_error("sd_extcs_cs", ret);
     ESP_LOGW(TAG,
-             "%s attempt %d: err=%s rb=%s shadow %02X->%02X latched_ok=%d "
-             "i2c_streak=%" PRIu32,
-             ctx, attempt + 1, esp_err_to_name(err), esp_err_to_name(rb),
-             shadow_before, shadow_after, latched_ok ? 1 : 0,
+             "%s attempt %d failed: %s (shadow=0x%02X streak=%" PRIu32 ")",
+             ctx, attempt + 1, esp_err_to_name(ret), shadow,
              i2c_bus_shared_get_error_streak());
 
-    if (err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_TIMEOUT ||
-        err == ESP_FAIL) {
+    if (ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_TIMEOUT ||
+        ret == ESP_FAIL) {
       esp_err_t rec = i2c_bus_shared_recover_locked();
       if (rec != ESP_OK) {
-        ESP_LOGW(TAG, "%s: I2C recover failed: %s", ctx,
-                 esp_err_to_name(rec));
+        SD_EXTCS_LOGV(TAG, "%s: I2C recover failed: %s", ctx,
+                      esp_err_to_name(rec));
       }
     }
-
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  return err;
+  sd_extcs_unlock_ioext_bus();
+  return ret;
 }
 
 static void sd_extcs_seq_reset(uint32_t init_khz, uint32_t target_khz) {
@@ -478,17 +505,7 @@ static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
 
 // --- GPIO Helpers ---
 static esp_err_t sd_extcs_assert_cs(void) {
-  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
-  if (lock_ret != ESP_OK) {
-    return lock_ret;
-  }
-
-  esp_err_t err = sd_extcs_apply_cs_level_locked(true, "CS LOW");
-
-  if (err != ESP_OK) {
-    sd_extcs_unlock_ioext_bus();
-    return err;
-  }
+  esp_err_t err = sd_extcs_set_cs(true, false, "CS LOW");
 
   if (SD_EXTCS_CS_I2C_SETTLE_US > 0)
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
@@ -497,12 +514,7 @@ static esp_err_t sd_extcs_assert_cs(void) {
 }
 
 static inline esp_err_t sd_extcs_deassert_cs(void) {
-  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
-  if (lock_ret != ESP_OK) {
-    return lock_ret;
-  }
-
-  esp_err_t err = sd_extcs_apply_cs_level_locked(false, "CS HIGH");
+  esp_err_t err = sd_extcs_set_cs(false, false, "CS HIGH");
 
   if (SD_EXTCS_CS_POST_TOGGLE_DELAY_MS > 0) {
     vTaskDelay(pdMS_TO_TICKS(SD_EXTCS_CS_POST_TOGGLE_DELAY_MS));
@@ -608,36 +620,40 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   if (!sd_extcs_lock())
     return ESP_ERR_TIMEOUT;
 
-  esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
-  if (lock_ret != ESP_OK) {
-    sd_extcs_unlock();
-    return lock_ret;
-  }
-
-  esp_err_t err = sd_extcs_apply_cs_level_locked(false, "CS probe HIGH");
+  bool matched = true;
+  esp_err_t err = sd_extcs_set_cs(false, CONFIG_ARS_IOEXT_READBACK_DIAG,
+                                  "CS probe HIGH");
   uint8_t shadow = io_extension_get_output_shadow();
   int cs_high = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  if (err == ESP_OK && CONFIG_ARS_IOEXT_READBACK_DIAG) {
+    sd_extcs_readback_cs_once_locked(false, &matched);
+  }
   if (err != ESP_OK) {
-    sd_extcs_unlock_ioext_bus();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  err = sd_extcs_apply_cs_level_locked(true, "CS probe LOW");
+  err = sd_extcs_set_cs(true, CONFIG_ARS_IOEXT_READBACK_DIAG,
+                        "CS probe LOW");
   shadow = io_extension_get_output_shadow();
   int cs_low = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
+  if (err == ESP_OK && CONFIG_ARS_IOEXT_READBACK_DIAG) {
+    sd_extcs_readback_cs_once_locked(true, &matched);
+  }
   if (err != ESP_OK) {
-    sd_extcs_unlock_ioext_bus();
     sd_extcs_unlock();
     return err;
   }
   vTaskDelay(pdMS_TO_TICKS(2));
 
-  err = sd_extcs_apply_cs_level_locked(false, "CS probe RESTORE");
+  err = sd_extcs_set_cs(false, CONFIG_ARS_IOEXT_READBACK_DIAG,
+                        "CS probe RESTORE");
   shadow = io_extension_get_output_shadow();
   int cs_restore = (shadow & SD_EXTCS_IOEXT_CS_MASK) ? 1 : 0;
-  sd_extcs_unlock_ioext_bus();
+  if (err == ESP_OK && CONFIG_ARS_IOEXT_READBACK_DIAG) {
+    sd_extcs_readback_cs_once_locked(false, &matched);
+  }
   sd_extcs_unlock();
 
   if (err != ESP_OK) {
@@ -649,8 +665,9 @@ static esp_err_t sd_extcs_probe_cs_line(void) {
   // Note: We cannot verify via readback because CH32V003 doesn't reliably
   // support it
   ESP_LOGI(TAG,
-           "CS probe: IOEXT4 toggle OK (I2C writes successful shadow=%d/%d/%d)",
-           cs_high, cs_low, cs_restore);
+           "CS probe: IOEXT4 toggle OK (I2C writes successful shadow=%d/%d/%d "
+           "diag_match=%d)",
+           cs_high, cs_low, cs_restore, matched ? 1 : 0);
   return ESP_OK;
 }
 
@@ -674,15 +691,13 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
   }
 
   for (int i = 0; i < 10; ++i) {
-    esp_err_t clr_ret =
-        sd_extcs_apply_cs_level_locked(true, "Diag-CS LOW toggle");
+    esp_err_t clr_ret = sd_extcs_set_cs(true, false, "Diag-CS LOW toggle");
     if (clr_ret != ESP_OK) {
       toggle_fail++;
       ret = clr_ret;
     }
     ets_delay_us(80);
-    esp_err_t set_ret =
-        sd_extcs_apply_cs_level_locked(false, "Diag-CS HIGH toggle");
+    esp_err_t set_ret = sd_extcs_set_cs(false, false, "Diag-CS HIGH toggle");
     if (set_ret != ESP_OK) {
       toggle_fail++;
       ret = set_ret;
