@@ -1,0 +1,13 @@
+menu "IO Extension (CH32V003)"
+
+config ARS_IOEXT_SCL_SPEED_HZ
+    int "Fréquence I2C pour l'IO extender"
+    default 100000
+    range 10000 400000
+    help
+      Vitesse d'horloge I2C appliquée au CH32V003 (addr 0x24) via le bus
+      partagé (SDA=GPIO8, SCL=GPIO9). Utilisée aussi pour les rafales CS SD
+      (ExtCS). 100 kHz recommandé pour la stabilité ; augmenter seulement si
+      validé sur la carte.
+
+endmenu
