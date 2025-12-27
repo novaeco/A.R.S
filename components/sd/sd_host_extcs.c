@@ -30,6 +30,14 @@ static void sd_extcs_free_bus_if_idle(void);
 #define SD_EXTCS_CMD58_RETRIES SD_EXTCS_CMD0_RETRIES
 #endif
 
+#ifndef CONFIG_ARS_SD_DIAG_VERBOSE
+#define CONFIG_ARS_SD_DIAG_VERBOSE 0
+#endif
+
+#ifndef CONFIG_ARS_IOEXT_READBACK_DIAG
+#define CONFIG_ARS_IOEXT_READBACK_DIAG 0
+#endif
+
 #ifndef CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ
 #define CONFIG_ARS_SD_EXTCS_INIT_FREQ_KHZ 100
 #endif
@@ -506,6 +514,10 @@ static esp_err_t sd_extcs_raise_clock(uint32_t host_target_khz,
 // --- GPIO Helpers ---
 static esp_err_t sd_extcs_assert_cs(void) {
   esp_err_t err = sd_extcs_set_cs(true, false, "CS LOW");
+
+  if (err != ESP_OK) {
+    return err;
+  }
 
   if (SD_EXTCS_CS_I2C_SETTLE_US > 0)
     ets_delay_us(SD_EXTCS_CS_I2C_SETTLE_US);
