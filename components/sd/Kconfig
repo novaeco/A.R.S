@@ -145,7 +145,7 @@ menu "SD Card Configuration"
 
     config ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
         bool "Pause GT911 touch polling during SD init (ExtCS debug aid)"
-        default n
+        default y
         help
             When enabled, the GT911 touch task is temporarily paused around the
             SD init/mount sequence to eliminate I2C contention while toggling
@@ -158,6 +158,14 @@ menu "SD Card Configuration"
         help
             Emit extra debug logs for SD ExtCS CS toggling and retries. Keep
             disabled in production to avoid log spam.
+
+    config ARS_SD_EXTCS_STAGE_LOG
+        bool "Log one line per SD ExtCS init stage"
+        default y
+        help
+            Emit compact logs for CMD0, CMD8, ACMD41 and CMD58 (once per
+            stage) plus recovery events. Keeps visibility during bring-up
+            without flooding output.
 
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"

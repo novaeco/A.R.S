@@ -68,7 +68,7 @@ static void ioext_on_error(const char *ctx, esp_err_t err) {
              "SDA=8 SCL=9]",
              ctx, (unsigned)s_ioext_error_streak, esp_err_to_name(err),
              IO_EXTENSION_ADDR);
-    i2c_bus_shared_recover();
+    i2c_bus_shared_recover("io_ext");
     s_ioext_next_recover_us = now + 500000; // 500ms backoff
   }
   if (s_ioext_error_streak > 10) {
@@ -231,7 +231,7 @@ esp_err_t IO_EXTENSION_Init(void) {
              IO_EXTENSION_ADDR, esp_err_to_name(ret));
     if (ret != ESP_OK) {
       ioext_on_error("IOEXT PROBE", ret);
-      i2c_bus_shared_recover();
+      i2c_bus_shared_recover("io_ext_probe");
     }
   }
 

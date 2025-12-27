@@ -54,8 +54,10 @@ esp_err_t sd_card_init() {
   }
 
   bool touch_paused = false;
+#if CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
   touch_pause_for_sd_init(true);
   touch_paused = true;
+#endif
 
   sd_set_state(SD_STATE_UNINITIALIZED);
   card = NULL;

@@ -69,7 +69,7 @@ bool i2c_bus_shared_is_ready(void);
  *
  * Safe to call from task context only (not ISR). Uses the shared mutex.
  */
-esp_err_t i2c_bus_shared_recover(void);
+esp_err_t i2c_bus_shared_recover(const char *tag);
 
 /**
  * @brief Attempt bus recovery when caller ALREADY holds the mutex.
@@ -77,7 +77,7 @@ esp_err_t i2c_bus_shared_recover(void);
  *
  * @note Caller MUST already hold the I2C bus lock before calling this.
  */
-esp_err_t i2c_bus_shared_recover_locked(void);
+esp_err_t i2c_bus_shared_recover_locked(const char *tag);
 
 /**
  * @brief Force bus recovery without backoff throttling.
@@ -85,12 +85,12 @@ esp_err_t i2c_bus_shared_recover_locked(void);
  * Use for critical paths (e.g., SD ext-CS) that must clear INVALID_RESPONSE
  * bursts immediately. Safe only from task context.
  */
-esp_err_t i2c_bus_shared_recover_force(void);
+esp_err_t i2c_bus_shared_recover_force(const char *tag);
 
 /**
  * @brief Force bus recovery (caller already holds the I2C mutex).
  */
-esp_err_t i2c_bus_shared_recover_locked_force(void);
+esp_err_t i2c_bus_shared_recover_locked_force(const char *tag);
 
 /**
  * @brief Check if current task holds the I2C mutex.
