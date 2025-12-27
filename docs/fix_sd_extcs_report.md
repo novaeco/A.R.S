@@ -16,6 +16,7 @@
 - **S\u00e9rialisation CS simplifi\u00e9e** : les helpers `sd_extcs_assert_cs()/deassert_cs()` s'appuient sur la nouvelle fonction centralis\u00e9e (plus de double boucle), conservant le lock I\u00b2C sur toute la transaction SPI. \u3010F:components/sd/sd_host_extcs.c\u2020L414-L454\u3011
 - **Mode test d'isolation I\u00b2C** : ajout de l'option `CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT` (Kconfig SD) pour mettre en pause la t\u00e2che GT911 pendant l'init SD; exposition d'une API `touch_pause_for_sd_init()`/`gt911_set_paused()` qui stoppe IRQ/polling et r\u00e9active l'IRQ ensuite. Utilis\u00e9e dans `main.c` autour de `sd_card_init()`. \u3010F:components/sd/Kconfig\u2020L47-L80\u3011\u3010F:components/touch/gt911.c\u2020L188-L219\u3011\u3010F:components/touch/gt911.c\u2020L1694-L1701\u3011\u3010F:components/touch/gt911.h\u2020L93-L101\u3011\u3010F:components/touch/touch.c\u2020L142-L147\u3011\u3010F:components/touch/touch.h\u2020L67-L75\u3011\u3010F:main/main.c\u2020L62-L73\u3011
 - **Instrumentation CS** : logs `CS ... shadow ... latched ... streak` pour chaque bascule afin de corr\u00e9ler l'\u00e9tat CS avec `i2c_error_streak`.
+- **Activation par d\u00e9faut (sdkconfig.defaults)** : `CONFIG_ARS_SD_EXTCS_CS_READBACK=y` et `CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT=y` sont positionn\u00e9s par d\u00e9faut pour fiabiliser les diagnostics (d\u00e9sactiver au besoin pour mesurer la perf brute).
 
 ## Proc\u00e9dure de test
 1. **Build**  
