@@ -136,6 +136,11 @@ esp_err_t sd_card_init() {
   } else if (ext_state == SD_EXTCS_STATE_ABSENT) {
     sd_set_state(SD_STATE_ABSENT);
     ESP_LOGW(TAG, "SD init: NO_CARD detected (ext-CS path healthy)");
+  } else if (ext_state == SD_EXTCS_STATE_IOEXT_FAIL) {
+    sd_set_state(SD_STATE_INIT_FAIL);
+    ESP_LOGE(TAG,
+             "SD init: IOEXT/I2C failure during ExtCS bring-up (ret=%s)",
+             esp_err_to_name(ret));
   } else if (ext_state == SD_EXTCS_STATE_INIT_FAIL) {
     sd_set_state(SD_STATE_INIT_FAIL);
   } else {

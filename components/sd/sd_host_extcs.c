@@ -105,6 +105,8 @@ static void sd_extcs_free_bus_if_idle(void);
 #define SD_EXTCS_CS_DEASSERT_SETTLE_US 40
 #define SD_EXTCS_CMD0_PRE_CMD_DELAY_US 240
 #define SD_EXTCS_CS_LOCK_TIMEOUT pdMS_TO_TICKS(200)
+#define SD_EXTCS_DIAG_TOGGLE_LIMIT 10
+#define SD_EXTCS_DIAG_DEADLINE_US 600000
 #define SD_EXTCS_CMD0_RAW_STR_LIMIT (SD_EXTCS_CMD0_RESP_WINDOW_BYTES * 3)
 #define SD_EXTCS_CMD0_RESULT_STR_LIMIT 192
 #define SD_EXTCS_CMD0_SLOW_FREQ_KHZ 100
@@ -141,6 +143,8 @@ static bool s_warned_cs_low_stuck = false;
 static bool s_cmd0_diag_logged = false;
 static uint8_t s_last_cs_latched = 0xFF;
 static uint8_t s_last_cs_input = 0xFF;
+static bool s_ioext_error_seen = false;
+static esp_err_t s_last_ioext_err = ESP_OK;
 static uint8_t s_miso_low_ff_streak = 0;
 static uint8_t s_miso_high_noise_streak = 0;
 static int64_t s_miso_last_diag_us = 0;
@@ -249,6 +253,8 @@ const char *sd_extcs_state_str(sd_extcs_state_t state) {
     return "IDLE_READY";
   case SD_EXTCS_STATE_ABSENT:
     return "ABSENT";
+  case SD_EXTCS_STATE_IOEXT_FAIL:
+    return "IOEXT_FAIL";
   case SD_EXTCS_STATE_INIT_FAIL:
     return "INIT_FAIL";
   default:
@@ -368,6 +374,13 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
                     ctx, attempt + 1, shadow, want_level, rb_match ? 1 : 0,
                     i2c_bus_shared_get_error_streak());
       sd_extcs_unlock_ioext_bus();
+      // Minimal pacing to avoid hammering the IO extender when the caller
+      // toggles CS repeatedly (diagnostic loops).
+      uint32_t settle_us = SD_EXTCS_CS_I2C_SETTLE_US;
+      if (settle_us < 500) {
+        settle_us = 500;
+      }
+      ets_delay_us(settle_us);
       return ESP_OK;
     }
 
@@ -377,15 +390,21 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
              "%s attempt %d failed: %s (streak=%" PRIu32 ", recover=%d)",
              ctx, attempt + 1, esp_err_to_name(ret), streak,
              attempted_recover ? 1 : 0);
+    s_ioext_error_seen = true;
+    s_last_ioext_err = ret;
 
     if (attempted_recover) {
       break;
     }
 
     attempted_recover = true;
-    esp_err_t rec = i2c_bus_shared_recover_locked("sd_extcs_cs");
+    esp_err_t rec =
+        i2c_bus_shared_recover_locked_ex("sd_extcs_cs", true /*force*/);
     if (rec != ESP_OK) {
       ESP_LOGW(TAG, "%s: I2C recover failed: %s", ctx, esp_err_to_name(rec));
+      s_last_ioext_err = rec;
+      // Avoid an endless loop if forced recover still fails repeatedly.
+      break;
     }
     if (backoff_ticks > 0) {
       vTaskDelay(backoff_ticks);
@@ -413,6 +432,8 @@ static void sd_extcs_seq_reset(uint32_t init_khz, uint32_t target_khz) {
   s_stage_acmd41_logged = false;
   s_stage_cmd58_logged = false;
 #endif
+  s_ioext_error_seen = false;
+  s_last_ioext_err = ESP_OK;
 }
 
 static inline void sd_extcs_seq_mark_state(sd_extcs_state_t state) {
@@ -738,19 +759,28 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
     return lock_ret;
   }
 
-  for (int i = 0; i < 10; ++i) {
+  const int64_t diag_start_us = esp_timer_get_time();
+  int toggles_done = 0;
+  for (; toggles_done < SD_EXTCS_DIAG_TOGGLE_LIMIT; ++toggles_done) {
     esp_err_t clr_ret = sd_extcs_set_cs(true, false, "Diag-CS LOW toggle");
     if (clr_ret != ESP_OK) {
       toggle_fail++;
       ret = clr_ret;
+      break;
     }
-    ets_delay_us(80);
+    ets_delay_us(500);
     esp_err_t set_ret = sd_extcs_set_cs(false, false, "Diag-CS HIGH toggle");
     if (set_ret != ESP_OK) {
       toggle_fail++;
       ret = set_ret;
+      break;
     }
-    ets_delay_us(80);
+    ets_delay_us(500);
+
+    if ((esp_timer_get_time() - diag_start_us) >= SD_EXTCS_DIAG_DEADLINE_US) {
+      ret = ret == ESP_OK ? ESP_ERR_TIMEOUT : ret;
+      break;
+    }
   }
   shadow_after = io_extension_get_output_shadow();
 
@@ -758,10 +788,19 @@ static esp_err_t sd_extcs_diag_toggle_and_cmd0(void) {
   sd_extcs_unlock();
 
   ESP_LOGI(TAG,
-           "Diag-CS: toggled 10x fail=%d shadow_before=0x%02X shadow_after=0x%02X "
-           "i2c_streak=%" PRIu32,
-           toggle_fail, shadow_before, shadow_after,
-           i2c_bus_shared_get_error_streak());
+           "Diag-CS: toggled %d/%d fail=%d shadow_before=0x%02X "
+           "shadow_after=0x%02X i2c_streak=%" PRIu32 " duration=%" PRIi64 "us",
+           toggles_done, SD_EXTCS_DIAG_TOGGLE_LIMIT, toggle_fail,
+           shadow_before, shadow_after, i2c_bus_shared_get_error_streak(),
+           (esp_timer_get_time() - diag_start_us));
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG,
+             "Diag-CS aborted after %d/%d toggles in %" PRIi64
+             "us: %s (last_ioext=%s)",
+             toggles_done, SD_EXTCS_DIAG_TOGGLE_LIMIT,
+             (esp_timer_get_time() - diag_start_us), esp_err_to_name(ret),
+             esp_err_to_name(s_last_ioext_err));
+  }
 
   if (!s_cleanup_handle) {
     return (ret == ESP_OK) ? ESP_ERR_INVALID_STATE : ret;
@@ -1458,6 +1497,11 @@ static esp_err_t sd_extcs_send_command(uint8_t cmd, uint32_t arg, uint8_t crc,
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "CS Assert failed before CMD%u: %s", cmd,
              esp_err_to_name(err));
+    if (s_extcs_state != SD_EXTCS_STATE_IDLE_READY &&
+        s_extcs_state != SD_EXTCS_STATE_ABSENT) {
+      s_extcs_state = SD_EXTCS_STATE_IOEXT_FAIL;
+      sd_extcs_seq_mark_state(s_extcs_state);
+    }
     sd_extcs_unlock();
     return err;
   }
@@ -1545,6 +1589,10 @@ static esp_err_t sd_extcs_do_transaction(int slot, sdmmc_command_t *cmdinfo) {
     // If CS fails (e.g. I2C timeout), we can't trust the transaction.
     // But we must return an error compatible with storage stack.
     ESP_LOGW(TAG, "CS Assert Failed: %s", esp_err_to_name(ret));
+    if (s_extcs_state == SD_EXTCS_STATE_UNINITIALIZED) {
+      s_extcs_state = SD_EXTCS_STATE_IOEXT_FAIL;
+      sd_extcs_seq_mark_state(s_extcs_state);
+    }
     sd_extcs_unlock();
     return ESP_ERR_TIMEOUT;
   }
@@ -1594,7 +1642,11 @@ static esp_err_t sd_extcs_low_speed_init(void) {
           ? " (MISO stuck high while CS asserted before CMD0; check CS path)"
           : "";
   const char *classification =
-      card_idle ? "OK" : (saw_non_ff ? "WIRED_BUT_NO_RESP" : "ABSENT");
+      card_idle
+          ? "OK"
+          : (s_ioext_error_seen
+                 ? "IOEXT_FAIL"
+                 : (saw_non_ff ? "WIRED_BUT_NO_RESP" : "ABSENT"));
   if (!card_idle) {
 #if CONFIG_ARS_SD_EXTCS_STAGE_LOG
     if (!s_stage_cmd0_logged) {
@@ -1603,8 +1655,13 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       s_stage_cmd0_logged = true;
     }
 #endif
-    s_extcs_state =
-        saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL : SD_EXTCS_STATE_ABSENT;
+    if (s_ioext_error_seen) {
+      s_extcs_state = SD_EXTCS_STATE_IOEXT_FAIL;
+      err = (err == ESP_OK) ? s_last_ioext_err : err;
+    } else {
+      s_extcs_state =
+          saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL : SD_EXTCS_STATE_ABSENT;
+    }
     sd_extcs_seq_mark_state(s_extcs_state);
     ESP_LOGW(
         TAG,
@@ -1620,6 +1677,14 @@ static esp_err_t sd_extcs_low_speed_init(void) {
         precheck_diag.sample_high[3], precheck_diag.sample_low[0],
         precheck_diag.sample_low[1], precheck_diag.sample_low[2],
         precheck_diag.sample_low[3]);
+    if (s_ioext_error_seen) {
+      ESP_LOGE(TAG,
+               "SD ext-CS failed due to IOEXT/I2C error: %s "
+               "(last_ioext=%s streak=%" PRIu32 ")",
+               esp_err_to_name(err), esp_err_to_name(s_last_ioext_err),
+               i2c_bus_shared_get_error_streak());
+      return err != ESP_OK ? err : s_last_ioext_err;
+    }
     return saw_non_ff ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
   }
 

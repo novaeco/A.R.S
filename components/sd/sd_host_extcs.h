@@ -21,6 +21,7 @@ typedef enum {
   SD_EXTCS_STATE_IDLE_READY,
   SD_EXTCS_STATE_ABSENT,
   SD_EXTCS_STATE_INIT_FAIL,
+  SD_EXTCS_STATE_IOEXT_FAIL,
 } sd_extcs_state_t;
 
 typedef struct {
