@@ -71,7 +71,7 @@ static void sd_extcs_free_bus_if_idle(void);
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US
-#define CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US 50
+#define CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US 200
 #endif
 
 #ifndef CONFIG_ARS_SD_EXTCS_CMD58_RETRIES
@@ -380,19 +380,16 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
              "%s attempt %d failed: %s (shadow=0x%02X streak=%" PRIu32 ")",
              ctx, attempt + 1, esp_err_to_name(ret), shadow, streak);
 
-    if (ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_TIMEOUT ||
-        ret == ESP_FAIL || streak >= 3) {
-      esp_err_t rec = i2c_bus_shared_recover_locked();
-      if (rec != ESP_OK) {
-        SD_EXTCS_LOGV(TAG, "%s: I2C recover failed: %s", ctx,
-                      esp_err_to_name(rec));
-      } else if (streak >= 3) {
-        esp_err_t reprobe = sd_extcs_reprobe_ioext_locked(ctx);
-        if (reprobe != ESP_OK) {
-          SD_EXTCS_LOGV(TAG, "%s: IOEXT re-probe after recover failed: %s",
-                        ctx, esp_err_to_name(reprobe));
-        }
-      }
+    // Immediate recover + re-probe (no backoff) on any failure
+    esp_err_t rec = i2c_bus_shared_recover_locked_force();
+    if (rec != ESP_OK) {
+      SD_EXTCS_LOGV(TAG, "%s: I2C forced recover failed: %s", ctx,
+                    esp_err_to_name(rec));
+    }
+    esp_err_t reprobe = sd_extcs_reprobe_ioext_locked(ctx);
+    if (reprobe != ESP_OK) {
+      SD_EXTCS_LOGV(TAG, "%s: IOEXT re-probe after recover failed: %s", ctx,
+                    esp_err_to_name(reprobe));
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }

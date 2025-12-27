@@ -26,7 +26,7 @@ static TickType_t s_i2c_backoff_ticks = 0;
 static int64_t s_last_recover_us = 0;
 
 // Forward declaration
-static esp_err_t i2c_bus_shared_recover_internal(void);
+static esp_err_t i2c_bus_shared_recover_internal(bool force);
 
 // Helper: Check if current task holds the recursive mutex
 bool i2c_bus_shared_is_locked_by_me(void) {
@@ -194,14 +194,22 @@ bool i2c_bus_shared_is_ready(void) {
   return s_shared_bus != NULL && s_initialized;
 }
 
-static esp_err_t i2c_bus_shared_recover_internal(void) {
+static esp_err_t i2c_bus_shared_recover_internal(bool force) {
   const int64_t now = esp_timer_get_time();
-  if (s_last_recover_us != 0 &&
-      (now - s_last_recover_us) < 200000) { // 200 ms backoff
-    ESP_LOGW(TAG, "I2C recover skipped (backoff active)");
-    return ESP_ERR_INVALID_STATE;
+  if (!force) {
+    if (s_last_recover_us != 0 &&
+        (now - s_last_recover_us) < 200000) { // 200 ms backoff
+      ESP_LOGW(TAG, "I2C recover skipped (backoff active)");
+      return ESP_ERR_INVALID_STATE;
+    }
+    s_last_recover_us = now;
+  } else {
+    s_last_recover_us = now;
+    // When forced, drop any accumulated backoff to allow immediate retries.
+    portENTER_CRITICAL(&s_i2c_stats_spinlock);
+    s_i2c_backoff_ticks = 0;
+    portEXIT_CRITICAL(&s_i2c_stats_spinlock);
   }
-  s_last_recover_us = now;
 
   if (s_shared_bus == NULL) {
     // Bus never created yet: just initialize without attempting to tear down
@@ -249,7 +257,7 @@ esp_err_t i2c_bus_shared_recover(void) {
   }
 
   if (i2c_bus_shared_is_locked_by_me()) {
-    return i2c_bus_shared_recover_internal();
+    return i2c_bus_shared_recover_internal(false);
   }
 
   if (!i2c_bus_shared_lock(pdMS_TO_TICKS(1000))) {
@@ -257,7 +265,7 @@ esp_err_t i2c_bus_shared_recover(void) {
     return ESP_ERR_TIMEOUT;
   }
 
-  esp_err_t ret = i2c_bus_shared_recover_internal();
+  esp_err_t ret = i2c_bus_shared_recover_internal(false);
 
   i2c_bus_shared_unlock();
   return ret;
@@ -275,7 +283,42 @@ esp_err_t i2c_bus_shared_recover_locked(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  return i2c_bus_shared_recover_internal();
+  return i2c_bus_shared_recover_internal(false);
+}
+
+esp_err_t i2c_bus_shared_recover_force(void) {
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (i2c_bus_shared_is_locked_by_me()) {
+    return i2c_bus_shared_recover_internal(true);
+  }
+
+  if (!i2c_bus_shared_lock(pdMS_TO_TICKS(1000))) {
+    s_consecutive_recover_fails++;
+    return ESP_ERR_TIMEOUT;
+  }
+
+  esp_err_t ret = i2c_bus_shared_recover_internal(true);
+
+  i2c_bus_shared_unlock();
+  return ret;
+}
+
+esp_err_t i2c_bus_shared_recover_locked_force(void) {
+  if (xPortInIsrContext()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (!i2c_bus_shared_is_locked_by_me()) {
+    ESP_LOGE(
+        TAG,
+        "i2c_bus_shared_recover_locked_force called without holding mutex!");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  return i2c_bus_shared_recover_internal(true);
 }
 
 void i2c_bus_shared_deinit(void) {

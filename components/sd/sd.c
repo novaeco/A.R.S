@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "sd_host_extcs.h"
 #include "sdkconfig.h"
+#include "touch.h"
 #include "sdmmc_cmd.h"
 #include <dirent.h>
 #include <string.h>
@@ -52,6 +53,10 @@ esp_err_t sd_card_init() {
     return ESP_ERR_TIMEOUT;
   }
 
+  bool touch_paused = false;
+  touch_pause_for_sd_init(true);
+  touch_paused = true;
+
   sd_set_state(SD_STATE_UNINITIALIZED);
   card = NULL;
 
@@ -60,6 +65,8 @@ esp_err_t sd_card_init() {
     ESP_LOGE(TAG, "SD IOEXT registration failed: %s", esp_err_to_name(ret));
     sd_set_state(SD_STATE_INIT_FAIL);
     sd_unlock();
+    if (touch_paused)
+      touch_pause_for_sd_init(false);
     return ret;
   }
 
@@ -145,6 +152,8 @@ esp_err_t sd_card_init() {
            sd_state_str(s_state), sd_extcs_state_str(ext_state),
            esp_err_to_name(ret));
   sd_unlock();
+  if (touch_paused)
+    touch_pause_for_sd_init(false);
   return ret;
 }
 
