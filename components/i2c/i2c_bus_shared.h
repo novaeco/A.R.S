@@ -93,6 +93,15 @@ esp_err_t i2c_bus_shared_recover_force(const char *tag);
 esp_err_t i2c_bus_shared_recover_locked_force(const char *tag);
 
 /**
+ * @brief Recover with explicit control over backoff handling (caller already
+ * holds the I2C mutex).
+ *
+ * @param tag   Context string for logging.
+ * @param force When true, bypass the recover backoff window.
+ */
+esp_err_t i2c_bus_shared_recover_locked_ex(const char *tag, bool force);
+
+/**
  * @brief Check if current task holds the I2C mutex.
  *        Useful for recovery paths to determine if locked variant should be
  * used.
