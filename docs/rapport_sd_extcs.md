@@ -1,41 +1,39 @@
-# Rapport SDSPI Ext-CS — Diagnostic CMD0 (Waveshare ESP32-S3 Touch LCD 7B)
+# Rapport — SD ExtCS (SDSPI via IO extender)
 
-## Contexte et problème observé
-- Cible : ESP32-S3 (ESP-IDF v6.1-dev), LCD RGB 1024×600, LVGL 9.x, touch GT911.
-- SD en SDSPI avec CS via IO extension CH32V003 (IOEXT4 actif à l’état bas).
-- Symptôme terrain : CMD0 retourne uniquement `0xFF` sur toutes les tentatives (`"CMD0 failed after 12 tries ... raw= FF ... MISO stuck high or CS inactive"`).
+## 1) Symptôme observé
+- Log terrain: CMD0 retourne uniquement `0xFF` malgré plusieurs tentatives, classant la carte en **ABSENT** et laissant le reste du système démarrer.
 
-## Analyse et corrections apportées (logiciel)
-- Vérification systématique du chemin CS :
-  - CS (IOEXT4) est asserti **avant** chaque transaction CMD0/commandes ultérieures et désasserti juste après.
-  - Instrumentation `cs_shadow` pour tracer le niveau demandé et son timing.
-  - Ajout d’un échantillonnage MISO sous CS bas (quelques clocks 0xFF) pour vérifier que la ligne répond avant d’émettre CMD0.
-- Instrumentation CMD0 détaillée :
-  - Log par tentative : fréquence effective, délai pré-CMD0, dump des 16 premiers octets reçus, échantillon MISO sous CS bas, statut de release CS.
-  - Classification explicite : `OK` (R1=0x01), `WIRED_BUT_NO_RESP` (octets non-FF mais R1 invalide), `ABSENT` (uniquement 0xFF).
-- Log d’ordre d’initialisation :
-  - Vérification I2C/io_extension avant SPI.
-  - Log du host SPI utilisé (SPI2), mode 0, DMA, fréquence init (chemin basse vitesse).
+## 2) Fichiers concernés
+- `components/sd/sd_host_extcs.c` : séquence SDSPI ExtCS (CMD0/8/ACMD41/58) et verrous CS/I²C/SPI.
+- `components/sd/sd.c` : orchestration d’init SD, retries, backoff, état public.
+- `components/i2c/i2c_bus_shared.c` : gestion du bus I²C partagé (GT911 + IO extender) et stratégie de désinitialisation.
 
-## Comment reproduire / vérifier
-1. Build complet : `idf.py fullclean build`
-2. Flash + monitor : `idf.py flash monitor`
-3. Logs attendus (extraits) :
-   - `SDSPI host=2 mode=0 dma=... init_khz=...`
-   - `CMD0 pre-sequence: CS high -> ...`
-   - Tentatives CMD0 : `CMD0 try 1/12 @100 kHz ... idx=... cs_shadow=0 miso_probe= FF FF ... -> ...`
-   - Classification finale :
-     - **OK** : `CMD0: Card entered idle state (R1=0x01) class=OK`
-     - **ABSENT** : `CMD0 failed ... class=ABSENT (all 0xFF)` + message `MISO stuck high or CS inactive...`
-     - **WIRED_BUT_NO_RESP** : `CMD0 failed ... class=WIRED_BUT_NO_RESP` (présence d’octets ≠ 0xFF sans R1 valide)
+## 3) Avant / Après
+### Avant
+- CMD0 jusqu’à 12 tentatives avec logs très verbeux, pouvant rallonger le boot en cas d’absence de carte.
+- Retry SD sans backoff ni exclusion stricte, possible re-entrée concurrente.
+- `i2c_bus_shared_deinit()` supprimait potentiellement le bus maître (`i2c_del_master_bus`) même si des devices étaient encore attachés.
 
-## Interprétation matérielle vs logicielle
-- Si après ces traces **ABSENT (all 0xFF)** persiste avec `cs_shadow=0` et miso_probe 100% 0xFF :
-  - Probable défaut matériel : CS non câblé ou toujours haut, MISO flottant, carte non alimentée/absente.
-- Si `WIRED_BUT_NO_RESP` apparaît avec octets non-FF :
-  - Liaison câblée mais protocole perturbé (bruit, fréquence trop haute, mauvais contact). Baisser la fréquence init ou vérifier câblage.
-- Si `OK` puis échec ultérieur :
-  - Problème post-CMD0 (ex : CMD8/ACMD41), vérifier alimentation et continuité SPI.
+### Après
+- CMD0 borné à 3 tentatives avec logs réduits (résumé final seulement en cas d’échec), exit rapide en ABSENT quand tout reste à `0xFF`.
+- `sd_card_init()` protégé par mutex + deadline (≈1,2 s) pour éviter le blocage boot; retries limités.
+- Nouvelle politique de retry montable: backoff minimal (2 s), ignore si déjà en cours.
+- Désinitialisation I²C sécurisée : le bus n’est plus supprimé pour éviter d’invalider les handles actifs (GT911, IOEXT); log d’avertissement uniquement.
 
-## Rollback simple
-`git checkout -- components/sd/sd_host_extcs.c docs/rapport_sd_extcs.md`
+## 4) Reproduction / Validation
+1. **Build**  
+   - `idf.py fullclean build`
+2. **Monitor (carte absente)**  
+   - `idf.py -p <PORT> flash monitor`  
+   - Attendus: boot complet (LCD/LVGL/GT911 OK), logs SD limités (~quelques lignes), état SD=ABSENT sans panic.
+3. **Monitor (carte insérée FAT32)**  
+   - `idf.py -p <PORT> flash monitor`  
+   - Attendus: mount OK, lecture secteur 0 OK, état SD=INIT_OK, clock relevée après OCR.
+4. **Retry manuel**  
+   - Depuis UI ou commande existante, appeler `sd_card_retry_mount()`/`sd_retry_mount()` une fois carte insérée; si appel répété <2 s, il est ignoré (backoff).  
+   - Attendus: aucun blocage, état cohérent (INIT_OK ou ABSENT/INIT_FAIL selon présence).
+
+## 5) Acceptation
+- Boot non bloquant, SD absente → continuation sans crash.
+- Concurrence: verrous pour SPI/I²C/CS + mutex SD pour init/retry.
+- Pas de suppression du bus I²C tant que des périphériques sont potentiellement actifs.

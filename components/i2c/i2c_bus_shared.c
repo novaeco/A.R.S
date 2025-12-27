@@ -279,9 +279,10 @@ esp_err_t i2c_bus_shared_recover_locked(void) {
 }
 
 void i2c_bus_shared_deinit(void) {
+  // Ne jamais supprimer le bus maître tant que des périphériques sont attachés.
+  // Le bus reste donc initialisé pour éviter de rompre GT911 / IO extender.
   if (s_shared_bus) {
-    i2c_del_master_bus(s_shared_bus);
-    s_shared_bus = NULL;
+    ESP_LOGW(TAG, "i2c_bus_shared_deinit skipped (bus kept alive)");
   }
   if (g_i2c_bus_mutex) {
     vSemaphoreDelete(g_i2c_bus_mutex);
