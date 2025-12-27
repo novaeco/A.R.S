@@ -875,6 +875,8 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle,
     return ESP_FAIL;
   }
   s_vsync.wait_task = lvgl_task_handle;
+  ESP_LOGI(TAG, "LVGL task pinned: core=%ld prio=%d (aligned with RGB init)",
+           (long)core_id, CONFIG_ARS_LVGL_TASK_PRIO);
 
   // Debug Screen creation moved to lvgl_port_task to execute on correct core
   // lv_port_create_debug_screen();

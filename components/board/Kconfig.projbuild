@@ -9,7 +9,7 @@ config ARS_LCD_PCLK_HZ
     
     config ARS_LCD_BOUNCE_BUFFER_LINES
         int "Lignes du bounce buffer RGB"
-        default 4
+        default 30
         range 2 100
         help
             Taille du bounce buffer en nombre de lignes. Augmenter réduit les risques
