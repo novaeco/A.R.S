@@ -126,6 +126,14 @@ menu "SD Card Configuration"
             I2C transaction per CS toggle; keep disabled in production unless
             debugging CS reliability.
 
+    config ARS_IOEXT_READBACK_DIAG
+        bool "Run one-time IO extender readback diagnostic at SD probe"
+        default n
+        help
+            Perform a single readback of the IO extender output latch during SD
+            ExtCS probing to confirm wiring. Not used during normal CS toggles
+            to avoid I2C contention.
+
     config ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
         bool "Pause GT911 touch polling during SD init (ExtCS debug aid)"
         default n
@@ -134,6 +142,13 @@ menu "SD Card Configuration"
             SD init/mount sequence to eliminate I2C contention while toggling
             the IO expander for SD CS. Use for diagnostics; disable for normal
             operation.
+
+    config ARS_SD_DIAG_VERBOSE
+        bool "Verbose SD ExtCS diagnostics"
+        default n
+        help
+            Emit extra debug logs for SD ExtCS CS toggling and retries. Keep
+            disabled in production to avoid log spam.
 
     config ARS_SD_SDMMC_DEBUG_LOG
         bool "Enable SDMMC/SDSPI debug logs"
