@@ -85,8 +85,8 @@ static void sd_extcs_free_bus_if_idle(void);
   CONFIG_ARS_SD_EXTCS_CS_POST_TOGGLE_DELAY_MS
 #define SD_EXTCS_CS_PRE_CMD0_DELAY_US CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US
 #define SD_EXTCS_CMD_TIMEOUT_TICKS pdMS_TO_TICKS(150)
-#define SD_EXTCS_CMD0_RETRIES 12
-#define SD_EXTCS_CMD0_BACKOFF_MS 8
+#define SD_EXTCS_CMD0_RETRIES 3
+#define SD_EXTCS_CMD0_BACKOFF_MS 10
 #define SD_EXTCS_CMD0_RESP_WINDOW_BYTES 64
 #define SD_EXTCS_CMD0_EXTRA_IDLE_CLKS_BYTES 8
 #define SD_EXTCS_CS_ASSERT_SETTLE_US 120
@@ -1247,14 +1247,12 @@ static esp_err_t sd_extcs_reset_and_cmd0(bool *card_idle, bool *saw_non_ff,
                              (unsigned)ff_before_resp, first_valid_idx);
     }
 
-    ESP_LOGI(TAG,
-             "CMD0 try %d/%d @%u kHz cs_pre=%u us tx[%zu]=%s rx16[%zu]=%.*s "
-             "idx=%d cs_shadow=%d miso_probe=%s -> %s (cs_release=%s)",
+    ESP_LOGD(TAG,
+             "CMD0 try %d/%d @%u kHz tx[%zu]=%s rx16[%zu]=%.*s idx=%d -> %s "
+             "(cs_release=%s)",
              attempt + 1, SD_EXTCS_CMD0_RETRIES, s_active_freq_khz,
-             SD_EXTCS_CMD0_PRE_CMD_DELAY_US, sizeof(frame), cmd_hex_ptr,
-             rx_preview_len, (int)dump_width, dump_ptr, first_valid_idx,
-             cs_shadow_level, miso_probe_ptr, result_str,
-             esp_err_to_name(cs_rel_err));
+             sizeof(frame), cmd_hex_ptr, rx_preview_len, (int)dump_width,
+             dump_ptr, first_valid_idx, result_str, esp_err_to_name(cs_rel_err));
 
     sd_extcs_safe_snprintf(last_result, sizeof(last_result), "%s", result_str);
     sd_extcs_safe_snprintf(last_dump, sizeof(last_dump), "%.*s",

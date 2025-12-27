@@ -1,6 +1,8 @@
 #include "sd.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sd_host_extcs.h"
 #include "sdkconfig.h"
@@ -13,6 +15,12 @@ static const char *TAG = "sd";
 // Global handle
 sdmmc_card_t *card = NULL;
 static sd_state_t s_state = SD_STATE_UNINITIALIZED;
+static SemaphoreHandle_t s_sd_mutex = NULL;
+static bool s_retry_in_progress = false;
+static TickType_t s_last_retry_tick = 0;
+
+#define SD_RETRY_MIN_BACKOFF_MS 2000
+#define SD_INIT_DEADLINE_US 1200000
 
 static void sd_set_state(sd_state_t new_state) {
   if (s_state != new_state) {
@@ -21,8 +29,28 @@ static void sd_set_state(sd_state_t new_state) {
   s_state = new_state;
 }
 
+static bool sd_lock(TickType_t ticks) {
+  if (!s_sd_mutex) {
+    s_sd_mutex = xSemaphoreCreateRecursiveMutex();
+  }
+  if (!s_sd_mutex)
+    return false;
+  return xSemaphoreTakeRecursive(s_sd_mutex, ticks) == pdTRUE;
+}
+
+static void sd_unlock(void) {
+  if (s_sd_mutex) {
+    xSemaphoreGiveRecursive(s_sd_mutex);
+  }
+}
+
 esp_err_t sd_card_init() {
   ESP_LOGI(TAG, "Initializing SD (ExtCS Mode)...");
+
+  if (!sd_lock(pdMS_TO_TICKS(50))) {
+    ESP_LOGW(TAG, "SD init skipped: busy");
+    return ESP_ERR_TIMEOUT;
+  }
 
   sd_set_state(SD_STATE_UNINITIALIZED);
   card = NULL;
@@ -31,13 +59,20 @@ esp_err_t sd_card_init() {
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "SD IOEXT registration failed: %s", esp_err_to_name(ret));
     sd_set_state(SD_STATE_INIT_FAIL);
+    sd_unlock();
     return ret;
   }
 
   const int max_attempts = 2;
   sd_extcs_state_t ext_state = SD_EXTCS_STATE_UNINITIALIZED;
+  int64_t deadline_us = esp_timer_get_time() + SD_INIT_DEADLINE_US;
 
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    if (esp_timer_get_time() > deadline_us) {
+      ESP_LOGW(TAG, "SD init deadline reached before attempt %d", attempt + 1);
+      ret = ESP_ERR_TIMEOUT;
+      break;
+    }
     ret = sd_extcs_mount_card(MOUNT_POINT, 5);
     ext_state = sd_extcs_get_state();
     if (ret == ESP_OK || ext_state == SD_EXTCS_STATE_ABSENT) {
@@ -102,13 +137,14 @@ esp_err_t sd_card_init() {
     ESP_LOGI(TAG,
              "SD pipeline: pre_clks=%uB cmd0=%d cmd8=%d acmd41=%d cmd58=%d "
              "init=%u kHz target=%u kHz final=%s",
-             seq.pre_clks_bytes, seq.cmd0_seen, seq.cmd8_seen, seq.acmd41_seen,
-             seq.cmd58_seen, seq.init_freq_khz, seq.target_freq_khz,
-             sd_extcs_state_str(seq.final_state));
+           seq.pre_clks_bytes, seq.cmd0_seen, seq.cmd8_seen, seq.acmd41_seen,
+           seq.cmd58_seen, seq.init_freq_khz, seq.target_freq_khz,
+           sd_extcs_state_str(seq.final_state));
   }
   ESP_LOGI(TAG, "SD init result: state=%s extcs=%s ret=%s",
            sd_state_str(s_state), sd_extcs_state_str(ext_state),
            esp_err_to_name(ret));
+  sd_unlock();
   return ret;
 }
 
@@ -127,10 +163,37 @@ esp_err_t sd_mmc_unmount() {
 }
 
 esp_err_t sd_card_retry_mount(void) {
+  if (!sd_lock(pdMS_TO_TICKS(20))) {
+    ESP_LOGW(TAG, "SD retry skipped: busy");
+    return ESP_ERR_TIMEOUT;
+  }
+  if (s_retry_in_progress) {
+    sd_unlock();
+    return ESP_ERR_INVALID_STATE;
+  }
+  TickType_t now = xTaskGetTickCount();
+  if (s_last_retry_tick != 0 &&
+      (now - s_last_retry_tick) < pdMS_TO_TICKS(SD_RETRY_MIN_BACKOFF_MS)) {
+    sd_unlock();
+    return ESP_ERR_INVALID_STATE;
+  }
+  s_retry_in_progress = true;
+  sd_unlock();
+
+  esp_err_t ret = ESP_OK;
   if (card) {
     sd_mmc_unmount();
   }
-  return sd_card_init();
+  ret = sd_card_init();
+
+  if (sd_lock(pdMS_TO_TICKS(50))) {
+    s_last_retry_tick = xTaskGetTickCount();
+    s_retry_in_progress = false;
+    sd_unlock();
+  } else {
+    s_retry_in_progress = false;
+  }
+  return ret;
 }
 
 esp_err_t sd_retry_mount(void) { return sd_card_retry_mount(); }
