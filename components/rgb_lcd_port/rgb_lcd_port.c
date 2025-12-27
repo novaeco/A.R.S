@@ -14,6 +14,7 @@
 #include "rgb_lcd_port.h"
 #include "esp_idf_version.h"
 #include "esp_lcd_types.h"
+#include "esp_psram.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "io_extension.h"
@@ -47,6 +48,7 @@ static size_t s_stride_bytes = 0;
 static SemaphoreHandle_t s_pclk_guard_lock = NULL;
 static uint32_t s_pclk_guard_depth = 0;
 static uint32_t s_pclk_current_hz = ARS_LCD_PIXEL_CLOCK_HZ;
+static const int k_bounce_try_default_lines = 30;
 
 // Frame buffer complete event callback function
 IRAM_ATTR static bool
@@ -71,9 +73,73 @@ rgb_lcd_on_vsync_event(esp_lcd_panel_handle_t panel,
  *    - ESP_OK: Initialization successful.
  *    - Other error codes: Initialization failed.
  */
+static const char *psram_mode_str(void) {
+#if defined(CONFIG_SPIRAM_MODE_OCT)
+  return "octal";
+#elif defined(CONFIG_SPIRAM_MODE_QUAD)
+  return "quad";
+#else
+  return "unknown";
+#endif
+}
+
+static uint32_t psram_freq_hz(void) {
+#if defined(CONFIG_SPIRAM_SPEED_120M)
+  return 120000000;
+#elif defined(CONFIG_SPIRAM_SPEED_80M)
+  return 80000000;
+#elif defined(CONFIG_SPIRAM_SPEED_40M)
+  return 40000000;
+#else
+  return 0;
+#endif
+}
+
+static int clamp_positive(int val, int max_val) {
+  if (val < 0) {
+    val = 0;
+  }
+  if (max_val > 0 && val > max_val) {
+    val = max_val;
+  }
+  return val;
+}
+
+static void fill_bounce_candidates(int *out, size_t *count, int max_fit,
+                                   int configured) {
+  int preferred = configured > 0 ? configured : k_bounce_try_default_lines;
+  preferred = clamp_positive(preferred, max_fit);
+  const int base_candidates[] = {preferred, k_bounce_try_default_lines, 24, 20,
+                                 16,       12,                         8,  4, 0};
+  size_t out_count = 0;
+  for (size_t i = 0; i < sizeof(base_candidates) / sizeof(base_candidates[0]);
+       i++) {
+    int cand = clamp_positive(base_candidates[i], max_fit);
+    bool exists = false;
+    for (size_t j = 0; j < out_count; j++) {
+      if (out[j] == cand) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists) {
+      out[out_count++] = cand;
+    }
+  }
+  *count = out_count;
+}
+
 esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
   // Log the start of the RGB LCD panel driver installation
   ESP_LOGI(TAG, "Install RGB LCD panel driver");
+
+  const uint32_t psram_hz = psram_freq_hz();
+  ESP_LOGI(TAG,
+           "RGB pre-init: PCLK=%u Hz (cfg) PSRAM=%s %u MHz LVGL task core=%d "
+           "RGB init core=%d bounce_cfg=%d lines",
+           ARS_LCD_PIXEL_CLOCK_HZ, psram_mode_str(), psram_hz / 1000000,
+           CONFIG_ARS_LVGL_TASK_CORE, xPortGetCoreID(),
+           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
 
   // Configuration structure for the RGB LCD panel
   esp_lcd_rgb_panel_config_t panel_config = {
@@ -166,7 +232,8 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
       (size_t)ARS_LCD_H_RES * ARS_LCD_V_RES * (ARS_LCD_BIT_PER_PIXEL / 8);
   size_t fb_total = fb_size_each * ARS_LCD_RGB_BUFFER_NUMS;
   size_t bounce_size =
-      (size_t)ARS_RGB_BOUNCE_BUFFER_SIZE * (ARS_LCD_BIT_PER_PIXEL / 8);
+      (size_t)BOARD_LCD_RGB_BOUNCE_BUFFER_LINES * ARS_LCD_H_RES *
+      (ARS_LCD_BIT_PER_PIXEL / 8);
 
   size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   size_t free_dma =
@@ -205,14 +272,30 @@ esp_lcd_panel_handle_t waveshare_esp32_s3_rgb_lcd_init() {
 
   // Try to create panel with progressively smaller bounce buffers on failure
   int bounce_lines = BOARD_LCD_RGB_BOUNCE_BUFFER_LINES;
-  const int bounce_fallbacks[] = {BOARD_LCD_RGB_BOUNCE_BUFFER_LINES,
-                                  BOARD_LCD_RGB_BOUNCE_BUFFER_LINES / 2, 10, 5,
-                                  0};
   esp_err_t err = ESP_ERR_NO_MEM;
 
-  for (size_t i = 0; i < sizeof(bounce_fallbacks) / sizeof(bounce_fallbacks[0]);
-       i++) {
-    bounce_lines = bounce_fallbacks[i];
+  size_t line_bytes = ARS_LCD_H_RES * (ARS_LCD_BIT_PER_PIXEL / 8);
+  size_t largest_dma =
+      heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  int max_fit_lines =
+      (line_bytes > 0) ? (int)(largest_dma / line_bytes) : bounce_lines;
+  if (max_fit_lines < 0) {
+    max_fit_lines = 0;
+  }
+
+  ESP_LOGI(TAG,
+           "Bounce sizing: cfg=%d lines line_bytes=%u largest_dma=%u KB "
+           "max_fit=%d",
+           BOARD_LCD_RGB_BOUNCE_BUFFER_LINES, (unsigned)line_bytes,
+           (unsigned)(largest_dma / 1024), max_fit_lines);
+
+  int candidates[9] = {0};
+  size_t candidate_count = 0;
+  fill_bounce_candidates(candidates, &candidate_count, max_fit_lines,
+                         BOARD_LCD_RGB_BOUNCE_BUFFER_LINES);
+
+  for (size_t i = 0; i < candidate_count; i++) {
+    bounce_lines = candidates[i];
     panel_config.bounce_buffer_size_px =
         (bounce_lines > 0) ? (ARS_LCD_H_RES * bounce_lines) : 0;
 

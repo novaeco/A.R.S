@@ -2,7 +2,7 @@ menu "LVGL Port Configuration"
 
     config ARS_LVGL_TASK_CORE
         int "LVGL Task Core ID"
-        default 1
+        default 0
         range 0 1
         help
             Core where the LVGL task is pinned.
