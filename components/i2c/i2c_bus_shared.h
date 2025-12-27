@@ -80,6 +80,19 @@ esp_err_t i2c_bus_shared_recover(void);
 esp_err_t i2c_bus_shared_recover_locked(void);
 
 /**
+ * @brief Force bus recovery without backoff throttling.
+ *
+ * Use for critical paths (e.g., SD ext-CS) that must clear INVALID_RESPONSE
+ * bursts immediately. Safe only from task context.
+ */
+esp_err_t i2c_bus_shared_recover_force(void);
+
+/**
+ * @brief Force bus recovery (caller already holds the I2C mutex).
+ */
+esp_err_t i2c_bus_shared_recover_locked_force(void);
+
+/**
  * @brief Check if current task holds the I2C mutex.
  *        Useful for recovery paths to determine if locked variant should be
  * used.

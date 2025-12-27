@@ -69,6 +69,15 @@ menu "SD Card Configuration"
             IO extender output stabilize before the first transaction if MISO
             occasionally reads stuck-high.
 
+    config ARS_SD_EXTCS_CS_I2C_SETTLE_US
+        int "Post-CS I2C pacing delay (us)"
+        default 200
+        range 0 500
+        help
+            Microsecond delay after IO extender CS writes to allow CH32V003
+            outputs to settle before SPI activity. Use 100–300us for noisy
+            boards; set 0 to disable.
+
     config ARS_SD_EXTCS_TARGET_FREQ_KHZ
         int "SDSPI target frequency after init (kHz)"
         default 20000
