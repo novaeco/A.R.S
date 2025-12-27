@@ -301,5 +301,5 @@ esp_err_t DEV_I2C_BusReset(void) {
   // However, if the bus is ACTUALLY stuck (SDA Low), we might need bit-banging.
   // We can try to cycle clocks only if we are sure no transaction is live.
 
-  return i2c_bus_shared_recover();
+  return i2c_bus_shared_recover("dev_i2c");
 }

@@ -34,6 +34,10 @@ static void sd_extcs_free_bus_if_idle(void);
 #define CONFIG_ARS_SD_DIAG_VERBOSE 0
 #endif
 
+#ifndef CONFIG_ARS_SD_EXTCS_STAGE_LOG
+#define CONFIG_ARS_SD_EXTCS_STAGE_LOG 1
+#endif
+
 #ifndef CONFIG_ARS_IOEXT_READBACK_DIAG
 #define CONFIG_ARS_IOEXT_READBACK_DIAG 0
 #endif
@@ -145,6 +149,23 @@ static bool s_ioext_cs_locked = false;
 static bool s_cs_i2c_locked = false;
 static bool s_bus_initialized = false;
 static bool s_cs_shadow_valid = false;
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+static bool s_stage_cmd0_logged = false;
+static bool s_stage_cmd8_logged = false;
+static bool s_stage_acmd41_logged = false;
+static bool s_stage_cmd58_logged = false;
+#define SD_EXTCS_STAGE_LOGI(fmt, ...)                                          \
+  ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
+#define SD_EXTCS_STAGE_LOGW(fmt, ...)                                          \
+  ESP_LOGW(TAG, fmt, ##__VA_ARGS__)
+#else
+#define SD_EXTCS_STAGE_LOGI(fmt, ...)                                          \
+  do {                                                                         \
+  } while (0)
+#define SD_EXTCS_STAGE_LOGW(fmt, ...)                                          \
+  do {                                                                         \
+  } while (0)
+#endif
 
 #define SD_EXTCS_IOEXT_CS_MASK (1 << IO_EXTENSION_IO_4)
 #define SD_EXTCS_LOGV(tag, fmt, ...)                                           \
@@ -192,7 +213,6 @@ static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len,
                                      bool leading_space);
 static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len);
 static size_t sd_extcs_probe_miso_under_cs(uint8_t *out, size_t max_len);
-static esp_err_t sd_extcs_reprobe_ioext_locked(const char *ctx);
 // GCC 12+ aggressively warns about potential truncation; use a bounded helper
 // to force null-termination and placate -Wformat-truncation without weakening
 // warnings globally.
@@ -310,36 +330,12 @@ static esp_err_t sd_extcs_readback_cs_once_locked(bool assert_low,
 #endif
 }
 
-static esp_err_t sd_extcs_reprobe_ioext_locked(const char *ctx) {
-  if (s_ioext_handle == NULL) {
-    ESP_LOGE(TAG, "%s: IOEXT handle missing during re-probe", ctx);
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  uint8_t probe_buf[2] = {IO_EXTENSION_Mode, 0xFF};
-  esp_err_t probe_ret = i2c_master_transmit(
-      s_ioext_handle, probe_buf, sizeof(probe_buf), pdMS_TO_TICKS(100));
-  if (probe_ret != ESP_OK) {
-    ESP_LOGE(TAG, "%s: IOEXT re-probe failed: %s", ctx,
-             esp_err_to_name(probe_ret));
-    i2c_bus_shared_note_error("sd_extcs_cs_probe", probe_ret);
-    return probe_ret;
-  }
-
-  esp_err_t shadow_ret = io_extension_write_shadow_locked();
-  if (shadow_ret != ESP_OK) {
-    ESP_LOGW(TAG, "%s: IOEXT shadow restore failed after re-probe: %s", ctx,
-             esp_err_to_name(shadow_ret));
-  } else {
-    i2c_bus_shared_note_success();
-  }
-  return probe_ret;
-}
-
 static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
                                  const char *ctx) {
   esp_err_t ret = ESP_OK;
   const int want_level = assert_low ? 0 : 1;
+  TickType_t backoff_ticks = pdMS_TO_TICKS(10);
+  bool attempted_recover = false;
 
   esp_err_t lock_ret = sd_extcs_lock_ioext_bus();
   if (lock_ret != ESP_OK) {
@@ -351,13 +347,13 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
     return ESP_OK;
   }
 
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  for (int attempt = 0; attempt < 2; ++attempt) {
     ret = assert_low ? io_extension_clear_bits_locked(SD_EXTCS_IOEXT_CS_MASK)
                      : io_extension_set_bits_locked(SD_EXTCS_IOEXT_CS_MASK);
 
-    uint8_t shadow = io_extension_get_output_shadow();
-    s_cs_shadow_valid = (ret == ESP_OK);
     if (ret == ESP_OK) {
+      uint8_t shadow = io_extension_get_output_shadow();
+      s_cs_shadow_valid = true;
       i2c_bus_shared_note_success();
       bool rb_match = true;
       if (diag_readback) {
@@ -367,7 +363,8 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
       s_last_cs_latched = rb_match ? want_level : s_cs_level;
       s_last_cs_input = s_last_cs_latched;
       SD_EXTCS_LOGV(TAG,
-                    "%s ok attempt=%d shadow=0x%02X want=%d rb=%d streak=%" PRIu32,
+                    "%s ok attempt=%d shadow=0x%02X want=%d rb=%d "
+                    "streak=%" PRIu32,
                     ctx, attempt + 1, shadow, want_level, rb_match ? 1 : 0,
                     i2c_bus_shared_get_error_streak());
       sd_extcs_unlock_ioext_bus();
@@ -377,23 +374,26 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
     i2c_bus_shared_note_error("sd_extcs_cs", ret);
     uint32_t streak = i2c_bus_shared_get_error_streak();
     ESP_LOGW(TAG,
-             "%s attempt %d failed: %s (shadow=0x%02X streak=%" PRIu32 ")",
-             ctx, attempt + 1, esp_err_to_name(ret), shadow, streak);
+             "%s attempt %d failed: %s (streak=%" PRIu32 ", recover=%d)",
+             ctx, attempt + 1, esp_err_to_name(ret), streak,
+             attempted_recover ? 1 : 0);
 
-    // Immediate recover + re-probe (no backoff) on any failure
-    esp_err_t rec = i2c_bus_shared_recover_locked_force();
+    if (attempted_recover) {
+      break;
+    }
+
+    attempted_recover = true;
+    esp_err_t rec = i2c_bus_shared_recover_locked("sd_extcs_cs");
     if (rec != ESP_OK) {
-      SD_EXTCS_LOGV(TAG, "%s: I2C forced recover failed: %s", ctx,
-                    esp_err_to_name(rec));
+      ESP_LOGW(TAG, "%s: I2C recover failed: %s", ctx, esp_err_to_name(rec));
     }
-    esp_err_t reprobe = sd_extcs_reprobe_ioext_locked(ctx);
-    if (reprobe != ESP_OK) {
-      SD_EXTCS_LOGV(TAG, "%s: IOEXT re-probe after recover failed: %s", ctx,
-                    esp_err_to_name(reprobe));
+    if (backoff_ticks > 0) {
+      vTaskDelay(backoff_ticks);
     }
-    vTaskDelay(pdMS_TO_TICKS(1));
   }
 
+  s_cs_shadow_valid = false;
+  s_cs_level = -1;
   sd_extcs_unlock_ioext_bus();
   return ret;
 }
@@ -407,6 +407,12 @@ static void sd_extcs_seq_reset(uint32_t init_khz, uint32_t target_khz) {
   s_seq_stats.acmd41_seen = false;
   s_seq_stats.cmd58_seen = false;
   s_seq_stats.final_state = s_extcs_state;
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+  s_stage_cmd0_logged = false;
+  s_stage_cmd8_logged = false;
+  s_stage_acmd41_logged = false;
+  s_stage_cmd58_logged = false;
+#endif
 }
 
 static inline void sd_extcs_seq_mark_state(sd_extcs_state_t state) {
@@ -1590,6 +1596,13 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   const char *classification =
       card_idle ? "OK" : (saw_non_ff ? "WIRED_BUT_NO_RESP" : "ABSENT");
   if (!card_idle) {
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_cmd0_logged) {
+      SD_EXTCS_STAGE_LOGW("CMD0 stage failed (%s, class=%s)",
+                          esp_err_to_name(err), classification);
+      s_stage_cmd0_logged = true;
+    }
+#endif
     s_extcs_state =
         saw_non_ff ? SD_EXTCS_STATE_INIT_FAIL : SD_EXTCS_STATE_ABSENT;
     sd_extcs_seq_mark_state(s_extcs_state);
@@ -1613,6 +1626,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   s_extcs_state = SD_EXTCS_STATE_IDLE_READY;
   sd_extcs_seq_mark_state(s_extcs_state);
   ESP_LOGI(TAG, "CMD0: Card entered idle state (R1=0x01) class=OK");
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+  if (!s_stage_cmd0_logged) {
+    SD_EXTCS_STAGE_LOGI("CMD0 -> IDLE (freq=%u kHz)", s_active_freq_khz);
+    s_stage_cmd0_logged = true;
+  }
+#endif
   s_seq_stats.cmd0_seen = true;
 
   uint8_t resp_r1 = 0xFF;
@@ -1635,6 +1654,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       sdhc_candidate = (pattern == 0x000001AA);
       ESP_LOGI(TAG, "CMD8 OK (pattern=0x%08" PRIX32 " attempt=%d)", pattern,
                attempt + 1);
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+      if (!s_stage_cmd8_logged) {
+        SD_EXTCS_STAGE_LOGI("CMD8 -> OK (pattern=0x%08" PRIX32 ")", pattern);
+        s_stage_cmd8_logged = true;
+      }
+#endif
       s_seq_stats.cmd8_seen = true;
       break;
     }
@@ -1646,6 +1671,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
           TAG,
           "CMD8 illegal command (r1=0x%02X attempt=%d). Enabling MMC/SDv1 detect mode.",
           resp_r7[0], attempt + 1);
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+      if (!s_stage_cmd8_logged) {
+        SD_EXTCS_STAGE_LOGW("CMD8 illegal (r1=0x%02X)", resp_r7[0]);
+        s_stage_cmd8_logged = true;
+      }
+#endif
       break;
     }
 
@@ -1663,6 +1694,13 @@ static esp_err_t sd_extcs_low_speed_init(void) {
              "CMD8 unexpected response (r1=0x%02X err=%s attempt=%d). "
              "Proceeding without SDHC hint.",
              resp_r7[0], esp_err_to_name(err), attempt + 1);
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_cmd8_logged) {
+      SD_EXTCS_STAGE_LOGW("CMD8 unexpected r1=0x%02X err=%s", resp_r7[0],
+                          esp_err_to_name(err));
+      s_stage_cmd8_logged = true;
+    }
+#endif
     break;
   }
 
@@ -1672,6 +1710,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   } else if (cmd8_unstable) {
     vTaskDelay(pdMS_TO_TICKS(30));
     ESP_LOGW(TAG, "CMD8 unstable: giving extra settle time before ACMD41");
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_cmd8_logged) {
+      SD_EXTCS_STAGE_LOGW("CMD8 unstable (timeout/0xFF)");
+      s_stage_cmd8_logged = true;
+    }
+#endif
   }
   const uint32_t acmd41_arg = sdhc_candidate ? 0x40000000 : 0x00000000;
   bool card_ready = false;
@@ -1717,6 +1761,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     if (err == ESP_OK && resp_r1 == 0x00) {
       s_seq_stats.acmd41_seen = true;
       card_ready = true;
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+      if (!s_stage_acmd41_logged) {
+        SD_EXTCS_STAGE_LOGI("ACMD41 ready after %d attempt(s)", acmd41_attempts);
+        s_stage_acmd41_logged = true;
+      }
+#endif
       break;
     }
 
@@ -1753,6 +1803,13 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       card_ready = true;
       ESP_LOGI(TAG, "MMC init via CMD1 completed in %d attempt(s)",
                cmd1_attempts);
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+      if (!s_stage_acmd41_logged) {
+        SD_EXTCS_STAGE_LOGI("CMD1 (MMC) ready after %d attempt(s)",
+                            cmd1_attempts);
+        s_stage_acmd41_logged = true;
+      }
+#endif
     }
   }
 
@@ -1760,6 +1817,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
     ESP_LOGE(
         TAG,
         "ACMD41 timeout. SD card not ready. Insert card or verify cabling.");
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_acmd41_logged) {
+      SD_EXTCS_STAGE_LOGW("ACMD41/CMD1 timeout");
+      s_stage_acmd41_logged = true;
+    }
+#endif
     s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
     sd_extcs_seq_mark_state(s_extcs_state);
     return ESP_ERR_TIMEOUT;
@@ -1789,6 +1852,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
       if (err == ESP_OK && resp_r3[0] == 0x00) {
         s_seq_stats.cmd58_seen = true;
         ocr_ok = true;
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+        if (!s_stage_cmd58_logged) {
+          SD_EXTCS_STAGE_LOGI("CMD58 OK (attempt=%d)", ocr_attempt);
+          s_stage_cmd58_logged = true;
+        }
+#endif
         break;
       }
       ESP_LOGW(TAG, "CMD58 attempt %d/%d resp=0x%02X err=%s", ocr_attempt,
@@ -1798,6 +1867,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
   } else {
     ocr_ok = true;
     ESP_LOGW(TAG, "CMD58 skipped (MMC path)");
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_cmd58_logged) {
+      SD_EXTCS_STAGE_LOGW("CMD58 skipped (MMC path)");
+      s_stage_cmd58_logged = true;
+    }
+#endif
   }
 
   if (!ocr_ok) {
@@ -1805,6 +1880,12 @@ static esp_err_t sd_extcs_low_speed_init(void) {
         TAG,
         "CMD58 failed after %d attempt(s). Insert SD card or check wiring.",
         ocr_attempt);
+#if CONFIG_ARS_SD_EXTCS_STAGE_LOG
+    if (!s_stage_cmd58_logged) {
+      SD_EXTCS_STAGE_LOGW("CMD58 failed after %d attempt(s)", ocr_attempt);
+      s_stage_cmd58_logged = true;
+    }
+#endif
     s_extcs_state = SD_EXTCS_STATE_INIT_FAIL;
     sd_extcs_seq_mark_state(s_extcs_state);
     return err != ESP_OK ? err : ESP_ERR_TIMEOUT;

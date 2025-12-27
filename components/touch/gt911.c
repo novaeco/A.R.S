@@ -202,6 +202,12 @@ static inline void gt911_debug_dump_frame(uint8_t status, const uint8_t *buf,
   (void)buf;
   (void)len;
 }
+#endif
+
+static inline void gt911_reset_backoff(void) {
+  s_gt911_recover_backoff_ms = 50;
+  s_gt911_next_recover_us = 0;
+}
 
 void gt911_set_paused(bool paused) {
   portENTER_CRITICAL(&s_gt911_error_lock);
@@ -215,12 +221,6 @@ void gt911_set_paused(bool paused) {
       gt911_enable_irq_guarded();
     }
   }
-}
-#endif
-
-static inline void gt911_reset_backoff(void) {
-  s_gt911_recover_backoff_ms = 50;
-  s_gt911_next_recover_us = 0;
 }
 
 static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
@@ -260,9 +260,8 @@ static void gt911_try_recover_bus(esp_lcd_touch_handle_t tp, const char *stage,
   // Yield before recovery to allow IDLE task to run
   vTaskDelay(pdMS_TO_TICKS(5));
 
-  // Recovery is now safe - i2c_bus_shared_recover() auto-detects if we hold
-  // mutex
-  esp_err_t recover_ret = i2c_bus_shared_recover();
+  // Recovery est sérialisé : i2c_bus_shared_recover() vérifie le verrou
+  esp_err_t recover_ret = i2c_bus_shared_recover("gt911");
   if (recover_ret != ESP_OK) {
     ESP_LOGW(TAG, "I2C recovery failed: %s", esp_err_to_name(recover_ret));
     // Schedule retry via backoff, don't block
@@ -664,6 +663,13 @@ static esp_err_t esp_lcd_touch_gt911_read_data(esp_lcd_touch_handle_t tp) {
   uint8_t touch_cnt = 0;
 
   assert(tp != NULL);
+
+  if (s_gt911_paused) {
+    portENTER_CRITICAL(&tp->data.lock);
+    tp->data.points = 0;
+    portEXIT_CRITICAL(&tp->data.lock);
+    return ESP_OK;
+  }
 
   err = touch_gt911_i2c_read(tp, ESP_LCD_TOUCH_GT911_STATUS_REG, &status, 1);
   if (err != ESP_OK) {

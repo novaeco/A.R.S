@@ -24,9 +24,10 @@ static uint32_t s_i2c_error_total = 0;
 static uint32_t s_i2c_success_after_error = 0;
 static TickType_t s_i2c_backoff_ticks = 0;
 static int64_t s_last_recover_us = 0;
+static int64_t s_last_recover_log_us = 0;
 
 // Forward declaration
-static esp_err_t i2c_bus_shared_recover_internal(bool force);
+static esp_err_t i2c_bus_shared_recover_internal(const char *tag, bool force);
 
 // Helper: Check if current task holds the recursive mutex
 bool i2c_bus_shared_is_locked_by_me(void) {
@@ -194,12 +195,13 @@ bool i2c_bus_shared_is_ready(void) {
   return s_shared_bus != NULL && s_initialized;
 }
 
-static esp_err_t i2c_bus_shared_recover_internal(bool force) {
+static esp_err_t i2c_bus_shared_recover_internal(const char *tag, bool force) {
   const int64_t now = esp_timer_get_time();
   if (!force) {
     if (s_last_recover_us != 0 &&
         (now - s_last_recover_us) < 200000) { // 200 ms backoff
-      ESP_LOGW(TAG, "I2C recover skipped (backoff active)");
+      ESP_LOGW(TAG, "I2C recover skipped (backoff active)%s%s%s",
+               tag ? " [" : "", tag ? tag : "", tag ? "]" : "");
       return ESP_ERR_INVALID_STATE;
     }
     s_last_recover_us = now;
@@ -248,16 +250,35 @@ static esp_err_t i2c_bus_shared_recover_internal(bool force) {
 
   vTaskDelay(pdMS_TO_TICKS(5));
 
+  if (!s_initialized || s_shared_bus == NULL) {
+    // Re-run init path if the bus was not ready; keep device handles intact.
+    return i2c_bus_shared_init();
+  }
+
   return ESP_OK;
 }
 
-esp_err_t i2c_bus_shared_recover(void) {
+static void i2c_bus_shared_log_recover(const char *tag, esp_err_t err,
+                                       bool forced) {
+  int64_t now = esp_timer_get_time();
+  if ((now - s_last_recover_log_us) < 500000) {
+    return;
+  }
+  s_last_recover_log_us = now;
+  ESP_LOGW(TAG, "I2C recover%s%s%s -> %s (forced=%d)",
+           tag ? " [" : "", tag ? tag : "", tag ? "]" : "",
+           esp_err_to_name(err), forced ? 1 : 0);
+}
+
+esp_err_t i2c_bus_shared_recover(const char *tag) {
   if (xPortInIsrContext()) {
     return ESP_ERR_INVALID_STATE;
   }
 
   if (i2c_bus_shared_is_locked_by_me()) {
-    return i2c_bus_shared_recover_internal(false);
+    esp_err_t ret = i2c_bus_shared_recover_internal(tag, false);
+    i2c_bus_shared_log_recover(tag, ret, false);
+    return ret;
   }
 
   if (!i2c_bus_shared_lock(pdMS_TO_TICKS(1000))) {
@@ -265,13 +286,14 @@ esp_err_t i2c_bus_shared_recover(void) {
     return ESP_ERR_TIMEOUT;
   }
 
-  esp_err_t ret = i2c_bus_shared_recover_internal(false);
+  esp_err_t ret = i2c_bus_shared_recover_internal(tag, false);
+  i2c_bus_shared_log_recover(tag, ret, false);
 
   i2c_bus_shared_unlock();
   return ret;
 }
 
-esp_err_t i2c_bus_shared_recover_locked(void) {
+esp_err_t i2c_bus_shared_recover_locked(const char *tag) {
   if (xPortInIsrContext()) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -283,16 +305,20 @@ esp_err_t i2c_bus_shared_recover_locked(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  return i2c_bus_shared_recover_internal(false);
+  esp_err_t ret = i2c_bus_shared_recover_internal(tag, false);
+  i2c_bus_shared_log_recover(tag, ret, false);
+  return ret;
 }
 
-esp_err_t i2c_bus_shared_recover_force(void) {
+esp_err_t i2c_bus_shared_recover_force(const char *tag) {
   if (xPortInIsrContext()) {
     return ESP_ERR_INVALID_STATE;
   }
 
   if (i2c_bus_shared_is_locked_by_me()) {
-    return i2c_bus_shared_recover_internal(true);
+    esp_err_t ret = i2c_bus_shared_recover_internal(tag, true);
+    i2c_bus_shared_log_recover(tag, ret, true);
+    return ret;
   }
 
   if (!i2c_bus_shared_lock(pdMS_TO_TICKS(1000))) {
@@ -300,13 +326,14 @@ esp_err_t i2c_bus_shared_recover_force(void) {
     return ESP_ERR_TIMEOUT;
   }
 
-  esp_err_t ret = i2c_bus_shared_recover_internal(true);
+  esp_err_t ret = i2c_bus_shared_recover_internal(tag, true);
+  i2c_bus_shared_log_recover(tag, ret, true);
 
   i2c_bus_shared_unlock();
   return ret;
 }
 
-esp_err_t i2c_bus_shared_recover_locked_force(void) {
+esp_err_t i2c_bus_shared_recover_locked_force(const char *tag) {
   if (xPortInIsrContext()) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -318,7 +345,9 @@ esp_err_t i2c_bus_shared_recover_locked_force(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  return i2c_bus_shared_recover_internal(true);
+  esp_err_t ret = i2c_bus_shared_recover_internal(tag, true);
+  i2c_bus_shared_log_recover(tag, ret, true);
+  return ret;
 }
 
 void i2c_bus_shared_deinit(void) {
