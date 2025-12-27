@@ -311,6 +311,9 @@ static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched)
 #if !CONFIG_ARS_SD_EXTCS_CS_READBACK && !CONFIG_ARS_IOEXT_READBACK_DIAG
     __attribute__((unused))
 #endif
+    ;
+
+static esp_err_t sd_extcs_readback_cs_locked(bool assert_low, bool *matched)
 {
 #if CONFIG_ARS_SD_EXTCS_CS_READBACK
   if (matched)
