@@ -25,8 +25,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "i2c_bus_shared.h"
 #include "freertos/semphr.h"
+#include "i2c_bus_shared.h"
+#include "sdkconfig.h"
 #include <rom/ets_sys.h>
 
 io_extension_obj_t IO_EXTENSION; // Define the global IO_EXTENSION object
@@ -194,7 +195,7 @@ esp_err_t IO_EXTENSION_Init(void) {
   i2c_device_config_t dev_cfg = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
       .device_address = IO_EXTENSION_ADDR,
-      .scl_speed_hz = 400000,
+      .scl_speed_hz = CONFIG_ARS_IOEXT_SCL_SPEED_HZ,
   };
 
   if (s_ioext_handle == NULL) {

@@ -192,6 +192,7 @@ static size_t sd_extcs_safe_hex_dump(const uint8_t *src, size_t src_len,
                                      bool leading_space);
 static size_t sd_extcs_strnlen_cap(const char *s, size_t max_len);
 static size_t sd_extcs_probe_miso_under_cs(uint8_t *out, size_t max_len);
+static esp_err_t sd_extcs_reprobe_ioext_locked(const char *ctx);
 // GCC 12+ aggressively warns about potential truncation; use a bounded helper
 // to force null-termination and placate -Wformat-truncation without weakening
 // warnings globally.
@@ -309,6 +310,32 @@ static esp_err_t sd_extcs_readback_cs_once_locked(bool assert_low,
 #endif
 }
 
+static esp_err_t sd_extcs_reprobe_ioext_locked(const char *ctx) {
+  if (s_ioext_handle == NULL) {
+    ESP_LOGE(TAG, "%s: IOEXT handle missing during re-probe", ctx);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  uint8_t probe_buf[2] = {IO_EXTENSION_Mode, 0xFF};
+  esp_err_t probe_ret = i2c_master_transmit(
+      s_ioext_handle, probe_buf, sizeof(probe_buf), pdMS_TO_TICKS(100));
+  if (probe_ret != ESP_OK) {
+    ESP_LOGE(TAG, "%s: IOEXT re-probe failed: %s", ctx,
+             esp_err_to_name(probe_ret));
+    i2c_bus_shared_note_error("sd_extcs_cs_probe", probe_ret);
+    return probe_ret;
+  }
+
+  esp_err_t shadow_ret = io_extension_write_shadow_locked();
+  if (shadow_ret != ESP_OK) {
+    ESP_LOGW(TAG, "%s: IOEXT shadow restore failed after re-probe: %s", ctx,
+             esp_err_to_name(shadow_ret));
+  } else {
+    i2c_bus_shared_note_success();
+  }
+  return probe_ret;
+}
+
 static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
                                  const char *ctx) {
   esp_err_t ret = ESP_OK;
@@ -348,17 +375,23 @@ static esp_err_t sd_extcs_set_cs(bool assert_low, bool diag_readback,
     }
 
     i2c_bus_shared_note_error("sd_extcs_cs", ret);
+    uint32_t streak = i2c_bus_shared_get_error_streak();
     ESP_LOGW(TAG,
              "%s attempt %d failed: %s (shadow=0x%02X streak=%" PRIu32 ")",
-             ctx, attempt + 1, esp_err_to_name(ret), shadow,
-             i2c_bus_shared_get_error_streak());
+             ctx, attempt + 1, esp_err_to_name(ret), shadow, streak);
 
     if (ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_TIMEOUT ||
-        ret == ESP_FAIL) {
+        ret == ESP_FAIL || streak >= 3) {
       esp_err_t rec = i2c_bus_shared_recover_locked();
       if (rec != ESP_OK) {
         SD_EXTCS_LOGV(TAG, "%s: I2C recover failed: %s", ctx,
                       esp_err_to_name(rec));
+      } else if (streak >= 3) {
+        esp_err_t reprobe = sd_extcs_reprobe_ioext_locked(ctx);
+        if (reprobe != ESP_OK) {
+          SD_EXTCS_LOGV(TAG, "%s: IOEXT re-probe after recover failed: %s",
+                        ctx, esp_err_to_name(reprobe));
+        }
       }
     }
     vTaskDelay(pdMS_TO_TICKS(1));
