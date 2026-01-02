@@ -8,7 +8,13 @@
 # --- Target ---
 CONFIG_IDF_TARGET="esp32s3"
 
+# --- CPU Frequency (Waveshare ESP32-S3-Touch-LCD-7B: max 240 MHz) ---
+# Source: https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-7B
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
 # --- PSRAM (critical for RGB framebuffers) ---
+# Module: ESP32-S3-WROOM-1-N16R8 (16MB Flash, 8MB PSRAM)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
@@ -28,9 +34,9 @@ CONFIG_ARS_LCD_WAIT_VSYNC_TIMEOUT_MS=80
 
 # --- LCD RGB Panel (ST7262 RGB 1024x600) ---
 # Datasheet ST7262 (7.3.4 Parallel 24-bit RGB Timing): typ H/V porch=8/8, pulse=4.
-# With Htotal=1044 and Vtotal=620, a 40 MHz PCLK yields ~61.7 Hz refresh.
+# With Htotal=1044 and Vtotal=620, a 22 MHz PCLK yields ~33 Hz refresh (stable).
 CONFIG_ARS_LCD_PCLK_HZ=22000000
-# Bounce buffer: 20 lines to keep DMA bursts stable at higher PCLK.
+# Bounce buffer: 30 lines to keep DMA bursts stable.
 CONFIG_ARS_LCD_BOUNCE_BUFFER_LINES=30
 CONFIG_ARS_LCD_PCLK_ACTIVE_NEG=y
 
@@ -41,7 +47,7 @@ CONFIG_ARS_LVGL_TASK_STACK=8192
 CONFIG_ARS_LVGL_BUF_LINES=80
 CONFIG_ARS_LVGL_COLOR_DEPTH=16
 
-# --- Touch Orientation Defaults ---
+# --- Touch Orientation Defaults (rotation 180°) ---
 CONFIG_ARS_TOUCH_SWAP_XY=n
 CONFIG_ARS_TOUCH_MIRROR_X=y
 CONFIG_ARS_TOUCH_MIRROR_Y=y
@@ -51,6 +57,7 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+
 # --- Task Watchdog ---
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
@@ -62,14 +69,29 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2048
 
-# --- I2C Deprecation Suppress ---
+# --- I2C Configuration (FIX: Longer timeouts for IO Expander stability) ---
 CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
-CONFIG_ARS_IOEXT_SCL_SPEED_HZ=100000
+# IO Expander CH32V003 @ 0x24 - Use SLOWER speed (50kHz) for reliability
+# The CH32V003 has custom I2C slave firmware with higher latency than standard I2C devices.
+# At 100kHz, rapid CS toggles during SD init can cause NACK errors.
+CONFIG_ARS_IOEXT_SCL_SPEED_HZ=50000
+# IOEXT TX-only strict mode: No readback/verify/retry during SD init to prevent I2C saturation
+CONFIG_ARS_IOEXT_TX_ONLY_STRICT=y
+# L2 Recovery: Destroy/recreate I2C bus after 3 consecutive IOEXT errors
+CONFIG_ARS_IOEXT_L2_RECOVERY=y
 
-# --- SD Ext-CS Robustesse (diagnostic par défaut) ---
+# --- SD Ext-CS Configuration (FIX: Enhanced robustness) ---
 CONFIG_ARS_SD_EXTCS_CS_READBACK=n
 CONFIG_ARS_SD_DIAG_VERBOSE=n
+# Pause touch I2C during SD init to prevent bus contention
 CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT=y
+# Critical: Increase CS I2C settle time for CH32V003 stability
+# The CH32V003 needs ~1ms to process each I2C command before the next one
+CONFIG_ARS_SD_EXTCS_CS_I2C_SETTLE_US=1000
+# Pre-CMD0 delay for reliable SPI mode entry
+CONFIG_ARS_SD_EXTCS_CS_PRE_CMD0_DELAY_US=500
+# P0-FIX: Skip diagnostic toggle test that saturates CH32V003
+CONFIG_ARS_SD_EXTCS_SKIP_DIAG_TOGGLE=y
 
 # --- Logging + Console ---
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
@@ -78,3 +100,16 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_DEFAULT_LEVEL=3
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+
+# Skip the LCD test pattern at boot.  Enabling this option prevents
+# board.c from displaying a red/green/blue/white/black test screen
+# before the UI initializes.
+CONFIG_ARS_SKIP_TEST_PATTERN=y
+
+# Disable SD card initialization on boot.  When enabled (n), the main task
+# attempts to mount the SD card during startup, which can cause severe
+# contention on the shared I2C bus and leave the touch controller
+# unresponsive if a card is not present or wiring is unstable.  Setting
+# this to y skips the SD init entirely, deferring any SD mount to
+# application code at runtime.
+CONFIG_ARS_DISABLE_SD_INIT=y

@@ -11,12 +11,13 @@
 #include "data_manager.h"
 #include "iot_manager.h"
 #include "lvgl_port.h" // For lock/unlock
-#include "ui.h"
 #include "touch.h"
+#include "ui.h"
 // #include "ui_calibration.h"
+#include "i2c_bus_shared.h" // For I2C bus recovery before SD init
+#include "rgb_lcd_port.h"
 #include "sd.h"
 #include "ui_wizard.h"
-#include "rgb_lcd_port.h"
 #include <esp_err.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
@@ -74,10 +75,12 @@ void app_main(void) {
   }
   rgb_lcd_port_pclk_guard_exit();
   if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "NVS init failed: %s (continuing without NVS)", esp_err_to_name(ret));
+    ESP_LOGE(TAG, "NVS init failed: %s (continuing without NVS)",
+             esp_err_to_name(ret));
   }
 
-  esp_rom_printf("ARS: checkpoint 2 after NVS (idf=%s)\n", esp_get_idf_version());
+  esp_rom_printf("ARS: checkpoint 2 after NVS (idf=%s)\n",
+                 esp_get_idf_version());
   ESP_LOGI(TAG, "Checkpoint: NVS init complete, proceeding to board bring-up");
   log_main_stack_hwm("after NVS + base stack prep");
 
@@ -88,11 +91,13 @@ void app_main(void) {
   }
   esp_err_t loop_ret = esp_event_loop_create_default();
   if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(loop_ret));
+    ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s",
+             esp_err_to_name(loop_ret));
   }
-  base_net_stack_ok = (ret == ESP_OK) &&
-                      (netif_ret == ESP_OK || netif_ret == ESP_ERR_INVALID_STATE) &&
-                      (loop_ret == ESP_OK || loop_ret == ESP_ERR_INVALID_STATE);
+  base_net_stack_ok =
+      (ret == ESP_OK) &&
+      (netif_ret == ESP_OK || netif_ret == ESP_ERR_INVALID_STATE) &&
+      (loop_ret == ESP_OK || loop_ret == ESP_ERR_INVALID_STATE);
 
   // Create default STA netif and check for success
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
@@ -152,25 +157,12 @@ void app_main(void) {
   log_main_stack_hwm("before UI dispatch");
 
   // 4. Initialize SD Card (Async-like, after UI is up)
-  // This ensures a missing SD card doesn't block the UI from showing
-  // ARS: Swapped to dedicated Waveshare component fix
+  // SD initialization has been disabled in this build to prevent I2C bus
+  // contention with the GT911 touch controller.  The SD card can be
+  // initialized later from application code if required.  We set the
+  // state to UNINITIALIZED and skip any attempt to mount the card here.
   sd_state_t sd_state = SD_STATE_UNINITIALIZED;
-  log_main_stack_hwm("before SD init");
-#if CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
-  touch_pause_for_sd_init(true);
-#endif
-  esp_err_t sd_ret = sd_card_init();
-#if CONFIG_ARS_SD_PAUSE_TOUCH_DURING_SD_INIT
-  touch_pause_for_sd_init(false);
-#endif
-  sd_state = sd_get_state();
-  log_main_stack_hwm("after SD init");
-  if (sd_ret != ESP_OK) {
-    ESP_LOGW(TAG, "SD Card mounting failed or card not present (state=%s)",
-             sd_state_str(sd_state));
-  } else {
-    ESP_LOGI(TAG, "SD Card state: %s", sd_state_str(sd_state));
-  }
+  ESP_LOGI(TAG, "SD card initialization skipped in this build.");
 
   // 5. WiFi / Web Server Init
   // net_init() is safe to call, it will auto-connect if credentials exist in
